@@ -3,7 +3,7 @@ name = "govbr-scraper"
 version = "1.0.0"
 description = "Gov.br and EBC news scraper for DestaquesGovBr"
 authors = ["Nitai Bezerra <nitai@example.com>"]
-readme = "README.md"
+readme = "CLAUDE.md"
 packages = [{include = "govbr_scraper", from = "src"}]
 
 [tool.poetry.dependencies]
