@@ -20,7 +20,8 @@ RUN poetry config virtualenvs.create false
 # Install dependencies (without the package itself)
 RUN poetry install --no-root --no-interaction --no-ansi
 
-# Copy only the source code needed for the scraper API
+# Copy readme (referenced in pyproject.toml) and source code
+COPY CLAUDE.md ./
 COPY src/ src/
 
 # Install the package itself
