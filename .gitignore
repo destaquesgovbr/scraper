@@ -19,9 +19,6 @@ env/
 *.swp
 *.swo
 
-# Poetry
-poetry.lock
-
 # Testing
 .coverage
 htmlcov/
