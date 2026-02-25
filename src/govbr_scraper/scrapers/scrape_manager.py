@@ -43,8 +43,15 @@ class ScrapeManager:
         """
         Load URLs from a YAML file located in the same directory as this script.
 
+        Expected format:
+            agency_key:
+              url: str
+              active: bool  # optional, defaults to True
+              disabled_reason: str  # optional
+              disabled_date: str  # optional
+
         :param file_name: The name of the YAML file.
-        :param agency: Specific agency key to filter URLs. If None, load all URLs.
+        :param agency: Specific agency key to filter URLs. If None, load all active URLs.
         :return: A list of URLs.
         """
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -54,12 +61,55 @@ class ScrapeManager:
             agencies = yaml.safe_load(f)["agencies"]
 
         if agency:
-            if agency in agencies:
-                return [agencies[agency]]
-            else:
+            if agency not in agencies:
                 raise ValueError(f"Agency '{agency}' not found in the YAML file.")
+            agency_data = agencies[agency]
+            if self._is_agency_inactive(agency, agency_data):
+                raise ValueError(f"Agency '{agency}' is inactive.")
+            return [self._extract_url(agency_data)]
 
-        return list(agencies.values())
+        # Load all active agencies
+        urls = []
+        inactive_agencies = []
+
+        for agency_key, agency_data in agencies.items():
+            if self._is_agency_inactive(agency_key, agency_data):
+                inactive_agencies.append(agency_key)
+                continue
+            urls.append(self._extract_url(agency_data))
+
+        if inactive_agencies:
+            logging.info(
+                f"Filtered {len(inactive_agencies)} inactive agencies: "
+                f"{', '.join(sorted(inactive_agencies))}"
+            )
+
+        return urls
+
+    def _extract_url(self, agency_data: Dict[str, Any]) -> str:
+        """
+        Extract URL from agency data.
+
+        :param agency_data: Dict with 'url' key.
+        :return: The URL string.
+        """
+        return str(agency_data["url"])
+
+    def _is_agency_inactive(self, agency_key: str, agency_data: Dict[str, Any]) -> bool:
+        """
+        Check if agency is inactive.
+
+        :param agency_key: Agency identifier for logging.
+        :param agency_data: Dict with optional 'active' key.
+        :return: True if agency should be skipped.
+        """
+        is_active = agency_data.get("active", True)
+
+        if not is_active:
+            reason = agency_data.get("disabled_reason", "No reason provided")
+            logging.debug(f"Skipping inactive agency '{agency_key}': {reason}")
+
+        return not is_active
 
     def run_scraper(
         self,

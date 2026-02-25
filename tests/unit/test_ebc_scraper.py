@@ -126,7 +126,7 @@ def empty_agenciabrasil_news_data() -> Dict[str, Any]:
 @pytest.fixture
 def ebc_scraper() -> EBCWebScraper:
     """EBCWebScraper instance for testing."""
-    return EBCWebScraper(min_date="2026-01-01")
+    return EBCWebScraper(min_date="2026-01-01", base_url="https://memoria.ebc.com.br/noticias")
 
 
 # =============================================================================
