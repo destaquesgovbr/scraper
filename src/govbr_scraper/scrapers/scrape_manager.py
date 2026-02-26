@@ -5,8 +5,8 @@ from collections import OrderedDict
 from datetime import date
 from typing import Any, Dict, List
 
-import yaml
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
+from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
 
 # Set up logging configuration
 logging.basicConfig(
@@ -39,77 +39,9 @@ class ScrapeManager:
         """
         self.dataset_manager = storage  # Keep attribute name for compatibility
 
-    def _load_urls_from_yaml(self, file_name: str, agency: str = None) -> List[str]:
-        """
-        Load URLs from a YAML file located in the same directory as this script.
-
-        Expected format:
-            agency_key:
-              url: str
-              active: bool  # optional, defaults to True
-              disabled_reason: str  # optional
-              disabled_date: str  # optional
-
-        :param file_name: The name of the YAML file.
-        :param agency: Specific agency key to filter URLs. If None, load all active URLs.
-        :return: A list of URLs.
-        """
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(script_dir, "config", file_name)
-
-        with open(file_path, "r") as f:
-            agencies = yaml.safe_load(f)["agencies"]
-
-        if agency:
-            if agency not in agencies:
-                raise ValueError(f"Agency '{agency}' not found in the YAML file.")
-            agency_data = agencies[agency]
-            if self._is_agency_inactive(agency, agency_data):
-                raise ValueError(f"Agency '{agency}' is inactive.")
-            return [self._extract_url(agency_data)]
-
-        # Load all active agencies
-        urls = []
-        inactive_agencies = []
-
-        for agency_key, agency_data in agencies.items():
-            if self._is_agency_inactive(agency_key, agency_data):
-                inactive_agencies.append(agency_key)
-                continue
-            urls.append(self._extract_url(agency_data))
-
-        if inactive_agencies:
-            logging.info(
-                f"Filtered {len(inactive_agencies)} inactive agencies: "
-                f"{', '.join(sorted(inactive_agencies))}"
-            )
-
-        return urls
-
-    def _extract_url(self, agency_data: Dict[str, Any]) -> str:
-        """
-        Extract URL from agency data.
-
-        :param agency_data: Dict with 'url' key.
-        :return: The URL string.
-        """
-        return str(agency_data["url"])
-
-    def _is_agency_inactive(self, agency_key: str, agency_data: Dict[str, Any]) -> bool:
-        """
-        Check if agency is inactive.
-
-        :param agency_key: Agency identifier for logging.
-        :param agency_data: Dict with optional 'active' key.
-        :return: True if agency should be skipped.
-        """
-        is_active = agency_data.get("active", True)
-
-        if not is_active:
-            reason = agency_data.get("disabled_reason", "No reason provided")
-            logging.debug(f"Skipping inactive agency '{agency_key}': {reason}")
-
-        return not is_active
+    def _get_config_dir(self) -> str:
+        """Get the config directory path."""
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 
     def run_scraper(
         self,
@@ -137,18 +69,20 @@ class ScrapeManager:
 
         try:
             all_urls = []
+            config_dir = self._get_config_dir()
             # Load URLs for each agency in the list
             if agencies:
                 for agency in agencies:
                     try:
-                        urls = self._load_urls_from_yaml("site_urls.yaml", agency)
-                        all_urls.extend(urls)
+                        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml", agency)
+                        all_urls.extend(agency_urls.values())
                     except ValueError as e:
                         errors.append({"agency": agency, "error": str(e)})
                         logging.warning(f"Skipping agency '{agency}': {e}")
             else:
                 # Load all agency URLs if agencies list is None or empty
-                all_urls = self._load_urls_from_yaml("site_urls.yaml")
+                agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
+                all_urls = list(agency_urls.values())
 
             webscrapers = [
                 WebScraper(min_date, url, max_date=max_date) for url in all_urls

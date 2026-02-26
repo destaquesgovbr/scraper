@@ -418,7 +418,7 @@ class EBCWebScraper:
                 self._scrape_tvbrasil_content(soup, news_data)
             else:
                 # Original Agência Brasil scraping strategy
-                news_data['agency'] = 'agencia-brasil'
+                news_data['agency'] = 'agencia_brasil'
                 self._scrape_agencia_brasil_content(soup, news_data)
 
             # If JSON-LD didn't work, try parsing from the date field extracted by scrape methods

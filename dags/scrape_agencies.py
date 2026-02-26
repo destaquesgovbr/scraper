@@ -37,14 +37,9 @@ def _load_agencies_config() -> dict:
     # Filtrar apenas agências ativas e extrair URLs
     active_agencies = {}
     for key, data in agencies.items():
-        # Suportar formato dicionário com campo 'active'
-        if isinstance(data, dict):
-            is_active = data.get("active", True)
-            if is_active:
-                active_agencies[key] = data.get("url")
-        else:
-            # Formato string legado (sempre ativo)
-            active_agencies[key] = data
+        is_active = data.get("active", True)
+        if is_active:
+            active_agencies[key] = data.get("url")
 
     return active_agencies
 
