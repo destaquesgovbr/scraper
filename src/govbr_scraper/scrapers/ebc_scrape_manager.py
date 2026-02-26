@@ -1,12 +1,11 @@
 import hashlib
 import logging
-import os
 from collections import OrderedDict
 from datetime import date, datetime
 from typing import Any, Dict, List
 
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
-from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
+from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 # Set up logging configuration
 logging.basicConfig(
@@ -39,10 +38,6 @@ class EBCScrapeManager:
         """
         self.dataset_manager = storage  # Keep attribute name for compatibility
 
-    def _get_config_dir(self) -> str:
-        """Get the config directory path."""
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
-
     def run_scraper(
         self,
         min_date: str,
@@ -68,7 +63,7 @@ class EBCScrapeManager:
 
         try:
             agency_urls = {}
-            config_dir = self._get_config_dir()
+            config_dir = get_config_dir(__file__)
             # Load URLs for each agency in the list
             if agencies:
                 for agency in agencies:
