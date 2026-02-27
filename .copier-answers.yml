@@ -1,0 +1,12 @@
+# Gerado automaticamente pelo template airflow-dgb.
+# NÃO editar manualmente. Para atualizar: copier update
+_src_path: /private/var/folders/h5/q3w1nyh93lgd82kcdjnnvqxc0000gn/T/copier._vcs.clone.c2mwhjtt
+_commit: 
+project_name: scraper
+astro_runtime_version: 3.0-14
+python_requirements: "httpx\u003e=0.27.0\npyyaml\u003e=6.0.2\ngoogle-auth\u003e=2.0.0"
+postgres_connection: "postgresql://USER:PASS@HOST:5432/govbrnews"
+extra_env_vars: "# Airflow Variables\nAIRFLOW_VAR_SCRAPER_API_URL=https://SCRAPER_API_URL"
+has_plugins: False
+plugin_modules: ""
+airflowignore_extras: ""
