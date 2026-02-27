@@ -4,23 +4,36 @@ Tests for yaml_config module - shared utilities for loading agency YAML configur
 import os
 import pytest
 from govbr_scraper.scrapers.yaml_config import (
+    get_config_dir,
     load_urls_from_yaml,
     extract_url,
     is_agency_inactive,
 )
 
+# Path to the scrapers module, used to resolve config dir in tests
+_SCRAPERS_MODULE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "..",
+    "src",
+    "govbr_scraper",
+    "scrapers",
+    "scrape_manager.py",
+)
 
-def get_config_dir():
-    """Get the config directory path for tests."""
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "..",
-        "..",
-        "src",
-        "govbr_scraper",
-        "scrapers",
-        "config",
-    )
+
+class TestGetConfigDir:
+    """Tests for get_config_dir function."""
+
+    def test_returns_config_subdir(self):
+        """get_config_dir should return a path ending in 'config'."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        assert config_dir.endswith("config")
+
+    def test_config_dir_exists(self):
+        """get_config_dir should return an existing directory."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        assert os.path.isdir(config_dir)
 
 
 class TestExtractUrl:
@@ -75,14 +88,14 @@ class TestLoadUrlsFromYamlGovBr:
 
     def test_load_urls_returns_dict(self):
         """load_urls_from_yaml should return a dict mapping agency names to URLs."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
         assert isinstance(agency_urls, dict)
         assert len(agency_urls) > 0
 
     def test_load_urls_filters_inactive(self):
         """Inactive agencies should not be in the returned dict."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
         # cisc uses the generic gov.br/pt-br/noticias URL and is inactive
         for agency_name, url in agency_urls.items():
@@ -90,7 +103,7 @@ class TestLoadUrlsFromYamlGovBr:
 
     def test_load_specific_active_agency(self):
         """Loading a specific active agency should work."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml", agency="mec")
         assert len(agency_urls) == 1
         assert "mec" in agency_urls
@@ -98,13 +111,13 @@ class TestLoadUrlsFromYamlGovBr:
 
     def test_load_specific_inactive_agency_raises(self):
         """Loading a specific inactive agency should raise ValueError."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         with pytest.raises(ValueError, match="inactive"):
             load_urls_from_yaml(config_dir, "site_urls.yaml", agency="cisc")
 
     def test_load_nonexistent_agency_raises(self):
         """Loading a nonexistent agency should raise ValueError."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         with pytest.raises(ValueError, match="not found"):
             load_urls_from_yaml(config_dir, "site_urls.yaml", agency="nonexistent_agency_xyz")
 
@@ -114,14 +127,14 @@ class TestLoadUrlsFromYamlEBC:
 
     def test_load_urls_returns_dict(self):
         """load_urls_from_yaml should return a dict mapping agency names to URLs."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
         assert isinstance(agency_urls, dict)
         assert len(agency_urls) > 0
 
     def test_load_urls_filters_inactive(self):
         """Inactive agencies should not be in the returned dict."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
         # memoria-ebc is inactive, so its URL should not be present
         for agency_name, url in agency_urls.items():
@@ -129,7 +142,7 @@ class TestLoadUrlsFromYamlEBC:
 
     def test_load_urls_includes_active_agencies(self):
         """Active agencies should be in the returned dict."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
         urls_str = " ".join(agency_urls.values())
         # agencia_brasil and tvbrasil are active
@@ -137,7 +150,7 @@ class TestLoadUrlsFromYamlEBC:
 
     def test_load_specific_active_agency(self):
         """Loading a specific active agency should work."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency="agencia_brasil")
         assert len(agency_urls) == 1
         assert "agencia_brasil" in agency_urls
@@ -145,12 +158,12 @@ class TestLoadUrlsFromYamlEBC:
 
     def test_load_specific_inactive_agency_raises(self):
         """Loading a specific inactive agency should raise ValueError."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         with pytest.raises(ValueError, match="inactive"):
             load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency="memoria-ebc")
 
     def test_load_nonexistent_agency_raises(self):
         """Loading a nonexistent agency should raise ValueError."""
-        config_dir = get_config_dir()
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
         with pytest.raises(ValueError, match="not found"):
             load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency="nonexistent_agency_xyz")

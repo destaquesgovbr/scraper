@@ -1,12 +1,11 @@
 import hashlib
 import logging
-import os
 from collections import OrderedDict
 from datetime import date
 from typing import Any, Dict, List
 
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
-from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
+from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 # Set up logging configuration
 logging.basicConfig(
@@ -39,10 +38,6 @@ class ScrapeManager:
         """
         self.dataset_manager = storage  # Keep attribute name for compatibility
 
-    def _get_config_dir(self) -> str:
-        """Get the config directory path."""
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
-
     def run_scraper(
         self,
         agencies: List[str],
@@ -68,64 +63,65 @@ class ScrapeManager:
         errors = []
 
         try:
-            all_urls = []
-            config_dir = self._get_config_dir()
+            agency_urls = {}
+            config_dir = get_config_dir(__file__)
             # Load URLs for each agency in the list
             if agencies:
                 for agency in agencies:
                     try:
-                        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml", agency)
-                        all_urls.extend(agency_urls.values())
+                        loaded = load_urls_from_yaml(config_dir, "site_urls.yaml", agency)
+                        agency_urls.update(loaded)
                     except ValueError as e:
                         errors.append({"agency": agency, "error": str(e)})
                         logging.warning(f"Skipping agency '{agency}': {e}")
             else:
                 # Load all agency URLs if agencies list is None or empty
                 agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
-                all_urls = list(agency_urls.values())
 
+            # Create list of (agency_name, scraper) tuples
             webscrapers = [
-                WebScraper(min_date, url, max_date=max_date) for url in all_urls
+                (agency_name, WebScraper(min_date, url, max_date=max_date))
+                for agency_name, url in agency_urls.items()
             ]
 
             if sequential:
-                for scraper in webscrapers:
+                for agency_name, scraper in webscrapers:
                     try:
                         scraped_data = scraper.scrape_news()
                         if scraped_data:
                             logging.info(
-                                f"Appending news for {scraper.agency} to HF dataset."
+                                f"Appending news for {agency_name} to HF dataset."
                             )
                             articles_scraped += len(scraped_data)
                             saved = self._process_and_upload_data(scraped_data, allow_update) or 0
                             articles_saved += saved
-                            agencies_processed.append(scraper.agency)
+                            agencies_processed.append(agency_name)
                         else:
-                            logging.info(f"No news found for {scraper.agency}.")
-                            agencies_processed.append(scraper.agency)
+                            logging.info(f"No news found for {agency_name}.")
+                            agencies_processed.append(agency_name)
                     except ScrapingError as e:
-                        errors.append({"agency": scraper.agency, "error": str(e)})
-                        logging.error(f"Scraping failed for {scraper.agency}: {e}")
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Scraping failed for {agency_name}: {e}")
                     except Exception as e:
-                        errors.append({"agency": scraper.agency, "error": str(e)})
-                        logging.error(f"Unexpected error for {scraper.agency}: {e}")
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Unexpected error for {agency_name}: {e}")
             else:
                 all_news_data = []
-                for scraper in webscrapers:
+                for agency_name, scraper in webscrapers:
                     try:
                         scraped_data = scraper.scrape_news()
                         if scraped_data:
                             all_news_data.extend(scraped_data)
-                            agencies_processed.append(scraper.agency)
+                            agencies_processed.append(agency_name)
                         else:
-                            logging.info(f"No news found for {scraper.agency}.")
-                            agencies_processed.append(scraper.agency)
+                            logging.info(f"No news found for {agency_name}.")
+                            agencies_processed.append(agency_name)
                     except ScrapingError as e:
-                        errors.append({"agency": scraper.agency, "error": str(e)})
-                        logging.error(f"Scraping failed for {scraper.agency}: {e}")
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Scraping failed for {agency_name}: {e}")
                     except Exception as e:
-                        errors.append({"agency": scraper.agency, "error": str(e)})
-                        logging.error(f"Unexpected error for {scraper.agency}: {e}")
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Unexpected error for {agency_name}: {e}")
 
                 if all_news_data:
                     logging.info("Appending all collected news to HF dataset.")

@@ -8,6 +8,16 @@ from typing import Any, Dict
 import yaml
 
 
+def get_config_dir(module_file: str) -> str:
+    """
+    Get the config directory path relative to a module file.
+
+    :param module_file: The __file__ of the calling module.
+    :return: Absolute path to the config directory.
+    """
+    return os.path.join(os.path.dirname(os.path.abspath(module_file)), "config")
+
+
 def load_urls_from_yaml(
     config_dir: str, file_name: str, agency: str = None
 ) -> Dict[str, str]:
