@@ -90,7 +90,7 @@ class ScrapeManager:
                         scraped_data = scraper.scrape_news()
                         if scraped_data:
                             logging.info(
-                                f"Appending news for {agency_name} to HF dataset."
+                                f"Appending news for {agency_name} to storage backend."
                             )
                             articles_scraped += len(scraped_data)
                             saved = self._process_and_upload_data(scraped_data, allow_update) or 0
@@ -124,7 +124,7 @@ class ScrapeManager:
                         logging.error(f"Unexpected error for {agency_name}: {e}")
 
                 if all_news_data:
-                    logging.info("Appending all collected news to HF dataset.")
+                    logging.info("Appending all collected news to storage backend.")
                     articles_scraped = len(all_news_data)
                     articles_saved = self._process_and_upload_data(all_news_data, allow_update) or 0
                 else:
