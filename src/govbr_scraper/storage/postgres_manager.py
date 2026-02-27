@@ -187,6 +187,21 @@ class PostgresManager:
         if not news:
             raise ValueError("News list cannot be empty")
 
+        # Deduplicate by unique_id (keep first occurrence)
+        # Same pattern as HuggingFace backend's drop_duplicates()
+        # This handles race conditions where the same article appears on multiple pages
+        seen_ids: set[str] = set()
+        deduped_news: list[NewsInsert] = []
+        for n in news:
+            if n.unique_id not in seen_ids:
+                seen_ids.add(n.unique_id)
+                deduped_news.append(n)
+
+        if len(deduped_news) < len(news):
+            logger.info(f"Removed {len(news) - len(deduped_news)} duplicate items by unique_id")
+
+        news = deduped_news
+
         logger.info(f"Inserting {len(news)} news records (allow_update={allow_update})")
 
         conn = self.get_connection()

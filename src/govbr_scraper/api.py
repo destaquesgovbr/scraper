@@ -32,6 +32,7 @@ class ScrapeAgenciesRequest(BaseModel):
 class ScrapeEBCRequest(BaseModel):
     start_date: str
     end_date: str | None = None
+    agencies: list[str] | None = None
     allow_update: bool = False
     sequential: bool = True
 
@@ -108,7 +109,7 @@ def scrape_ebc(req: ScrapeEBCRequest):
     from govbr_scraper.scrapers.ebc_scrape_manager import EBCScrapeManager
 
     end = req.end_date or req.start_date
-    logger.info(f"Scraping EBC from {req.start_date} to {end}")
+    logger.info(f"Scraping EBC agencies: {req.agencies or 'ALL'} from {req.start_date} to {end}")
 
     try:
         storage = StorageAdapter()
@@ -118,15 +119,19 @@ def scrape_ebc(req: ScrapeEBCRequest):
             max_date=end,
             sequential=req.sequential,
             allow_update=req.allow_update,
+            agencies=req.agencies,
         )
     except Exception as e:
         logger.error(f"EBC scraping failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
     errors = [AgencyError(**e) for e in metrics.get("errors", [])]
-    if errors:
+    if errors and not metrics["agencies_processed"]:
         status = "failed"
         message = f"EBC scraping failed: {errors[0].error}"
+    elif errors:
+        status = "partial"
+        message = f"Completed with {len(errors)} error(s)"
     else:
         status = "completed"
         message = "EBC scraping completed"
@@ -137,7 +142,7 @@ def scrape_ebc(req: ScrapeEBCRequest):
         end_date=end,
         articles_scraped=metrics["articles_scraped"],
         articles_saved=metrics["articles_saved"],
-        agencies_processed=["ebc"] if not errors else [],
+        agencies_processed=metrics["agencies_processed"],
         errors=errors,
         message=message,
     )

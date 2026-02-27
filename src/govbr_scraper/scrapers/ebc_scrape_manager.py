@@ -5,6 +5,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
+from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 # Set up logging configuration
 logging.basicConfig(
@@ -15,6 +16,7 @@ logging.basicConfig(
 class EBCScrapeManager:
     """
     A class that focuses on:
+      - Loading and filtering URLs from a YAML file.
       - Running EBC web scrapers for the specified date ranges.
       - Preprocessing, transforming, and preparing raw EBC news data into a well-structured format
         ready for dataset creation and analysis.
@@ -42,44 +44,92 @@ class EBCScrapeManager:
         max_date: str,
         sequential: bool,
         allow_update: bool = False,
+        agencies: List[str] = None,
     ) -> dict:
         """
         Executes the EBC web scraping process for the given date range.
 
         :param min_date: The minimum date for filtering news.
         :param max_date: The maximum date for filtering news.
-        :param sequential: Whether to process and upload sequentially (always True for EBC since we have only one source).
+        :param sequential: Whether to scrape sequentially (True) or in bulk (False).
         :param allow_update: If True, overwrite existing entries in the dataset.
-        :return: Dict with metrics: articles_scraped, articles_saved.
+        :param agencies: A list of agency names to scrape news from. If None, all active agencies are scraped.
+        :return: Dict with metrics: articles_scraped, articles_saved, agencies_processed, errors.
         """
         articles_scraped = 0
         articles_saved = 0
+        agencies_processed = []
         errors = []
 
         try:
-            logging.info(f"Starting EBC scraping from {min_date} to {max_date}")
-
-            # Create the EBC scraper
-            ebc_scraper = EBCWebScraper(min_date, max_date)
-
-            # Scrape the news data
-            scraped_data = ebc_scraper.scrape_news()
-
-            if scraped_data:
-                articles_scraped = len(scraped_data)
-                logging.info(f"Successfully scraped {articles_scraped} articles from EBC")
-                logging.info("Processing and uploading EBC news to HF dataset.")
-                articles_saved = self._process_and_upload_data(scraped_data, allow_update) or 0
+            agency_urls = {}
+            config_dir = get_config_dir(__file__)
+            # Load URLs for each agency in the list
+            if agencies:
+                for agency in agencies:
+                    try:
+                        loaded = load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency)
+                        agency_urls.update(loaded)
+                    except ValueError as e:
+                        errors.append({"agency": agency, "error": str(e)})
+                        logging.warning(f"Skipping agency '{agency}': {e}")
             else:
-                logging.info("No EBC news found for the specified date range.")
+                # Load all agency URLs if agencies list is None or empty
+                agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
 
-        except Exception as e:
-            logging.error(f"Error during EBC scraping: {e}")
-            errors.append({"agency": "ebc", "error": str(e)})
+            # Create list of (agency_name, scraper) tuples
+            webscrapers = [
+                (agency_name, EBCWebScraper(min_date, url, max_date=max_date))
+                for agency_name, url in agency_urls.items()
+            ]
+
+            if sequential:
+                for agency_name, scraper in webscrapers:
+                    try:
+                        scraped_data = scraper.scrape_news()
+                        if scraped_data:
+                            logging.info(
+                                f"Appending {len(scraped_data)} news from {agency_name} to dataset."
+                            )
+                            articles_scraped += len(scraped_data)
+                            saved = self._process_and_upload_data(scraped_data, allow_update) or 0
+                            articles_saved += saved
+                            agencies_processed.append(agency_name)
+                        else:
+                            logging.info(f"No news found for {agency_name}.")
+                            agencies_processed.append(agency_name)
+                    except Exception as e:
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Error scraping {agency_name}: {e}")
+            else:
+                all_news_data = []
+                for agency_name, scraper in webscrapers:
+                    try:
+                        scraped_data = scraper.scrape_news()
+                        if scraped_data:
+                            all_news_data.extend(scraped_data)
+                            agencies_processed.append(agency_name)
+                        else:
+                            logging.info(f"No news found for {agency_name}.")
+                            agencies_processed.append(agency_name)
+                    except Exception as e:
+                        errors.append({"agency": agency_name, "error": str(e)})
+                        logging.error(f"Error scraping {agency_name}: {e}")
+
+                if all_news_data:
+                    logging.info("Appending all collected news to dataset.")
+                    articles_scraped = len(all_news_data)
+                    articles_saved = self._process_and_upload_data(all_news_data, allow_update) or 0
+                else:
+                    logging.info("No news found for any EBC source.")
+        except ValueError as e:
+            logging.error(e)
+            errors.append({"agency": "config", "error": str(e)})
 
         return {
             "articles_scraped": articles_scraped,
             "articles_saved": articles_saved,
+            "agencies_processed": agencies_processed,
             "errors": errors,
         }
 

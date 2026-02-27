@@ -21,14 +21,15 @@ logging.basicConfig(
 
 
 class EBCWebScraper:
-    def __init__(self, min_date: str, max_date: Optional[str] = None):
+    def __init__(self, min_date: str, base_url: str, max_date: Optional[str] = None):
         """
-        Initialize the EBC scraper with minimum and maximum dates.
+        Initialize the EBC scraper with minimum and maximum dates, and base URL.
 
         :param min_date: The minimum date for scraping news (format: YYYY-MM-DD).
+        :param base_url: The base URL of the EBC news index page.
         :param max_date: The maximum date for scraping news (format: YYYY-MM-DD).
         """
-        self.base_url = "https://memoria.ebc.com.br/noticias"
+        self.base_url = base_url
         self.min_date = datetime.strptime(min_date, "%Y-%m-%d").date()
         if max_date:
             self.max_date = datetime.strptime(max_date, "%Y-%m-%d").date()
@@ -38,6 +39,16 @@ class EBCWebScraper:
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+
+    def _get_base_domain(self) -> str:
+        """
+        Extract the base domain from the base_url for converting relative URLs.
+
+        :return: The base domain (e.g., 'https://agenciabrasil.ebc.com.br').
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(self.base_url)
+        return f"{parsed.scheme}://{parsed.netloc}"
 
     def smart_sleep(self, min_val=1.0, max_val=2.0, mean=1.5, std=0.4):
         """Return a random time from truncated normal distribution"""
@@ -204,6 +215,7 @@ class EBCWebScraper:
     def scrape_index_page(self, url: str) -> List[str]:
         """
         Scrape a single index page to extract news URLs.
+        Supports agenciabrasil.ebc.com.br, memoria.ebc.com.br, and tvbrasil.ebc.com.br structures.
 
         :param url: The URL of the index page to scrape.
         :return: List of news URLs found on the page.
@@ -213,38 +225,77 @@ class EBCWebScraper:
             return []
 
         soup = BeautifulSoup(response.content, 'html.parser')
-        news_container = soup.find('div', {'id': 'view-ultimas-noticias-ajax'})
-
-        if news_container is None:
-            logging.warning("HTML news container not found at index page, probably no more news")
-            return []
-
-        news_divs = news_container.find_all('div', class_=['ultima_isotope', 'cmpGeneric'])
         news_urls = []
 
-        for i, div in enumerate(news_divs):
-            try:
-                # Find all <a> tags in this div
-                all_links = div.find_all('a')
+        # Strategy 1: agenciabrasil.ebc.com.br structure (capa-noticia links)
+        news_links = soup.find_all('a', class_='capa-noticia')
+        if news_links:
+            base_domain = self._get_base_domain()
+            seen_urls = set()  # Avoid duplicates
 
-                # Look for the <a> tag that has a title but doesn't have class="imgHeading"
-                title_link = None
-                for link in all_links:
-                    # Check if it has a title and doesn't have imgHeading class
-                    if link.get('title') and 'imgHeading' not in link.get('class', []):
-                        title_link = link
-                        break
+            for link in news_links:
+                href = link.get('href', '').strip()
+                if href and '/noticia/' in href:
+                    # Convert relative URL to absolute
+                    if href.startswith('/'):
+                        href = f"{base_domain}{href}"
+                    if href not in seen_urls:
+                        seen_urls.add(href)
+                        news_urls.append(href)
 
-                if title_link:
-                    # Extract URL information
-                    url = title_link.get('href', '').strip()
-                    news_urls.append(url)
+            if news_urls:
+                return news_urls
 
-            except Exception as e:
-                logging.error(f"Error processing div {i}: {e}")
-                continue
+        # Strategy 2: memoria.ebc.com.br structure (legacy fallback)
+        news_container = soup.find('div', {'id': 'view-ultimas-noticias-ajax'})
+        if news_container:
+            news_divs = news_container.find_all('div', class_=['ultima_isotope', 'cmpGeneric'])
 
-        return news_urls
+            for i, div in enumerate(news_divs):
+                try:
+                    all_links = div.find_all('a')
+                    title_link = None
+                    for link in all_links:
+                        if link.get('title') and 'imgHeading' not in link.get('class', []):
+                            title_link = link
+                            break
+
+                    if title_link:
+                        href = title_link.get('href', '').strip()
+                        news_urls.append(href)
+
+                except Exception as e:
+                    logging.error(f"Error processing div {i}: {e}")
+                    continue
+
+            if news_urls:
+                return news_urls
+
+        # Strategy 3: tvbrasil.ebc.com.br structure (view-ultimas class with h3.heading links)
+        view_ultimas = soup.find('div', class_='view-ultimas')
+        if view_ultimas:
+            base_domain = self._get_base_domain()
+            seen_urls = set()
+
+            # Find links inside h3.heading
+            heading_links = view_ultimas.find_all('h3', class_='heading')
+            for heading in heading_links:
+                link = heading.find('a')
+                if link:
+                    href = link.get('href', '').strip()
+                    if href:
+                        # Convert relative URL to absolute
+                        if href.startswith('/'):
+                            href = f"{base_domain}{href}"
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            news_urls.append(href)
+
+            if news_urls:
+                return news_urls
+
+        logging.warning("HTML news container not found at index page, probably no more news")
+        return []
 
     def process_news_urls(self, news_urls: List[str]) -> bool:
         """

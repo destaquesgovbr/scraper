@@ -1,0 +1,14 @@
+agencies:
+  memoria-ebc:
+    url: https://memoria.ebc.com.br/noticias
+    active: false
+    disabled_reason: "Site fora do ar (502 Bad Gateway) - issue #50"
+    disabled_date: "2026-02-12"
+
+  agencia_brasil:
+    url: https://agenciabrasil.ebc.com.br/ultimas
+    active: true
+
+  tvbrasil:
+    url: https://tvbrasil.ebc.com.br/ultimas
+    active: true

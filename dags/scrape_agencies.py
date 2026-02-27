@@ -19,10 +19,29 @@ logger = logging.getLogger(__name__)
 
 
 def _load_agencies_config() -> dict:
-    """Carrega config de agências do YAML."""
+    """Carrega config de agências ativas do YAML.
+
+    Suporta formato dicionário com campos:
+    - url: str (obrigatório)
+    - active: bool (opcional, default: True)
+    - disabled_reason: str (opcional)
+    - disabled_date: str (opcional)
+
+    Returns:
+        dict: Mapeamento {agency_key: url} apenas para agências ativas
+    """
     config_path = os.path.join(os.path.dirname(__file__), "config", "site_urls.yaml")
     with open(config_path) as f:
-        return yaml.safe_load(f)["agencies"]
+        agencies = yaml.safe_load(f)["agencies"]
+
+    # Filtrar apenas agências ativas e extrair URLs
+    active_agencies = {}
+    for key, data in agencies.items():
+        is_active = data.get("active", True)
+        if is_active:
+            active_agencies[key] = data.get("url")
+
+    return active_agencies
 
 
 def create_scraper_dag(agency_key: str, agency_url: str):
