@@ -85,7 +85,8 @@ class StorageAdapter:
                 # Extract fields with defaults
                 published_at = safe_get("published_at")
                 if published_at is None:
-                    logger.warning(f"Skipping record {i}: missing published_at")
+                    record_url = safe_get("url", "unknown")
+                    logger.warning(f"Skipping record {i}: missing published_at (url={record_url})")
                     continue
 
                 # Parse datetime if string
