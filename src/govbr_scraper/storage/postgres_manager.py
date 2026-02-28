@@ -173,7 +173,9 @@ class PostgresManager:
             cursor.close()
             self.put_connection(conn)
 
-    def insert(self, news: list[NewsInsert], allow_update: bool = False) -> int:
+    def insert(
+        self, news: list[NewsInsert], allow_update: bool = False
+    ) -> tuple[int, list[dict]]:
         """
         Insert news records (batch operation).
 
@@ -182,7 +184,8 @@ class PostgresManager:
             allow_update: If True, update existing records (ON CONFLICT UPDATE)
 
         Returns:
-            Number of records inserted/updated
+            Tuple of (count, inserted_articles) where inserted_articles is a list
+            of dicts with unique_id, agency_key, published_at for each inserted row.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -206,6 +209,10 @@ class PostgresManager:
 
         conn = self.get_connection()
         inserted = 0
+        inserted_articles: list[dict] = []
+
+        # Build lookup for metadata (unique_id -> news item)
+        news_by_uid = {n.unique_id: n for n in news}
 
         try:
             cursor = conn.cursor()
@@ -284,13 +291,27 @@ class PostgresManager:
                 # ON CONFLICT DO NOTHING
                 insert_query += " ON CONFLICT (unique_id) DO NOTHING"
 
-            # Execute batch insert
-            execute_values(cursor, insert_query, values)
-            inserted = cursor.rowcount
+            # RETURNING to get IDs of actually inserted/updated rows
+            insert_query += " RETURNING unique_id"
+
+            # Execute batch insert with fetch=True to get RETURNING results
+            result = execute_values(cursor, insert_query, values, fetch=True)
+            returned_ids = [row[0] for row in result]
+            inserted = len(returned_ids)
             conn.commit()
 
+            # Build inserted articles metadata for event publishing
+            for uid in returned_ids:
+                n = news_by_uid.get(uid)
+                if n:
+                    inserted_articles.append({
+                        "unique_id": uid,
+                        "agency_key": n.agency_key or "",
+                        "published_at": n.published_at,
+                    })
+
             logger.success(f"Inserted/updated {inserted} news records")
-            return inserted
+            return inserted, inserted_articles
 
         except Exception as e:
             conn.rollback()

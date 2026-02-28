@@ -32,6 +32,9 @@ pydantic = "^2.5.3"
 pydantic-settings = "^2.1.0"
 pyyaml = "^6.0.2"
 
+# Event publishing (Pub/Sub)
+google-cloud-pubsub = "^2.23.0"
+
 # Utilities
 loguru = "^0.7.2"
 
