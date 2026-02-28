@@ -12,6 +12,7 @@ from typing import Any
 from loguru import logger
 
 from govbr_scraper.storage.postgres_manager import PostgresManager
+from govbr_scraper.storage.event_publisher import EventPublisher
 from govbr_scraper.models.news import NewsInsert
 
 
@@ -21,6 +22,7 @@ class StorageAdapter:
 
     Environment variables:
     - DATABASE_URL: PostgreSQL connection string
+    - PUBSUB_TOPIC_NEWS_SCRAPED: Pub/Sub topic for scraped events (optional)
     """
 
     def __init__(self, postgres_manager: PostgresManager | None = None):
@@ -32,6 +34,7 @@ class StorageAdapter:
         """
         logger.info("StorageAdapter initialized: backend=postgres")
         self._postgres_manager = postgres_manager
+        self._event_publisher = EventPublisher()
 
     @property
     def postgres(self) -> PostgresManager:
@@ -64,8 +67,13 @@ class StorageAdapter:
             )
             return 0
 
-        inserted = self.postgres.insert(news_list, allow_update=allow_update)
+        inserted, inserted_articles = self.postgres.insert(news_list, allow_update=allow_update)
         logger.success(f"PostgreSQL: inserted {inserted} records")
+
+        # Publish events for newly inserted articles (best-effort)
+        if inserted_articles:
+            self._event_publisher.publish_scraped(inserted_articles)
+
         return inserted
 
     def _convert_to_news_insert(self, data: OrderedDict) -> list[NewsInsert]:
