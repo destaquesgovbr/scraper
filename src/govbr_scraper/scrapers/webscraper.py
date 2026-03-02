@@ -248,6 +248,17 @@ class WebScraper:
         # Get article content and metadata (tags, editorial_lead, subtitle, category from article page)
         content, image_url, published_dt, updated_dt, tags_from_article, editorial_lead, subtitle, category_from_article = self.get_article_content(url)
 
+        # Fallback: use listing page date if article page datetime extraction failed
+        if not published_dt and news_date:
+            brasilia_tz = timezone(timedelta(hours=-3))
+            published_dt = datetime.combine(news_date, datetime.min.time()).replace(
+                tzinfo=brasilia_tz
+            )
+            logging.warning(
+                f"Using listing page date as fallback for {url} "
+                f"(article page datetime extraction failed)"
+            )
+
         # Use tags from article page if found, otherwise use from listing
         final_tags = tags_from_article if tags_from_article else tags_from_listing
 
@@ -582,12 +593,44 @@ class WebScraper:
 
         return None
 
+    @staticmethod
+    def _parse_datetime_from_text(text: str, brasilia_tz: timezone) -> Optional[datetime]:
+        """
+        Try to parse a datetime from a text string using known gov.br patterns.
+
+        :param text: Text to parse (e.g., "10/02/2026 17h05" or "17/11/2025 - 18:58").
+        :param brasilia_tz: Timezone object for Brasília (UTC-3).
+        :return: datetime object or None if no pattern matched.
+        """
+        # Pattern 1: DD/MM/YYYY HH:MMh (e.g., "17/11/2025 19h24")
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})h(\d{2})', text)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            return datetime(
+                int(year), int(month), int(day),
+                int(hour), int(minute),
+                tzinfo=brasilia_tz
+            )
+
+        # Pattern 2: DD/MM/YYYY - HH:MM (e.g., "17/11/2025 - 18:58")
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s*-\s*(\d{1,2}):(\d{2})', text)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            return datetime(
+                int(year), int(month), int(day),
+                int(hour), int(minute),
+                tzinfo=brasilia_tz
+            )
+
+        return None
+
     def _extract_datetime_from_text(self, soup) -> Tuple[Optional[datetime], Optional[datetime]]:
         """
         Parse datetime from text patterns like "Publicado em DD/MM/YYYY HH:MMh".
-        Handles multiple formats:
-        - DD/MM/YYYY HH:MMh (standard gov.br format, e.g., "17/11/2025 19h24")
-        - DD/MM/YYYY - HH:MM (EBC format, e.g., "17/11/2025 - 18:58")
+        Handles multiple formats and HTML structures:
+        - Gov.br structure: <span class="documentPublished"><span>Publicado em</span><span class="value">DD/MM/YYYY HHhMM</span></span>
+        - Inline text: "Publicado em DD/MM/YYYY HH:MMh"
+        - EBC format: "Publicado em DD/MM/YYYY - HH:MM"
 
         :param soup: BeautifulSoup object of the article page.
         :return: Tuple of (published_datetime, updated_datetime). Either can be None.
@@ -597,107 +640,50 @@ class WebScraper:
         brasilia_tz = timezone(timedelta(hours=-3))
 
         try:
-            # Search for text containing "Publicado em" or "publicado em"
+            # Strategy A: Gov.br HTML structure with separate spans
+            # <span class="documentPublished"><span>Publicado em</span><span class="value">10/02/2026 17h05</span></span>
+            doc_published = soup.find('span', class_='documentPublished')
+            if doc_published:
+                value_span = doc_published.find('span', class_='value')
+                if value_span:
+                    published_dt = self._parse_datetime_from_text(
+                        value_span.get_text().strip(), brasilia_tz
+                    )
+
+            doc_modified = soup.find('span', class_='documentModified')
+            if doc_modified:
+                value_span = doc_modified.find('span', class_='value')
+                if value_span:
+                    updated_dt = self._parse_datetime_from_text(
+                        value_span.get_text().strip(), brasilia_tz
+                    )
+
+            if published_dt:
+                return published_dt, updated_dt
+
+            # Strategy B: Inline text containing "Publicado em DD/MM/YYYY..."
             text_elements = soup.find_all(string=re.compile(r'[Pp]ublicado em', re.IGNORECASE))
 
             for elem in text_elements:
                 text = elem.strip()
-
-                # Pattern 1: DD/MM/YYYY HH:MMh (e.g., "Publicado em 17/11/2025 19h24")
-                match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})h(\d{2})', text)
-                if match:
-                    day, month, year, hour, minute = match.groups()
-                    published_dt = datetime(
-                        int(year), int(month), int(day),
-                        int(hour), int(minute),
-                        tzinfo=brasilia_tz
-                    )
-                    break
-
-                # Pattern 2: DD/MM/YYYY - HH:MM (e.g., "Publicado em 17/11/2025 - 18:58")
-                match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s*-\s*(\d{1,2}):(\d{2})', text)
-                if match:
-                    day, month, year, hour, minute = match.groups()
-                    published_dt = datetime(
-                        int(year), int(month), int(day),
-                        int(hour), int(minute),
-                        tzinfo=brasilia_tz
-                    )
+                published_dt = self._parse_datetime_from_text(text, brasilia_tz)
+                if published_dt:
                     break
 
             # Search for "Atualizado em" or "atualizado em"
-            text_elements = soup.find_all(string=re.compile(r'[Aa]tualizado em', re.IGNORECASE))
+            if not updated_dt:
+                text_elements = soup.find_all(string=re.compile(r'[Aa]tualizado em', re.IGNORECASE))
 
-            for elem in text_elements:
-                text = elem.strip()
-
-                # Pattern 1: DD/MM/YYYY HH:MMh
-                match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})h(\d{2})', text)
-                if match:
-                    day, month, year, hour, minute = match.groups()
-                    updated_dt = datetime(
-                        int(year), int(month), int(day),
-                        int(hour), int(minute),
-                        tzinfo=brasilia_tz
-                    )
-                    break
-
-                # Pattern 2: DD/MM/YYYY - HH:MM
-                match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s*-\s*(\d{1,2}):(\d{2})', text)
-                if match:
-                    day, month, year, hour, minute = match.groups()
-                    updated_dt = datetime(
-                        int(year), int(month), int(day),
-                        int(hour), int(minute),
-                        tzinfo=brasilia_tz
-                    )
-                    break
+                for elem in text_elements:
+                    text = elem.strip()
+                    updated_dt = self._parse_datetime_from_text(text, brasilia_tz)
+                    if updated_dt:
+                        break
 
         except Exception as e:
             logging.debug(f"Error extracting datetime from text: {e}")
 
         return published_dt, updated_dt
-
-    def extract_published_datetime(self, url: str) -> Tuple[Optional[datetime], Optional[datetime]]:
-        """
-        Extract published and updated datetimes from article page.
-        Uses multiple extraction strategies with priority:
-        1. JSON-LD schema (most reliable)
-        2. Text parsing ("Publicado em...")
-        3. Fallback to date at midnight if only date available
-
-        :param url: The URL of the article.
-        :return: Tuple of (published_datetime, updated_datetime). Either can be None.
-        """
-        try:
-            response = self.fetch_page(url)
-            if not response:
-                return None, None
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-
-            # Strategy 1: Try JSON-LD first (most reliable)
-            published_dt = self._extract_datetime_from_jsonld(soup)
-            updated_dt = self._extract_updated_datetime_from_jsonld(soup)
-
-            if published_dt:
-                logging.debug(f"Extracted datetime from JSON-LD: {published_dt}")
-                return published_dt, updated_dt
-
-            # Strategy 2: Try text parsing
-            published_dt, updated_dt = self._extract_datetime_from_text(soup)
-
-            if published_dt:
-                logging.debug(f"Extracted datetime from text: {published_dt}")
-                return published_dt, updated_dt
-
-            # No datetime found
-            logging.debug(f"Could not extract datetime from {url}")
-            return None, None
-
-        except Exception as e:
-            logging.error(f"Error extracting datetime from {url}: {str(e)}")
-            return None, None
 
     def get_article_content(self, url: str) -> Tuple[str, Optional[str], Optional[datetime], Optional[datetime], List[str], Optional[str], Optional[str], Optional[str]]:
         """
@@ -731,8 +717,11 @@ class WebScraper:
             # Extract image before cleaning
             image_url = self._extract_image_url(article_body)
 
-            # Extract datetimes
-            published_dt, updated_dt = self.extract_published_datetime(url)
+            # Extract datetimes from already-fetched soup (avoid redundant HTTP request)
+            published_dt = self._extract_datetime_from_jsonld(soup)
+            updated_dt = self._extract_updated_datetime_from_jsonld(soup)
+            if not published_dt:
+                published_dt, updated_dt = self._extract_datetime_from_text(soup)
 
             # Clean HTML with validation (pass editorial_lead and subtitle for removal)
             cleaned_html = self._clean_html_with_validation(article_body, url, editorial_lead, subtitle)
