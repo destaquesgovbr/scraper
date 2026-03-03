@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 @dag(
     dag_id="scrape_ebc",
     description="Scrape notícias EBC (Agência Brasil, TV Brasil)",
-    schedule="*/15 * * * *",
+    schedule="0/10 * * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,

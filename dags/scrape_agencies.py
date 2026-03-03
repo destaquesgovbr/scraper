@@ -1,11 +1,12 @@
 """
-Gera ~158 DAGs de scraping, uma por agência gov.br.
+Gera ~155 DAGs de scraping, uma por agência gov.br.
 
 Cada DAG:
-- Roda a cada 15 minutos
+- Roda a cada 10 minutos, com offset de minuto baseado no índice da agência
+  (distribui uniformemente ao longo da janela de 10 min, ~16 DAGs por minuto)
 - Chama a Scraper API no Cloud Run via HTTP
 - Retry: 2x com backoff de 5 min
-- Timeout: 15 min por execução
+- Timeout: 10 min por execução
 """
 import json
 import logging
@@ -44,13 +45,13 @@ def _load_agencies_config() -> dict:
     return active_agencies
 
 
-def create_scraper_dag(agency_key: str, agency_url: str):
+def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0):
     """Factory que cria uma DAG de scraping para uma agência."""
 
     @dag(
         dag_id=f"scrape_{agency_key}",
         description=f"Scrape notícias de {agency_key}",
-        schedule="*/15 * * * *",
+        schedule=f"{minute_offset}/10 * * * *",
         start_date=datetime(2025, 1, 1),
         catchup=False,
         max_active_runs=1,
@@ -61,7 +62,7 @@ def create_scraper_dag(agency_key: str, agency_url: str):
             "retry_delay": timedelta(minutes=5),
             "retry_exponential_backoff": True,
             "max_retry_delay": timedelta(minutes=15),
-            "execution_timeout": timedelta(minutes=15),
+            "execution_timeout": timedelta(minutes=10),
         },
     )
     def scraper_dag():
@@ -111,6 +112,8 @@ def create_scraper_dag(agency_key: str, agency_url: str):
     return scraper_dag()
 
 
-# Gerar DAGs dinamicamente
-for key, url in _load_agencies_config().items():
-    globals()[f"scrape_{key}"] = create_scraper_dag(key, url)
+# Gerar DAGs dinamicamente com offsets de minuto distribuídos
+# sorted() garante ordenação determinística (mesmo offset para mesma agência)
+for idx, (key, url) in enumerate(sorted(_load_agencies_config().items())):
+    minute_offset = idx % 10
+    globals()[f"scrape_{key}"] = create_scraper_dag(key, url, minute_offset)
