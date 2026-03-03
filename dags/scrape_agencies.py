@@ -107,6 +107,14 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
             result = response.json()
             logger.info("Scraper API response:\n%s", json.dumps(result, indent=2, ensure_ascii=False))
 
+            # Verificar status da resposta (API pode retornar 200 com falha lógica)
+            if result.get("status") in ("failed", "partial"):
+                from airflow.exceptions import AirflowException
+                errors = result.get("errors", [])
+                raise AirflowException(
+                    f"Scraping {result['status']} for {agency_key}: {errors}"
+                )
+
         scrape()
 
     return scraper_dag()
