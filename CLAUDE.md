@@ -11,7 +11,7 @@ A coleta é orquestrada por **DAGs Airflow** (Cloud Composer) que chamam a **API
 ## Arquitetura
 
 ```
-DAGs Airflow (a cada 15min)
+DAGs Airflow (a cada 10min, distribuídas por offset de minuto)
     → HTTP POST para Cloud Run API
         → Scraper faz fetch do site gov.br
             → Parse HTML → Markdown
@@ -37,7 +37,7 @@ scraper/
 │   └── models/
 │       └── news.py               # Modelos Pydantic
 ├── dags/                          # DAGs Airflow (deploy → {bucket}/scraper/)
-│   ├── scrape_agencies.py         # ~158 DAGs dinâmicas (1 por agência)
+│   ├── scrape_agencies.py         # ~155 DAGs dinâmicas (1 por agência)
 │   ├── scrape_ebc.py              # 1 DAG para sites EBC
 │   └── config/
 │       └── site_urls.yaml         # Config de agências para as DAGs
@@ -90,13 +90,13 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 
 | DAG | Quantidade | Schedule | Descrição |
 |-----|-----------|----------|-----------|
-| `scrape_{agency_key}` | ~158 | A cada 15min | 1 DAG por agência gov.br |
-| `scrape_ebc` | 1 | A cada 15min | Sites EBC |
+| `scrape_{agency_key}` | ~155 | A cada 10min (offset 0-9) | 1 DAG por agência gov.br |
+| `scrape_ebc` | 1 | A cada 10min (offset 0) | Sites EBC |
 
 Cada DAG:
 - Chama a API no Cloud Run via HTTP POST
 - Retry: 2x com backoff de 5min
-- Timeout: 15min por execução
+- Timeout: 10min por execução
 
 ## Deploy
 
