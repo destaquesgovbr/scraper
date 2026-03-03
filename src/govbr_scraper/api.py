@@ -9,6 +9,7 @@ import logging
 import os
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -84,14 +85,17 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
     if errors and not metrics["agencies_processed"]:
         status = "failed"
         message = "All agencies failed"
+        http_status = 500
     elif errors:
         status = "partial"
         message = f"Completed with {len(errors)} error(s)"
+        http_status = 207  # Multi-Status
     else:
         status = "completed"
         message = "Scraping completed"
+        http_status = 200
 
-    return ScrapeResponse(
+    response = ScrapeResponse(
         status=status,
         start_date=req.start_date,
         end_date=end,
@@ -101,6 +105,7 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
         errors=errors,
         message=message,
     )
+    return JSONResponse(content=response.model_dump(), status_code=http_status)
 
 
 @app.post("/scrape/ebc", response_model=ScrapeResponse)
@@ -129,14 +134,17 @@ def scrape_ebc(req: ScrapeEBCRequest):
     if errors and not metrics["agencies_processed"]:
         status = "failed"
         message = f"EBC scraping failed: {errors[0].error}"
+        http_status = 500
     elif errors:
         status = "partial"
         message = f"Completed with {len(errors)} error(s)"
+        http_status = 207  # Multi-Status
     else:
         status = "completed"
         message = "EBC scraping completed"
+        http_status = 200
 
-    return ScrapeResponse(
+    response = ScrapeResponse(
         status=status,
         start_date=req.start_date,
         end_date=end,
@@ -146,3 +154,4 @@ def scrape_ebc(req: ScrapeEBCRequest):
         errors=errors,
         message=message,
     )
+    return JSONResponse(content=response.model_dump(), status_code=http_status)

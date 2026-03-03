@@ -64,6 +64,14 @@ def scrape_ebc_dag():
         result = response.json()
         logger.info("Scraper API response:\n%s", json.dumps(result, indent=2, ensure_ascii=False))
 
+        # Verificar status da resposta (API pode retornar 200 com falha lógica)
+        if result.get("status") in ("failed", "partial"):
+            from airflow.exceptions import AirflowException
+            errors = result.get("errors", [])
+            raise AirflowException(
+                f"EBC scraping {result['status']}: {errors}"
+            )
+
     scrape_ebc()
 
 
