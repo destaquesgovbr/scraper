@@ -146,7 +146,7 @@ agencies:
     url: https://www.gov.br/cti/pt-br/assuntos/noticias
     active: true
   ctir:
-    url: https://www.gov.br/ctir/pt-br/assuntos/noticias/2025
+    url: https://www.gov.br/ctir/pt-br/assuntos/noticias
     active: true
   cultura:
     url: https://www.gov.br/cultura/pt-br/assuntos/noticias
@@ -218,7 +218,7 @@ agencies:
     url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2025
     active: true
   hfa:
-    url: https://www.gov.br/hfa/pt-br/noticias?b_start:int=0
+    url: https://www.gov.br/hfa/pt-br/noticias
     active: true
   ibama:
     url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
@@ -247,7 +247,9 @@ agencies:
     active: true
   imprensanacional:
     url: https://www.gov.br/imprensanacional/pt-br/assuntos/noticias
-    active: true
+    active: false
+    disabled_date: "2026-03-04"
+    disabled_reason: "URL retorna 404. Site não tem página de notícias padrão."
   inca:
     url: https://www.gov.br/inca/pt-br/assuntos/noticias
     active: true
@@ -459,7 +461,7 @@ agencies:
     active: false
     disabled_date: "2025-01-15"
   sri:
-    url: https://www.gov.br/sri/pt-br/noticias/mais-noticias/ultimas-noticias
+    url: https://www.gov.br/sri/pt-br/noticias
     active: true
   sudam:
     url: https://www.gov.br/sudam/pt-br/noticias-1
