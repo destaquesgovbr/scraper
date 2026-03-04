@@ -83,7 +83,7 @@ class ScrapeManager:
             webscrapers = []
             for agency_name, url in agency_urls.items():
                 try:
-                    known_urls = self.storage.get_recent_urls(agency_name)
+                    known_urls = self.dataset_manager.get_recent_urls(agency_name)
                 except Exception:
                     known_urls = set()  # Fallback: no optimization
                 webscrapers.append(
