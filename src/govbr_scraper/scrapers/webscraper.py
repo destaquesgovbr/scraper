@@ -46,13 +46,16 @@ DEFAULT_HEADERS = {
 
 
 class WebScraper:
-    def __init__(self, min_date: str, base_url: str, max_date: Optional[str] = None):
+    KNOWN_URL_STOP_THRESHOLD = 3
+
+    def __init__(self, min_date: str, base_url: str, max_date: Optional[str] = None, known_urls: Optional[set] = None):
         """
         Initialize the scraper with minimum and maximum dates, and base URL.
 
         :param min_date: The minimum date for scraping news (format: YYYY-MM-DD).
         :param base_url: The base URL of the agency's news page.
         :param max_date: The maximum date for scraping news (format: YYYY-MM-DD).
+        :param known_urls: Set of article URLs already in the database (for skip/stop optimization).
         """
         self.base_url = base_url
         self.min_date = datetime.strptime(min_date, "%Y-%m-%d").date()
@@ -62,6 +65,8 @@ class WebScraper:
             self.max_date = None
         self.news_data = []
         self.agency = self.get_agency_name()
+        self.known_urls = known_urls or set()
+        self._consecutive_known = 0
 
     def get_agency_name(self) -> str:
         """
@@ -241,6 +246,22 @@ class WebScraper:
                     f"Skipping news dated {news_date} as it is newer than max_date {self.max_date}."
                 )
                 return True  # Skip this item
+
+        # Known URL fence: skip articles already in the database
+        if url in self.known_urls:
+            self._consecutive_known += 1
+            logging.info(
+                f"Skipping known article ({self._consecutive_known}/{self.KNOWN_URL_STOP_THRESHOLD}): {url}"
+            )
+            if self._consecutive_known >= self.KNOWN_URL_STOP_THRESHOLD:
+                logging.info(
+                    f"Known URL fence: {self.KNOWN_URL_STOP_THRESHOLD} consecutive known articles. Stopping."
+                )
+                return False
+            return True  # Skip but continue
+
+        # Reset consecutive counter on new article
+        self._consecutive_known = 0
 
         # Extract tags from listing (rarely works, but try anyway)
         tags_from_listing = self.extract_tags(item)

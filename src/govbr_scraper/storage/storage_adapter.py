@@ -45,6 +45,10 @@ class StorageAdapter:
             self._postgres_manager.load_cache()
         return self._postgres_manager
 
+    def get_recent_urls(self, agency_key: str, limit: int = 200) -> set[str]:
+        """Return recent article URLs for an agency (for known URL fence optimization)."""
+        return self.postgres.get_recent_urls(agency_key, limit)
+
     def insert(self, new_data: OrderedDict, allow_update: bool = False) -> int:
         """
         Insert new records into PostgreSQL.

@@ -135,6 +135,22 @@ class PostgresManager:
         logger.info("Closing all database connections")
         self.pool.closeall()
 
+    def get_recent_urls(self, agency_key: str, limit: int = 200) -> set[str]:
+        """Return URLs of recent articles for an agency (used for known URL fence optimization)."""
+        query = """
+            SELECT url FROM news
+            WHERE agency_key = %s AND url IS NOT NULL
+            ORDER BY published_at DESC
+            LIMIT %s
+        """
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, (agency_key, limit))
+                return {row[0] for row in cur.fetchall()}
+        finally:
+            self.pool.putconn(conn)
+
     def load_cache(self) -> None:
         """Load agencies and themes into memory cache."""
         if self._cache_loaded:

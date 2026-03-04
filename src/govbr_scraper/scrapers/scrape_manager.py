@@ -79,10 +79,16 @@ class ScrapeManager:
                 agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
 
             # Create list of (agency_name, scraper) tuples
-            webscrapers = [
-                (agency_name, WebScraper(min_date, url, max_date=max_date))
-                for agency_name, url in agency_urls.items()
-            ]
+            # Query known URLs for each agency to enable early stop optimization
+            webscrapers = []
+            for agency_name, url in agency_urls.items():
+                try:
+                    known_urls = self.storage.get_recent_urls(agency_name)
+                except Exception:
+                    known_urls = set()  # Fallback: no optimization
+                webscrapers.append(
+                    (agency_name, WebScraper(min_date, url, max_date=max_date, known_urls=known_urls))
+                )
 
             if sequential:
                 for agency_name, scraper in webscrapers:
