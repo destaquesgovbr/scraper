@@ -842,8 +842,8 @@ class WebScraper:
         :param cleaned_stats: Statistics after cleaning
         :return: True if over-cleaned, False otherwise
         """
-        paragraph_threshold = 0.2  # Keep at least 20% of paragraphs
-        length_threshold = 0.1     # Keep at least 10% of content length
+        paragraph_threshold = 0.4  # Keep at least 40% of paragraphs
+        length_threshold = 0.25    # Keep at least 25% of content length
 
         paragraphs_ok = cleaned_stats['paragraphs'] >= original_stats['paragraphs'] * paragraph_threshold
         length_ok = cleaned_stats['length'] >= original_stats['length'] * length_threshold
@@ -1063,10 +1063,14 @@ class WebScraper:
     def _remove_contact_elements(self, soup):
         """
         Remove contact information and press/communications elements.
+        Only removes SHORT elements (standalone metadata) to avoid destroying
+        legitimate article content that mentions these keywords.
 
         :param soup: BeautifulSoup object to clean
         """
-        # Remove assessoria/communication elements
+        max_contact_element_length = 150
+
+        # Remove assessoria/communication elements (only short standalone ones)
         contact_keywords = [
             "Assessoria de Comunicação", "Assessoria de Imprensa",
             "assessoria de comunicação", "assessoria de imprensa",
@@ -1078,16 +1082,21 @@ class WebScraper:
             for elem in elements:
                 try:
                     if elem.parent:
-                        elem.parent.decompose()
+                        parent_text = elem.parent.get_text().strip()
+                        if len(parent_text) <= max_contact_element_length:
+                            elem.parent.decompose()
                 except AttributeError:
                     pass
 
-        # Remove phone numbers (pattern: (XX) XXXX-XXXX)
+        # Remove phone numbers only if the parent element is short (standalone phone)
+        max_phone_element_length = 80
         phone_elements = soup.find_all(string=lambda text: text and re.search(r'\(\d{2}\)\s*\d{4}[-\s]?\d{4}', text) if text else False)
         for elem in phone_elements:
             try:
                 if elem.parent:
-                    elem.parent.decompose()
+                    parent_text = elem.parent.get_text().strip()
+                    if len(parent_text) <= max_phone_element_length:
+                        elem.parent.decompose()
             except AttributeError:
                 pass
 
@@ -1109,6 +1118,8 @@ class WebScraper:
     def _clean_markdown_content(self, content: str) -> str:
         """
         Apply additional cleaning to the markdown content.
+        Includes a fallback mechanism: if junk-line filtering removes too much
+        content, falls back to minimal cleaning (whitespace and header cleanup only).
 
         :param content: Raw markdown content
         :return: Cleaned markdown content
@@ -1116,6 +1127,34 @@ class WebScraper:
         if not content:
             return content
 
+        # First pass: full cleaning with _is_junk_line
+        cleaned_content = self._apply_markdown_cleaning(content, use_junk_filter=True)
+
+        # Fallback: if junk filtering removed too much, redo without it
+        original_non_empty = sum(1 for line in content.split('\n') if line.strip())
+        cleaned_non_empty = sum(1 for line in cleaned_content.split('\n') if line.strip())
+
+        # Only activate fallback for substantial content (>=5 non-empty lines)
+        # to avoid false positives on short inputs where a few junk lines skew the ratio
+        min_lines_for_fallback = 5
+        if original_non_empty >= min_lines_for_fallback and cleaned_non_empty < original_non_empty * 0.5:
+            logging.warning(
+                f"Markdown cleaning removed too many lines "
+                f"({original_non_empty} → {cleaned_non_empty}). "
+                f"Falling back to minimal markdown cleaning."
+            )
+            cleaned_content = self._apply_markdown_cleaning(content, use_junk_filter=False)
+
+        return cleaned_content
+
+    def _apply_markdown_cleaning(self, content: str, use_junk_filter: bool = True) -> str:
+        """
+        Apply markdown cleaning with optional junk-line filtering.
+
+        :param content: Raw markdown content
+        :param use_junk_filter: Whether to apply _is_junk_line filtering
+        :return: Cleaned markdown content
+        """
         lines = content.split('\n')
         cleaned_lines = []
 
@@ -1129,8 +1168,8 @@ class WebScraper:
             if not content_started and not line_stripped:
                 continue
 
-            # Skip lines that are obviously junk
-            if self._is_junk_line(line_stripped):
+            # Skip lines that are obviously junk (only if filter is enabled)
+            if use_junk_filter and self._is_junk_line(line_stripped):
                 continue
 
             # Remove title lines with "===" patterns (markdown headers from HTML conversion)
@@ -1138,8 +1177,9 @@ class WebScraper:
                 continue
 
             # Start including content after we find a meaningful line
-            if not content_started and line_stripped and not self._is_junk_line(line_stripped):
-                content_started = True
+            if not content_started and line_stripped:
+                if not use_junk_filter or not self._is_junk_line(line_stripped):
+                    content_started = True
 
             if content_started:
                 cleaned_lines.append(line)
@@ -1158,6 +1198,8 @@ class WebScraper:
     def _is_junk_line(self, line: str) -> bool:
         """
         Check if a line contains junk content that should be removed.
+        Uses contextual detection: short standalone metadata lines are junk,
+        but longer lines containing the same keywords in article context are not.
 
         :param line: Line to check
         :return: True if the line is junk, False otherwise
@@ -1166,9 +1208,11 @@ class WebScraper:
             return False
 
         line_lower = line.lower()
+        # Strip markdown bold/italic markers for pattern matching
+        line_stripped = re.sub(r'[\*_]', '', line_lower).strip()
 
-        # Junk patterns
-        junk_patterns = [
+        # Always-junk patterns (safe regardless of context)
+        always_junk_patterns = [
             # Navigation/breadcrumb
             r'^notícias?$',
             r'^home\s*$',
@@ -1183,26 +1227,36 @@ class WebScraper:
             r'instagram\.com',
             r'youtube\.com',
 
-            # Metadata
+            # Metadata labels
             r'^publicado em',
             r'^atualizado em',
             r'^categoria',
             r'^tags?:',
 
-            # Contact info
-            r'assessoria',
-            r'comunicação',
-            r'imprensa',
+            # Email-only lines
+            r'^[\w.+-]+@[\w.-]+\.\w+$',
             r'ascom@',
-            r'\(\d{2}\)\s*\d{4}[-\s]?\d{4}',  # Phone numbers
 
             # Copy link text
             r'copiar para área de transferência',
             r'copiar link',
         ]
 
-        for pattern in junk_patterns:
+        for pattern in always_junk_patterns:
             if re.search(pattern, line_lower):
+                return True
+
+        # Context-dependent patterns: only junk if the line is SHORT (standalone metadata)
+        # Long lines containing these words are legitimate article content
+        max_junk_length = 80
+
+        if len(line_stripped) <= max_junk_length:
+            # Standalone attribution lines (e.g., "Assessoria de Comunicação - MDS")
+            if re.match(r'^assessoria\s+de\s+(comunicação|imprensa)', line_stripped):
+                return True
+
+            # Standalone phone numbers (line is just the phone, not a sentence)
+            if re.match(r'^\(?\d{2}\)?\s*\d{4,5}[-\s]?\d{4}$', line_stripped):
                 return True
 
         return False
