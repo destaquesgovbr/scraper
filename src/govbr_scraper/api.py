@@ -108,6 +108,34 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
     return JSONResponse(content=response.model_dump(), status_code=http_status)
 
 
+class VerifyArticle(BaseModel):
+    unique_id: str
+    url: str | None = None
+    image_url: str | None = None
+    content_hash: str | None = None
+    source_etag: str | None = None
+    check_content: bool = False
+
+
+class VerifyRequest(BaseModel):
+    articles: list[VerifyArticle]
+
+
+@app.post("/verify/integrity")
+def verify_integrity(req: VerifyRequest):
+    from govbr_scraper.integrity.service import verify_batch
+
+    logger.info(f"Verificando integridade de {len(req.articles)} artigos")
+
+    try:
+        result = verify_batch([a.model_dump() for a in req.articles])
+    except Exception as e:
+        logger.error(f"Verificação de integridade falhou: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
+
+
 @app.post("/scrape/ebc", response_model=ScrapeResponse)
 def scrape_ebc(req: ScrapeEBCRequest):
     from govbr_scraper.storage import StorageAdapter
