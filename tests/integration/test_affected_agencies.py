@@ -28,21 +28,29 @@ WORKING_AGENCY = {
     "url": "https://www.gov.br/mec/pt-br/assuntos/noticias",
 }
 
-# The 12 affected agencies from Issue #19
-AFFECTED_AGENCIES = {
+# Agencies that work with BeautifulSoup (traditional HTML templates)
+SCRAPABLE_AGENCIES = {
     "palmares": "https://www.gov.br/palmares/pt-br/assuntos/noticias",
     "sudam": "https://www.gov.br/sudam/pt-br/noticias-1",
+    "cemaden": "https://www.gov.br/cemaden/pt-br/assuntos/noticias-cemaden/ultimas-noticias",
+    "semanaenef": "https://www.gov.br/semanaenef/pt-br/noticias",
+    "sri": "https://www.gov.br/sri/pt-br/noticias",
+}
+
+# Agencies that use Volto/SPA (require JavaScript to render content)
+# These cannot be scraped with BeautifulSoup - require Playwright/Selenium
+SPA_AGENCIES = {
     "ctir": "https://www.gov.br/ctir/pt-br/assuntos/noticias",
     "esporte": "https://www.gov.br/esporte/pt-br/noticias-e-conteudos/esporte",
     "hfa": "https://www.gov.br/hfa/pt-br/noticias",
-    "cemaden": "https://www.gov.br/cemaden/pt-br/assuntos/noticias-cemaden/ultimas-noticias",
     "memp": "https://www.gov.br/memp/pt-br/assuntos/noticias",
     "reconstrucaors": "https://www.gov.br/reconstrucaors/pt-br/acompanhe-a-reconstrucao/noticias",
     "esg": "https://www.gov.br/esg/pt-br/centrais-de-conteudo/noticias",
-    "semanaenef": "https://www.gov.br/semanaenef/pt-br/noticias",
     "ctav": "https://www.gov.br/ctav/pt-br/noticias",
-    "sri": "https://www.gov.br/sri/pt-br/noticias",
 }
+
+# All agencies combined (for reference/reporting)
+AFFECTED_AGENCIES = {**SCRAPABLE_AGENCIES, **SPA_AGENCIES}
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -133,15 +141,17 @@ def find_news_items(html_content: bytes) -> list:
 @pytest.mark.integration
 class TestScraperFindsArticles:
     """
-    Core test: Verify that the scraper finds articles on affected agencies.
+    Core test: Verify that the scraper finds articles on scrapable agencies.
 
     Before the fix, these agencies returned 0 articles with large response sizes,
     causing ScrapingError. After the fix, articles should be found.
+
+    Note: SPA agencies (Volto/React) are excluded as they require JavaScript.
     """
 
-    @pytest.mark.parametrize("agency_key", AFFECTED_AGENCIES.keys())
-    def test_finds_articles_on_affected_agency(self, affected_agencies_data, agency_key):
-        """The scraper must find at least 1 article on each affected agency."""
+    @pytest.mark.parametrize("agency_key", SCRAPABLE_AGENCIES.keys())
+    def test_finds_articles_on_scrapable_agency(self, affected_agencies_data, agency_key):
+        """The scraper must find at least 1 article on each scrapable agency."""
         page_data = affected_agencies_data.get(agency_key)
 
         if "error" in page_data:
@@ -170,13 +180,15 @@ class TestScraperFindsArticles:
 @pytest.mark.integration
 class TestScraperExtractsFields:
     """
-    Verify that the scraper extracts the same fields from affected agencies
+    Verify that the scraper extracts the same fields from scrapable agencies
     that it extracts from working agencies: title, url, date.
+
+    Note: SPA agencies are excluded as they require JavaScript.
     """
 
-    @pytest.mark.parametrize("agency_key", AFFECTED_AGENCIES.keys())
+    @pytest.mark.parametrize("agency_key", SCRAPABLE_AGENCIES.keys())
     def test_extracts_title_and_url(self, affected_agencies_data, agency_key):
-        """Affected agencies must extract valid title and URL from at least some items."""
+        """Scrapable agencies must extract valid title and URL from at least some items."""
         page_data = affected_agencies_data.get(agency_key)
 
         if "error" in page_data:
@@ -186,7 +198,7 @@ class TestScraperExtractsFields:
         if not news_items:
             pytest.skip(f"No articles found for {agency_key}")
 
-        scraper = create_scraper(AFFECTED_AGENCIES[agency_key])
+        scraper = create_scraper(SCRAPABLE_AGENCIES[agency_key])
 
         # Check first 5 items for valid titles (some may be images without text)
         valid_titles = 0
@@ -197,9 +209,9 @@ class TestScraperExtractsFields:
 
         assert valid_titles > 0, f"{agency_key}: No valid titles found in first 5 items"
 
-    @pytest.mark.parametrize("agency_key", AFFECTED_AGENCIES.keys())
+    @pytest.mark.parametrize("agency_key", SCRAPABLE_AGENCIES.keys())
     def test_extracts_date(self, affected_agencies_data, agency_key):
-        """Affected agencies must extract valid date from at least some articles."""
+        """Scrapable agencies must extract valid date from at least some articles."""
         page_data = affected_agencies_data.get(agency_key)
 
         if "error" in page_data:
@@ -209,7 +221,7 @@ class TestScraperExtractsFields:
         if not news_items:
             pytest.skip(f"No articles found for {agency_key}")
 
-        scraper = create_scraper(AFFECTED_AGENCIES[agency_key])
+        scraper = create_scraper(SCRAPABLE_AGENCIES[agency_key])
 
         # Check first 5 articles for dates
         dates_extracted = 0
@@ -249,11 +261,11 @@ class TestComparisonWithWorkingAgency:
         assert url != "No URL", "Working agency should extract URL"
         assert extracted_date is not None, "Working agency should extract date"
 
-    @pytest.mark.parametrize("agency_key", ["palmares", "sudam", "ctir"])
-    def test_affected_agency_matches_working_quality(
+    @pytest.mark.parametrize("agency_key", ["palmares", "sudam"])
+    def test_scrapable_agency_matches_working_quality(
         self, affected_agencies_data, working_agency_data, agency_key
     ):
-        """Affected agencies should extract data with same quality as working agency."""
+        """Scrapable agencies should extract data with same quality as working agency."""
         page_data = affected_agencies_data.get(agency_key)
 
         if "error" in page_data:
@@ -270,7 +282,7 @@ class TestComparisonWithWorkingAgency:
         if not affected_items:
             pytest.skip(f"No articles found for {agency_key}")
 
-        affected_scraper = create_scraper(AFFECTED_AGENCIES[agency_key])
+        affected_scraper = create_scraper(SCRAPABLE_AGENCIES[agency_key])
         affected_title, affected_url = affected_scraper.extract_title_and_url(affected_items[0])
 
         # Compare: both should have valid data
@@ -304,7 +316,7 @@ class TestExtractionFunctions:
         if not article_containers:
             pytest.skip("No article-container found on palmares")
 
-        scraper = create_scraper(AFFECTED_AGENCIES["palmares"])
+        scraper = create_scraper(SCRAPABLE_AGENCIES["palmares"])
 
         # Test extract_date_3 directly
         for item in article_containers[:3]:
@@ -315,32 +327,6 @@ class TestExtractionFunctions:
 
         # It's OK if some pages don't have dates in this format
         pytest.skip("No dates found with extract_date_3 pattern")
-
-    def test_extract_date_4_on_nitf_pattern(self, affected_agencies_data):
-        """Test extract_date_4 works on collective.nitf pattern (sudam)."""
-        page_data = affected_agencies_data.get("sudam")
-
-        if "error" in page_data:
-            pytest.skip("Could not fetch sudam")
-
-        soup = BeautifulSoup(page_data["html"], "html.parser")
-        nitf_links = soup.find_all("a", class_="collective.nitf.content")
-
-        if not nitf_links:
-            pytest.skip("No collective.nitf.content found on sudam")
-
-        scraper = create_scraper(AFFECTED_AGENCIES["sudam"])
-
-        # Test extract_date_4 on parent elements
-        for link in nitf_links[:3]:
-            item = link.parent
-            if item:
-                result = scraper.extract_date_4(item)
-                if result is not None:
-                    assert isinstance(result, datetime)
-                    return  # Found at least one date
-
-        pytest.skip("No dates found with extract_date_4 pattern")
 
 
 # =============================================================================

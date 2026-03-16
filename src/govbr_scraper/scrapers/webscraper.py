@@ -377,8 +377,6 @@ class WebScraper:
             result = self.extract_date_2(item)
         if not result:
             result = self.extract_date_3(item)
-        if not result:
-            result = self.extract_date_4(item)
 
         if not result:
             logging.error("No date found in news item.")
@@ -388,23 +386,36 @@ class WebScraper:
 
     def extract_date_1(self, item) -> Optional[datetime]:
         """
-        Extract the date from a news item using the first strategy.
+        Extract the date from span.documentByLine if present.
+        Uses regex to handle various date formats like "DD/MM/YYYY HH:mm".
 
         :param item: A BeautifulSoup tag representing a single news item.
         :return: The date as a datetime.datetime object or None if not found.
         """
         date_tag = item.find("span", class_="documentByLine")
-        date_str = date_tag.get_text().strip() if date_tag else ""
+        if not date_tag:
+            return None
 
-        if date_str:
-            date_parts = date_str.split()
-            if len(date_parts) > 1:
-                clean_date_str = date_parts[1]
-                try:
-                    return datetime.strptime(clean_date_str, "%d/%m/%Y")
-                except ValueError:
-                    logging.warning(f"Date format not recognized: {clean_date_str}")
-                    return None
+        text = date_tag.get_text()
+
+        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day), int(hour), int(minute))
+            except ValueError:
+                return None
+
+        # Fallback: date without time
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
+        if match:
+            day, month, year = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day))
+            except ValueError:
+                return None
+
         return None
 
     def extract_date_2(self, item) -> Optional[datetime]:
@@ -447,40 +458,6 @@ class WebScraper:
                 return datetime(int(year), int(month), int(day), int(hour), int(minute))
             except ValueError:
                 logging.warning(f"Invalid date values in text")
-                return None
-
-        # Fallback: date without time
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
-        if match:
-            day, month, year = match.groups()
-            try:
-                return datetime(int(year), int(month), int(day))
-            except ValueError:
-                return None
-
-        return None
-
-    def extract_date_4(self, item) -> Optional[datetime]:
-        """
-        Extract the date from span.documentByLine if present.
-        Fallback for article.entry pattern (SUDAM, CTIR, etc.).
-
-        :param item: A BeautifulSoup tag representing a single news item.
-        :return: The date as a datetime.datetime object or None if not found.
-        """
-        date_tag = item.find("span", class_="documentByLine")
-        if not date_tag:
-            return None
-
-        text = date_tag.get_text()
-
-        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
-        if match:
-            day, month, year, hour, minute = match.groups()
-            try:
-                return datetime(int(year), int(month), int(day), int(hour), int(minute))
-            except ValueError:
                 return None
 
         # Fallback: date without time
