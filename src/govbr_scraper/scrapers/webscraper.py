@@ -188,10 +188,16 @@ class WebScraper:
                 news_items = entries_container.find_all("article", class_="entry")
 
         # Fallback 3: div.item (Palmares, HFA, etc.)
+        # Filter to only include items with valid article links
         if not news_items:
             content_core = soup.find("div", id="content-core")
             if content_core:
-                news_items = content_core.find_all("div", class_="item")
+                potential_items = content_core.find_all("div", class_="item")
+                # Validate: item must contain at least one <a> tag with href
+                news_items = [
+                    item for item in potential_items
+                    if item.find("a", href=True)
+                ]
 
         items_per_page = len(news_items)
         logging.info(f"Found {items_per_page} news articles on the page")
@@ -338,8 +344,19 @@ class WebScraper:
             title_tag = item.find("a", class_="summary")
 
         # Strategy 4: Fallback - any <a> tag with href
+        # Exclude common non-article links (share, social, navigation)
         if not title_tag:
-            title_tag = item.find("a", href=True)
+            exclude_classes = ['share', 'social', 'nav', 'menu', 'button', 'icon']
+            for link in item.find_all("a", href=True):
+                link_classes = link.get('class', [])
+                # Skip if link has any excluded class
+                if any(exclude in ' '.join(link_classes).lower() for exclude in exclude_classes):
+                    continue
+                # Skip if link has no text content (likely an icon/image link)
+                if not link.get_text(strip=True):
+                    continue
+                title_tag = link
+                break
 
         title = title_tag.get_text().strip() if title_tag else "No Title"
         url = title_tag["href"] if title_tag else "No URL"
@@ -365,6 +382,39 @@ class WebScraper:
 
         return category_tag.get_text().strip() if category_tag else "No Category"
 
+    def _parse_date_from_text(self, text: str) -> Optional[datetime]:
+        """
+        Parse date from text using standardized regex patterns.
+        Handles formats like "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM".
+
+        :param text: Text containing date information.
+        :return: The date as a datetime.datetime object or None if not found.
+        """
+        if not text:
+            return None
+
+        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day), int(hour), int(minute))
+            except ValueError:
+                logging.warning(f"Invalid date values: {day}/{month}/{year} {hour}:{minute}")
+                return None
+
+        # Fallback: date without time
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
+        if match:
+            day, month, year = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day))
+            except ValueError:
+                logging.warning(f"Invalid date values: {day}/{month}/{year}")
+                return None
+
+        return None
+
     def extract_date(self, item) -> Optional[date]:
         """
         Extract the date from a news item using multiple strategies.
@@ -387,7 +437,7 @@ class WebScraper:
     def extract_date_1(self, item) -> Optional[datetime]:
         """
         Extract the date from span.documentByLine if present.
-        Uses regex to handle various date formats like "DD/MM/YYYY HH:mm".
+        Uses standardized regex to handle various date formats like "DD/MM/YYYY HH:mm".
 
         :param item: A BeautifulSoup tag representing a single news item.
         :return: The date as a datetime.datetime object or None if not found.
@@ -397,26 +447,7 @@ class WebScraper:
             return None
 
         text = date_tag.get_text()
-
-        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
-        if match:
-            day, month, year, hour, minute = match.groups()
-            try:
-                return datetime(int(year), int(month), int(day), int(hour), int(minute))
-            except ValueError:
-                return None
-
-        # Fallback: date without time
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
-        if match:
-            day, month, year = match.groups()
-            try:
-                return datetime(int(year), int(month), int(day))
-            except ValueError:
-                return None
-
-        return None
+        return self._parse_date_from_text(text)
 
     def extract_date_2(self, item) -> Optional[datetime]:
         """
@@ -442,34 +473,39 @@ class WebScraper:
 
     def extract_date_3(self, item) -> Optional[datetime]:
         """
-        Extract the date from a news item using regex on the item's text.
-        Handles formats like "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM".
+        Extract the date from a news item using regex on targeted elements.
+        Searches in <time> tags, datetime attributes, and date-related classes
+        before falling back to full text. Handles formats like "DD/MM/YYYY HH:mm".
 
         :param item: A BeautifulSoup tag representing a single news item.
         :return: The date as a datetime.datetime object or None if not found.
         """
-        text = item.get_text() if item else ""
+        if not item:
+            return None
 
-        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
-        if match:
-            day, month, year, hour, minute = match.groups()
+        # Strategy 1: Look for <time> tag with datetime attribute
+        time_tag = item.find("time")
+        if time_tag and time_tag.get("datetime"):
             try:
-                return datetime(int(year), int(month), int(day), int(hour), int(minute))
-            except ValueError:
-                logging.warning(f"Invalid date values in text")
-                return None
+                # Try to parse ISO format datetime attribute
+                dt_str = time_tag["datetime"]
+                return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
 
-        # Fallback: date without time
-        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
-        if match:
-            day, month, year = match.groups()
-            try:
-                return datetime(int(year), int(month), int(day))
-            except ValueError:
-                return None
+        # Strategy 2: Look for elements with date-related classes
+        date_classes = ["date", "data", "published", "publicado", "datetime", "timestamp"]
+        for cls in date_classes:
+            date_elem = item.find(class_=lambda x: x and cls in x.lower())
+            if date_elem:
+                result = self._parse_date_from_text(date_elem.get_text())
+                if result:
+                    return result
 
-        return None
+        # Strategy 3: Fallback to full item text (last resort)
+        # This may capture spurious dates from article body
+        text = item.get_text()
+        return self._parse_date_from_text(text)
 
     def extract_tags(self, item) -> List[str]:
         """
