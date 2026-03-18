@@ -1,10 +1,10 @@
-import hashlib
 import logging
 from collections import OrderedDict
 from datetime import date, datetime
 from typing import Any, Dict, List
 
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
+from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 # Set up logging configuration
@@ -274,12 +274,6 @@ class EBCScrapeManager:
         :param agency: The agency name.
         :param published_at_value: The published_at date of the news item (string format or date object).
         :param title: The title of the news item.
-        :return: A unique hash string.
+        :return: A readable slug with hash suffix (e.g., "governo-anuncia-programa_a3f2e1").
         """
-        date_str = (
-            published_at_value.isoformat()
-            if isinstance(published_at_value, date)
-            else str(published_at_value)
-        )
-        hash_input = f"{agency}_{date_str}_{title}".encode("utf-8")
-        return hashlib.md5(hash_input).hexdigest()
+        return generate_readable_unique_id(agency, published_at_value, title)
