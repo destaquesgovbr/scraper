@@ -175,13 +175,29 @@ class WebScraper:
         soup = BeautifulSoup(response.content, "html.parser")
         news_items = soup.find_all("article", class_="tileItem")
 
-        # Second HTML structure type
+        # Fallback 1: ul.noticias > li
         if not news_items:
             news_list = soup.find("ul", class_="noticias")
             if news_list:
                 news_items = news_list.find_all("li")
-            else:
-                news_items = []
+
+        # Fallback 2: article.entry inside div.entries (SUDAM, CTIR, etc.)
+        if not news_items:
+            entries_container = soup.find("div", class_="entries")
+            if entries_container:
+                news_items = entries_container.find_all("article", class_="entry")
+
+        # Fallback 3: div.item (Palmares, HFA, etc.)
+        # Filter to only include items with valid article links
+        if not news_items:
+            content_core = soup.find("div", id="content-core")
+            if content_core:
+                potential_items = content_core.find_all("div", class_="item")
+                # Validate: item must contain at least one <a> tag with href
+                news_items = [
+                    item for item in potential_items
+                    if item.find("a", href=True)
+                ]
 
         items_per_page = len(news_items)
         logging.info(f"Found {items_per_page} news articles on the page")
@@ -314,12 +330,33 @@ class WebScraper:
         :param item: A BeautifulSoup tag representing a single news item.
         :return: A tuple (title, url).
         """
-        # First structure: Look for 'a' with class 'summary url'
+        # Strategy 1: a.summary.url (main tileItem pattern)
         title_tag = item.find("a", class_="summary url")
 
-        # Second structure: Look for a plain 'a' tag if 'summary url' is not found
+        # Strategy 2: a.url inside span.summary (article.entry pattern - SUDAM, CTIR)
         if not title_tag:
-            title_tag = item.find("a")
+            summary_span = item.find("span", class_="summary")
+            if summary_span:
+                title_tag = summary_span.find("a", class_="url")
+
+        # Strategy 3: a.summary (div.item pattern - Palmares, HFA)
+        if not title_tag:
+            title_tag = item.find("a", class_="summary")
+
+        # Strategy 4: Fallback - any <a> tag with href
+        # Exclude common non-article links (share, social, navigation)
+        if not title_tag:
+            exclude_classes = ['share', 'social', 'nav', 'menu', 'button', 'icon']
+            for link in item.find_all("a", href=True):
+                link_classes = link.get('class', [])
+                # Skip if link has any excluded class
+                if any(exclude in ' '.join(link_classes).lower() for exclude in exclude_classes):
+                    continue
+                # Skip if link has no text content (likely an icon/image link)
+                if not link.get_text(strip=True):
+                    continue
+                title_tag = link
+                break
 
         title = title_tag.get_text().strip() if title_tag else "No Title"
         url = title_tag["href"] if title_tag else "No URL"
@@ -345,6 +382,39 @@ class WebScraper:
 
         return category_tag.get_text().strip() if category_tag else "No Category"
 
+    def _parse_date_from_text(self, text: str) -> Optional[datetime]:
+        """
+        Parse date from text using standardized regex patterns.
+        Handles formats like "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM".
+
+        :param text: Text containing date information.
+        :return: The date as a datetime.datetime object or None if not found.
+        """
+        if not text:
+            return None
+
+        # Regex to capture "DD/MM/YYYY HH:mm" or "DD/MM/YYYY HHhMM"
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2})[:h](\d{2})', text)
+        if match:
+            day, month, year, hour, minute = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day), int(hour), int(minute))
+            except ValueError:
+                logging.warning(f"Invalid date values: {day}/{month}/{year} {hour}:{minute}")
+                return None
+
+        # Fallback: date without time
+        match = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
+        if match:
+            day, month, year = match.groups()
+            try:
+                return datetime(int(year), int(month), int(day))
+            except ValueError:
+                logging.warning(f"Invalid date values: {day}/{month}/{year}")
+                return None
+
+        return None
+
     def extract_date(self, item) -> Optional[date]:
         """
         Extract the date from a news item using multiple strategies.
@@ -355,6 +425,8 @@ class WebScraper:
         result = self.extract_date_1(item)
         if not result:
             result = self.extract_date_2(item)
+        if not result:
+            result = self.extract_date_3(item)
 
         if not result:
             logging.error("No date found in news item.")
@@ -364,24 +436,18 @@ class WebScraper:
 
     def extract_date_1(self, item) -> Optional[datetime]:
         """
-        Extract the date from a news item using the first strategy.
+        Extract the date from span.documentByLine if present.
+        Uses standardized regex to handle various date formats like "DD/MM/YYYY HH:mm".
 
         :param item: A BeautifulSoup tag representing a single news item.
         :return: The date as a datetime.datetime object or None if not found.
         """
         date_tag = item.find("span", class_="documentByLine")
-        date_str = date_tag.get_text().strip() if date_tag else ""
+        if not date_tag:
+            return None
 
-        if date_str:
-            date_parts = date_str.split()
-            if len(date_parts) > 1:
-                clean_date_str = date_parts[1]
-                try:
-                    return datetime.strptime(clean_date_str, "%d/%m/%Y")
-                except ValueError:
-                    logging.warning(f"Date format not recognized: {clean_date_str}")
-                    return None
-        return None
+        text = date_tag.get_text()
+        return self._parse_date_from_text(text)
 
     def extract_date_2(self, item) -> Optional[datetime]:
         """
@@ -404,6 +470,42 @@ class WebScraper:
         except ValueError:
             logging.warning(f"Date format not recognized: {date_str}")
             return None
+
+    def extract_date_3(self, item) -> Optional[datetime]:
+        """
+        Extract the date from a news item using regex on targeted elements.
+        Searches in <time> tags, datetime attributes, and date-related classes
+        before falling back to full text. Handles formats like "DD/MM/YYYY HH:mm".
+
+        :param item: A BeautifulSoup tag representing a single news item.
+        :return: The date as a datetime.datetime object or None if not found.
+        """
+        if not item:
+            return None
+
+        # Strategy 1: Look for <time> tag with datetime attribute
+        time_tag = item.find("time")
+        if time_tag and time_tag.get("datetime"):
+            try:
+                # Try to parse ISO format datetime attribute
+                dt_str = time_tag["datetime"]
+                return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        # Strategy 2: Look for elements with date-related classes
+        date_classes = ["date", "data", "published", "publicado", "datetime", "timestamp"]
+        for cls in date_classes:
+            date_elem = item.find(class_=lambda x: x and cls in x.lower())
+            if date_elem:
+                result = self._parse_date_from_text(date_elem.get_text())
+                if result:
+                    return result
+
+        # Strategy 3: Fallback to full item text (last resort)
+        # This may capture spurious dates from article body
+        text = item.get_text()
+        return self._parse_date_from_text(text)
 
     def extract_tags(self, item) -> List[str]:
         """
