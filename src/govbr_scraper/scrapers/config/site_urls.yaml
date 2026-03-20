@@ -421,6 +421,7 @@ agencies:
   povosindigenas:
     url: https://www.gov.br/povosindigenas/pt-br/assuntos/noticias
     active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
     disabled_date: "2025-01-15"
   previc:
     url: https://www.gov.br/previc/pt-br/noticias
