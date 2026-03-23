@@ -141,12 +141,14 @@ agencies:
     active: true
   ctav:
     url: https://www.gov.br/ctav/pt-br/noticias
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   cti:
     url: https://www.gov.br/cti/pt-br/assuntos/noticias
     active: true
   ctir:
-    url: https://www.gov.br/ctir/pt-br/assuntos/noticias
+    url: https://www.gov.br/ctir/pt-br/assuntos/noticias/2025
     active: true
   cultura:
     url: https://www.gov.br/cultura/pt-br/assuntos/noticias
@@ -177,13 +179,17 @@ agencies:
     active: true
   esg:
     url: https://www.gov.br/esg/pt-br/centrais-de-conteudo/noticias
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   esocial:
     url: https://www.gov.br/esocial/pt-br/noticias
     active: true
   esporte:
     url: https://www.gov.br/esporte/pt-br/noticias-e-conteudos/esporte
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   fazenda:
     url: https://www.gov.br/fazenda/pt-br/assuntos/noticias
     active: true
@@ -219,7 +225,9 @@ agencies:
     active: true
   hfa:
     url: https://www.gov.br/hfa/pt-br/noticias
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   ibama:
     url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
     active: true
@@ -347,7 +355,9 @@ agencies:
     active: true
   memp:
     url: https://www.gov.br/memp/pt-br/assuntos/noticias
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   mj:
     url: https://www.gov.br/mj/pt-br/assuntos/noticias
     active: true
@@ -411,6 +421,7 @@ agencies:
   povosindigenas:
     url: https://www.gov.br/povosindigenas/pt-br/assuntos/noticias
     active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
     disabled_date: "2025-01-15"
   previc:
     url: https://www.gov.br/previc/pt-br/noticias
@@ -434,7 +445,9 @@ agencies:
     active: true
   reconstrucaors:
     url: https://www.gov.br/reconstrucaors/pt-br/acompanhe-a-reconstrucao/noticias
-    active: true
+    active: false
+    disabled_reason: "Volto/SPA - requer JavaScript"
+    disabled_date: "2026-03-18"
   saude:
     url: https://www.gov.br/saude/pt-br/assuntos/noticias
     active: true
