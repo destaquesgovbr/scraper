@@ -30,7 +30,7 @@ scraper/
 │   │   ├── ebc_webscraper.py     # Scraper EBC
 │   │   ├── ebc_scrape_manager.py # Coordenador de scraping EBC
 │   │   └── config/
-│   │       └── site_urls.yaml    # Lista de URLs por agência
+│   │       └── site_urls.yaml    # ✓ Arquivo fonte (sempre edite este)
 │   ├── storage/
 │   │   ├── storage_adapter.py    # Abstração de persistência
 │   │   └── postgres_manager.py   # Acesso ao PostgreSQL
@@ -40,18 +40,39 @@ scraper/
 │   ├── scrape_agencies.py         # ~155 DAGs dinâmicas (1 por agência)
 │   ├── scrape_ebc.py              # 1 DAG para sites EBC
 │   └── config/
-│       └── site_urls.yaml         # Config de agências para as DAGs
+│       ├── README.md              # Documentação sobre sincronização
+│       └── site_urls.yaml         # → Cópia (sincronize manualmente)
 ├── docker/
 │   └── Dockerfile                 # Imagem da API
 ├── tests/
 │   └── unit/
-│       └── test_ebc_scraper.py
+│       ├── test_ebc_scraper.py
+│       └── test_config_sync.py    # Valida sincronização no CI
 ├── pyproject.toml
 └── .github/workflows/
     ├── scraper-api-deploy.yaml    # Build + deploy Cloud Run
     ├── composer-deploy-dags.yaml  # Deploy DAGs → {bucket}/scraper/
     └── tests.yaml                 # pytest on PR
 ```
+
+### ⚠️ Importante sobre site_urls.yaml
+
+O arquivo `site_urls.yaml` existe em **dois locais** que devem ser mantidos sincronizados:
+
+- **Sempre edite:** `src/govbr_scraper/scrapers/config/site_urls.yaml` (fonte)
+- **Depois copie para:** `dags/config/site_urls.yaml` (cópia)
+
+**Comando para sincronizar:**
+```bash
+cp src/govbr_scraper/scrapers/config/site_urls.yaml dags/config/site_urls.yaml
+```
+
+**Por que dois arquivos?**
+- DAGs do Airflow são autocontidas e não importam código Python da API
+- API Cloud Run empacota o arquivo de `src/` na imagem Docker
+- Mantém separação de responsabilidades entre orquestração (DAGs) e execução (API)
+
+**Validação:** O CI valida automaticamente que os arquivos estão sincronizados via `test_config_sync.py`. PRs com arquivos dessincronizados são bloqueados.
 
 ## API Endpoints
 
