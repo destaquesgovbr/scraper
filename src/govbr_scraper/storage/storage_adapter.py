@@ -15,6 +15,11 @@ from govbr_scraper.storage.postgres_manager import PostgresManager
 from govbr_scraper.storage.event_publisher import EventPublisher
 from govbr_scraper.models.news import NewsInsert
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from govbr_scraper.models.monitoring import ScrapeRunResult
+
 
 class StorageAdapter:
     """
@@ -79,6 +84,10 @@ class StorageAdapter:
             self._event_publisher.publish_scraped(inserted_articles)
 
         return inserted
+
+    def record_scrape_run(self, run: "ScrapeRunResult") -> None:
+        """Record a scrape execution result. Delegates to PostgresManager."""
+        self.postgres.record_scrape_run(run)
 
     def _convert_to_news_insert(self, data: OrderedDict) -> list[NewsInsert]:
         """Convert OrderedDict data to list of NewsInsert objects."""
