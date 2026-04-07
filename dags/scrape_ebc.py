@@ -9,6 +9,19 @@ from airflow.decorators import dag, task
 logger = logging.getLogger(__name__)
 
 
+def _on_scrape_failure(context):
+    """Callback para log estruturado de falha na DAG de scraping."""
+    ti = context.get("task_instance")
+    dag_id = ti.dag_id if ti else "unknown"
+    task_id = ti.task_id if ti else "unknown"
+    exception = context.get("exception", "unknown")
+    try_number = ti.try_number if ti else 0
+    logger.error(
+        "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
+        dag_id, task_id, try_number, exception,
+    )
+
+
 @dag(
     dag_id="scrape_ebc",
     description="Scrape notícias EBC (Agência Brasil, TV Brasil)",
@@ -22,6 +35,7 @@ logger = logging.getLogger(__name__)
         "retries": 2,
         "retry_delay": timedelta(minutes=5),
         "execution_timeout": timedelta(minutes=30),
+        "on_failure_callback": _on_scrape_failure,
     },
 )
 def scrape_ebc_dag():
