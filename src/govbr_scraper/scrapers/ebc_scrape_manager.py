@@ -1,8 +1,11 @@
 import logging
+import time
 from collections import OrderedDict
 from datetime import date, datetime
 from typing import Any, Dict, List
 
+from govbr_scraper.models.monitoring import classify_error
+from govbr_scraper.monitoring.structured_log import log_scrape_result
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
@@ -85,8 +88,10 @@ class EBCScrapeManager:
 
             if sequential:
                 for agency_name, scraper in webscrapers:
+                    start_time = time.monotonic()
                     try:
                         scraped_data = scraper.scrape_news()
+                        elapsed = time.monotonic() - start_time
                         if scraped_data:
                             logging.info(
                                 f"Appending {len(scraped_data)} news from {agency_name} to dataset."
@@ -98,23 +103,62 @@ class EBCScrapeManager:
                         else:
                             logging.info(f"No news found for {agency_name}.")
                             agencies_processed.append(agency_name)
+                        run = log_scrape_result(
+                            agency_key=agency_name,
+                            status="success",
+                            articles_scraped=len(scraped_data) if scraped_data else 0,
+                            articles_saved=saved if scraped_data else 0,
+                            execution_time_seconds=elapsed,
+                        )
                     except Exception as e:
+                        elapsed = time.monotonic() - start_time
                         errors.append({"agency": agency_name, "error": str(e)})
                         logging.error(f"Error scraping {agency_name}: {e}")
+                        run = log_scrape_result(
+                            agency_key=agency_name,
+                            status="error",
+                            error_category=classify_error(str(e)),
+                            error_message=str(e),
+                            execution_time_seconds=elapsed,
+                        )
+                    try:
+                        self.dataset_manager.record_scrape_run(run)
+                    except Exception as tracking_err:
+                        logging.warning(f"Failed to record scrape run for {agency_name}: {tracking_err}")
             else:
                 all_news_data = []
                 for agency_name, scraper in webscrapers:
+                    start_time = time.monotonic()
                     try:
                         scraped_data = scraper.scrape_news()
+                        elapsed = time.monotonic() - start_time
                         if scraped_data:
                             all_news_data.extend(scraped_data)
                             agencies_processed.append(agency_name)
                         else:
                             logging.info(f"No news found for {agency_name}.")
                             agencies_processed.append(agency_name)
+                        run = log_scrape_result(
+                            agency_key=agency_name,
+                            status="success",
+                            articles_scraped=len(scraped_data) if scraped_data else 0,
+                            execution_time_seconds=elapsed,
+                        )
                     except Exception as e:
+                        elapsed = time.monotonic() - start_time
                         errors.append({"agency": agency_name, "error": str(e)})
                         logging.error(f"Error scraping {agency_name}: {e}")
+                        run = log_scrape_result(
+                            agency_key=agency_name,
+                            status="error",
+                            error_category=classify_error(str(e)),
+                            error_message=str(e),
+                            execution_time_seconds=elapsed,
+                        )
+                    try:
+                        self.dataset_manager.record_scrape_run(run)
+                    except Exception as tracking_err:
+                        logging.warning(f"Failed to record scrape run for {agency_name}: {tracking_err}")
 
                 if all_news_data:
                     logging.info("Appending all collected news to dataset.")
