@@ -363,7 +363,7 @@ class PostgresManager:
                     run.agency_key,
                     run.status,
                     str(run.error_category) if run.error_category else None,
-                    run.error_message,
+                    str(run.error_message)[:500] if run.error_message else None,
                     run.articles_scraped,
                     run.articles_saved,
                     run.execution_time_seconds,

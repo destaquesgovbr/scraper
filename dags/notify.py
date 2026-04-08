@@ -25,7 +25,7 @@ def send_telegram_alert(token: str, chat_id: str, message: str) -> bool:
         response = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
-            timeout=10.0,
+            timeout=5.0,
         )
         return response.status_code == 200
     except Exception as e:
