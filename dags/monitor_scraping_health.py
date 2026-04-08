@@ -48,7 +48,7 @@ def monitor_scraping_health_dag():
                 SELECT agency_key, status, error_category, scraped_at,
                        ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
                 FROM scrape_runs
-                WHERE scraped_at > NOW() - INTERVAL '24 hours'
+                WHERE scraped_at > NOW() - INTERVAL '2 hours'
             ),
             recent AS (
                 SELECT agency_key, status, error_category, scraped_at
