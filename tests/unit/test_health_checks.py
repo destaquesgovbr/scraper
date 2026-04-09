@@ -33,6 +33,12 @@ class TestFindConsecutiveFailures:
         assert len(result) == 1
         assert result[0]["agency_key"] == "mec"
 
+    def test_custom_window_hours(self):
+        mock_conn, mock_cursor = _mock_cursor_with_rows([])
+        find_consecutive_failures(mock_conn, threshold=3, window_hours=6)
+        params = mock_cursor.execute.call_args[0][1]
+        assert params["window_hours"] == 6
+
     def test_2_errors_1_success_returns_empty(self):
         mock_conn, _ = _mock_cursor_with_rows([])
         result = find_consecutive_failures(mock_conn, threshold=3)

@@ -9,22 +9,26 @@ from __future__ import annotations
 from psycopg2.extras import RealDictCursor
 
 
-def find_consecutive_failures(conn, threshold: int = 3) -> list[dict]:
+def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 2) -> list[dict]:
     """Find agencies with N or more consecutive recent failures.
 
     Args:
         conn: psycopg2 connection (or mock).
         threshold: Number of consecutive failures to trigger alert.
+        window_hours: How many hours back to look for failures.
 
     Returns:
         List of dicts with agency_key, consecutive_failures, last_error, last_failure_at.
+
+    NOTE: This query is duplicated in dags/monitor_scraping_health.py (check_consecutive_failures).
+    Changes here must be replicated there and vice-versa.
     """
     query = """
         WITH ranked AS (
             SELECT agency_key, status, error_category, scraped_at,
                    ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
             FROM scrape_runs
-            WHERE scraped_at > NOW() - INTERVAL '2 hours'
+            WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
         ),
         recent AS (
             SELECT agency_key, status, error_category, scraped_at
@@ -42,7 +46,7 @@ def find_consecutive_failures(conn, threshold: int = 3) -> list[dict]:
            AND COUNT(*) FILTER (WHERE status = 'error') = %(threshold)s
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, {"threshold": threshold})
+        cur.execute(query, {"threshold": threshold, "window_hours": window_hours})
         return [dict(row) for row in cur.fetchall()]
 
 

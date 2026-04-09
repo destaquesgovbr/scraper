@@ -41,14 +41,17 @@ def monitor_scraping_health_dag():
         from airflow.models import Variable
 
         threshold = int(Variable.get("scraper_consecutive_failure_threshold", default_var=3))
+        window_hours = int(Variable.get("scraper_failure_window_hours", default_var=2))
         database_url = Variable.get("scraper_database_url")
 
+        # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+        # (find_consecutive_failures). Changes here must be replicated there and vice-versa.
         query = """
             WITH ranked AS (
                 SELECT agency_key, status, error_category, scraped_at,
                        ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
                 FROM scrape_runs
-                WHERE scraped_at > NOW() - INTERVAL '2 hours'
+                WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
             ),
             recent AS (
                 SELECT agency_key, status, error_category, scraped_at
@@ -69,7 +72,7 @@ def monitor_scraping_health_dag():
         conn = psycopg2.connect(database_url)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, {"threshold": threshold})
+                cur.execute(query, {"threshold": threshold, "window_hours": window_hours})
                 results = [dict(row) for row in cur.fetchall()]
         finally:
             conn.close()

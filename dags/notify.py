@@ -21,15 +21,22 @@ def send_telegram_alert(token: str, chat_id: str, message: str) -> bool:
     Returns:
         True if the message was sent successfully, False otherwise.
     """
+    if not token or ":" not in token:
+        logger.error("Invalid Telegram bot token format (token not logged for security)")
+        return False
     try:
         response = httpx.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
             timeout=5.0,
         )
+        if response.status_code == 401:
+            logger.error("Telegram bot token is invalid (HTTP 401)")
+            return False
         return response.status_code == 200
     except Exception as e:
-        logger.error(f"Failed to send Telegram alert: {e}")
+        # Log only exception type to avoid leaking the token via URL in the traceback
+        logger.error(f"Failed to send Telegram alert: {type(e).__name__}")
         return False
 
 
@@ -59,7 +66,7 @@ def send_alert(
 
     if webhook_url:
         try:
-            resp = httpx.post(webhook_url, json={"text": message}, timeout=10.0)
+            resp = httpx.post(webhook_url, json={"text": message}, timeout=5.0)
             if resp.status_code < 300:
                 return True
         except Exception as e:
