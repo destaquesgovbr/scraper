@@ -40,7 +40,9 @@ def scraper_coverage_report_dag():
         from psycopg2.extras import RealDictCursor
         from airflow.models import Variable
 
-        database_url = Variable.get("scraper_database_url")
+        database_url = Variable.get("scraper_database_url", default_var="")
+        if not database_url:
+            raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
         coverage_query = """
             SELECT

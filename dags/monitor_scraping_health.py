@@ -9,11 +9,19 @@ Envia alertas via Telegram (ou loga se nao configurado).
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize(value) -> str:
+    """Remove control characters from a value before using in logs/messages."""
+    if not value:
+        return ""
+    return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(value))
 
 
 @dag(
@@ -42,7 +50,9 @@ def monitor_scraping_health_dag():
 
         threshold = int(Variable.get("scraper_consecutive_failure_threshold", default_var=3))
         window_hours = int(Variable.get("scraper_failure_window_hours", default_var=2))
-        database_url = Variable.get("scraper_database_url")
+        database_url = Variable.get("scraper_database_url", default_var="")
+        if not database_url:
+            raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
         # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
         # (find_consecutive_failures). Changes here must be replicated there and vice-versa.
@@ -81,7 +91,8 @@ def monitor_scraping_health_dag():
             logger.warning(f"Agencias com {threshold}+ falhas consecutivas: {len(results)}")
             for r in results:
                 logger.warning(
-                    f"  {r['agency_key']}: {r['last_error']} (ultima falha: {r['last_failure_at']})"
+                    f"  {_sanitize(r['agency_key'])}: {_sanitize(r['last_error'])} "
+                    f"(ultima falha: {r['last_failure_at']})"
                 )
         else:
             logger.info("Nenhuma agencia com falhas consecutivas.")
@@ -96,8 +107,12 @@ def monitor_scraping_health_dag():
         from airflow.models import Variable
 
         stale_hours = int(Variable.get("scraper_stale_hours", default_var=24))
-        database_url = Variable.get("scraper_database_url")
+        database_url = Variable.get("scraper_database_url", default_var="")
+        if not database_url:
+            raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
+        # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+        # (find_stale_agencies). Changes here must be replicated there and vice-versa.
         query = """
             SELECT
                 agency_key,
@@ -105,6 +120,7 @@ def monitor_scraping_health_dag():
                     WHERE status = 'success' AND articles_saved > 0
                 ) AS last_success_at
             FROM scrape_runs
+            WHERE scraped_at > NOW() - INTERVAL '90 days'
             GROUP BY agency_key
             HAVING MAX(scraped_at) FILTER (
                        WHERE status = 'success' AND articles_saved > 0
@@ -125,7 +141,7 @@ def monitor_scraping_health_dag():
         if results:
             logger.warning(f"Agencias sem noticias em {stale_hours}h: {len(results)}")
             for r in results:
-                logger.warning(f"  {r['agency_key']}: ultima noticia em {r['last_success_at']}")
+                logger.warning(f"  {_sanitize(r['agency_key'])}: ultima noticia em {r['last_success_at']}")
         else:
             logger.info("Todas as agencias com noticias recentes.")
 
@@ -143,14 +159,17 @@ def monitor_scraping_health_dag():
 
         parts = []
         if failures:
-            lines = [f"- <b>{r['agency_key']}</b>: {r['last_error']} (ultima falha: {r['last_failure_at']})"
-                     for r in failures]
+            lines = [
+                f"- <b>{_sanitize(r['agency_key'])}</b>: {_sanitize(r['last_error'])} "
+                f"(ultima falha: {r['last_failure_at']})"
+                for r in failures
+            ]
             parts.append(
                 "<b>Alerta: Falhas Consecutivas no Scraper</b>\n\n" + "\n".join(lines)
             )
 
         if stale:
-            lines = [f"- <b>{r['agency_key']}</b>: ultima noticia em {r['last_success_at']}"
+            lines = [f"- <b>{_sanitize(r['agency_key'])}</b>: ultima noticia em {r['last_success_at']}"
                      for r in stale]
             parts.append(
                 "<b>Alerta: Agencias Sem Noticias</b>\n\n" + "\n".join(lines)

@@ -21,3 +21,12 @@ CREATE INDEX IF NOT EXISTS idx_scrape_runs_agency_scraped
 -- Consultas por status (cobertura, relatórios)
 CREATE INDEX IF NOT EXISTS idx_scrape_runs_status
     ON scrape_runs (status, scraped_at DESC);
+
+-- Filtro por janela temporal + partição por agência (find_consecutive_failures)
+CREATE INDEX IF NOT EXISTS idx_scrape_runs_scraped_agency
+    ON scrape_runs (scraped_at DESC, agency_key);
+
+-- Consultas de agências sem notícias (find_stale_agencies)
+CREATE INDEX IF NOT EXISTS idx_scrape_runs_success_articles
+    ON scrape_runs (agency_key, scraped_at DESC)
+    WHERE status = 'success' AND articles_saved > 0;

@@ -59,12 +59,16 @@ def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
 
     Returns:
         List of dicts with agency_key, last_success_at.
+
+    NOTE: This query is duplicated in dags/monitor_scraping_health.py (check_stale_agencies).
+    Changes here must be replicated there and vice-versa.
     """
     query = """
         SELECT
             agency_key,
             MAX(scraped_at) FILTER (WHERE status = 'success' AND articles_saved > 0) AS last_success_at
         FROM scrape_runs
+        WHERE scraped_at > NOW() - INTERVAL '90 days'
         GROUP BY agency_key
         HAVING MAX(scraped_at) FILTER (WHERE status = 'success' AND articles_saved > 0)
                < NOW() - INTERVAL '1 hour' * %(stale_hours)s
