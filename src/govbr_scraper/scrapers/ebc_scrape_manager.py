@@ -82,8 +82,8 @@ class EBCScrapeManager:
 
             # Create list of (agency_name, scraper) tuples
             webscrapers = [
-                (agency_name, EBCWebScraper(min_date, url, max_date=max_date))
-                for agency_name, url in agency_urls.items()
+                (agency_name, EBCWebScraper(min_date, agency_config["url"], max_date=max_date))
+                for agency_name, agency_config in agency_urls.items()
             ]
 
             if sequential:

@@ -358,9 +358,12 @@ class Plone6APIScraper:
             if isinstance(image_data, dict):
                 download_path = image_data.get("download")
                 if download_path:
-                    # Construir URL completa
-                    base_url = url.rsplit("/", 1)[0]
-                    image_url = f"{base_url}/{download_path}"
+                    # Se já for URL absoluta, usar diretamente; caso contrário,
+                    # concatenar com a URL do artigo (não com o pai)
+                    if download_path.startswith("http"):
+                        image_url = download_path
+                    else:
+                        image_url = f"{url}/{download_path}"
 
         # 7. Categoria e tags (Subject no Plone)
         subject = item.get("Subject", [])
@@ -387,5 +390,5 @@ class Plone6APIScraper:
             "content": content_md,
             "image": image_url,
             "agency": self.agency,
-            "extracted_at": datetime.now(),
+            "extracted_at": datetime.now(timezone.utc),
         }

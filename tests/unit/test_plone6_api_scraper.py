@@ -181,14 +181,23 @@ class TestTransformNewsItem:
         result = scraper._transform_news_item(item, None)
         assert result["extracted_at"] is not None
         assert isinstance(result["extracted_at"], datetime)
+        assert result["extracted_at"].tzinfo is not None  # timezone-aware (UTC)
 
-    def test_extracts_image_url_from_item(self):
+    def test_extracts_image_url_from_relative_path(self):
         scraper = _make_scraper()
         item = _api_item(url="https://www.gov.br/susep/pt-br/noticias/test")
         item["image"] = {"download": "@@images/image/large"}
         published_dt = datetime(2026, 3, 15, tzinfo=TZ_BR)
         result = scraper._transform_news_item(item, published_dt)
-        assert result["image"] == "https://www.gov.br/susep/pt-br/noticias/@@images/image/large"
+        assert result["image"] == "https://www.gov.br/susep/pt-br/noticias/test/@@images/image/large"
+
+    def test_extracts_image_url_from_absolute_url(self):
+        scraper = _make_scraper()
+        abs_url = "https://www.gov.br/susep/pt-br/noticias/test/@@images/image/large"
+        item = _api_item(url="https://www.gov.br/susep/pt-br/noticias/test")
+        item["image"] = {"download": abs_url}
+        result = scraper._transform_news_item(item, None)
+        assert result["image"] == abs_url
 
     def test_extracts_category_and_tags_from_subject(self):
         scraper = _make_scraper()
