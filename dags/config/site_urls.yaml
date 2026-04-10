@@ -141,9 +141,8 @@ agencies:
     active: true
   ctav:
     url: https://www.gov.br/ctav/pt-br/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   cti:
     url: https://www.gov.br/cti/pt-br/assuntos/noticias
     active: true
@@ -179,17 +178,15 @@ agencies:
     active: true
   esg:
     url: https://www.gov.br/esg/pt-br/centrais-de-conteudo/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   esocial:
     url: https://www.gov.br/esocial/pt-br/noticias
     active: true
   esporte:
     url: https://www.gov.br/esporte/pt-br/noticias-e-conteudos/esporte
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   fazenda:
     url: https://www.gov.br/fazenda/pt-br/assuntos/noticias
     active: true
@@ -225,9 +222,8 @@ agencies:
     active: true
   hfa:
     url: https://www.gov.br/hfa/pt-br/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   ibama:
     url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
     active: true
@@ -355,9 +351,8 @@ agencies:
     active: true
   memp:
     url: https://www.gov.br/memp/pt-br/assuntos/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   mj:
     url: https://www.gov.br/mj/pt-br/assuntos/noticias
     active: true
@@ -400,6 +395,7 @@ agencies:
   patrimonio:
     url: https://www.gov.br/patrimonio/pt-br/central-de-conteudo/noticias
     active: true
+    scraper_type: plone6_api
   pf:
     url: https://www.gov.br/pf/pt-br/assuntos/noticias/noticias-destaque
     active: true
@@ -415,14 +411,14 @@ agencies:
   pncp:
     url: https://www.gov.br/pncp/pt-br/central-de-conteudo/noticias
     active: true
+    scraper_type: plone6_api
   portos-e-aeroportos:
     url: https://www.gov.br/portos-e-aeroportos/pt-br/assuntos/noticias
     active: true
   povosindigenas:
     url: https://www.gov.br/povosindigenas/pt-br/assuntos/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2025-01-15"
+    active: true
+    scraper_type: plone6_api
   previc:
     url: https://www.gov.br/previc/pt-br/noticias
     active: true
@@ -440,14 +436,14 @@ agencies:
   propriedade-intelectual:
     url: https://www.gov.br/propriedade-intelectual/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   receitafederal:
     url: https://www.gov.br/receitafederal/pt-br/assuntos/noticias
     active: true
   reconstrucaors:
     url: https://www.gov.br/reconstrucaors/pt-br/acompanhe-a-reconstrucao/noticias
-    active: false
-    disabled_reason: "Volto/SPA - requer JavaScript"
-    disabled_date: "2026-03-18"
+    active: true
+    scraper_type: plone6_api
   saude:
     url: https://www.gov.br/saude/pt-br/assuntos/noticias
     active: true
@@ -491,6 +487,7 @@ agencies:
   susep:
     url: https://www.gov.br/susep/pt-br/central-de-conteudos/noticias
     active: true
+    scraper_type: plone6_api
   tesouronacional:
     url: https://www.gov.br/tesouronacional/pt-br/noticias
     active: true

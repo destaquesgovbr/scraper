@@ -98,8 +98,8 @@ class TestLoadUrlsFromYamlGovBr:
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
         # cisc uses the generic gov.br/pt-br/noticias URL and is inactive
-        for agency_name, url in agency_urls.items():
-            assert url != "https://www.gov.br/pt-br/noticias"
+        for agency_name, config in agency_urls.items():
+            assert config["url"] != "https://www.gov.br/pt-br/noticias"
 
     def test_load_specific_active_agency(self):
         """Loading a specific active agency should work."""
@@ -107,7 +107,7 @@ class TestLoadUrlsFromYamlGovBr:
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml", agency="mec")
         assert len(agency_urls) == 1
         assert "mec" in agency_urls
-        assert "mec" in agency_urls["mec"]
+        assert "mec" in agency_urls["mec"]["url"]
 
     def test_load_specific_inactive_agency_raises(self):
         """Loading a specific inactive agency should raise ValueError."""
@@ -137,14 +137,14 @@ class TestLoadUrlsFromYamlEBC:
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
         # memoria-ebc is inactive, so its URL should not be present
-        for agency_name, url in agency_urls.items():
-            assert "memoria.ebc.com.br" not in url
+        for agency_name, config in agency_urls.items():
+            assert "memoria.ebc.com.br" not in config["url"]
 
     def test_load_urls_includes_active_agencies(self):
         """Active agencies should be in the returned dict."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
-        urls_str = " ".join(agency_urls.values())
+        urls_str = " ".join(config["url"] for config in agency_urls.values())
         # agencia_brasil and tvbrasil are active
         assert "agenciabrasil.ebc.com.br" in urls_str or "tvbrasil.ebc.com.br" in urls_str
 
@@ -154,7 +154,7 @@ class TestLoadUrlsFromYamlEBC:
         agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency="agencia_brasil")
         assert len(agency_urls) == 1
         assert "agencia_brasil" in agency_urls
-        assert "agenciabrasil.ebc.com.br" in agency_urls["agencia_brasil"]
+        assert "agenciabrasil.ebc.com.br" in agency_urls["agencia_brasil"]["url"]
 
     def test_load_specific_inactive_agency_raises(self):
         """Loading a specific inactive agency should raise ValueError."""
@@ -167,3 +167,60 @@ class TestLoadUrlsFromYamlEBC:
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         with pytest.raises(ValueError, match="not found"):
             load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency="nonexistent_agency_xyz")
+
+
+class TestLoadUrlsReturnsConfigDict:
+    """Tests for the dict structure returned by load_urls_from_yaml."""
+
+    def test_values_are_dicts_not_strings(self):
+        """Each value in the returned dict must be a config dict, not a URL string."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
+        for agency_name, config in agency_urls.items():
+            assert isinstance(config, dict), f"{agency_name}: expected dict, got {type(config)}"
+
+    def test_config_dict_has_url_field(self):
+        """Each config dict must contain a 'url' key."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml", agency="mec")
+        assert "url" in agency_urls["mec"]
+        assert "mec" in agency_urls["mec"]["url"]
+
+    def test_config_dict_has_scraper_type_field(self):
+        """Each config dict must contain a 'scraper_type' key."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
+        for agency_name, config in agency_urls.items():
+            assert "scraper_type" in config, f"{agency_name} missing scraper_type"
+
+    def test_plone6_agencies_have_correct_scraper_type(self):
+        """Plone 6 agencies must be configured with scraper_type=plone6_api."""
+        plone6_agencies = ["susep", "patrimonio", "propriedade-intelectual", "pncp"]
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        for agency in plone6_agencies:
+            result = load_urls_from_yaml(config_dir, "site_urls.yaml", agency=agency)
+            assert result[agency]["scraper_type"] == "plone6_api", \
+                f"{agency} should have scraper_type=plone6_api"
+
+    def test_regular_agencies_default_to_html_scraper_type(self):
+        """Agencies without explicit scraper_type must default to 'html'."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        result = load_urls_from_yaml(config_dir, "site_urls.yaml", agency="mec")
+        assert result["mec"]["scraper_type"] == "html"
+
+    def test_scraper_type_values_are_valid(self):
+        """All scraper_type values must be within the known set."""
+        valid_types = {"html", "plone6_api"}
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
+        for agency_name, config in agency_urls.items():
+            assert config["scraper_type"] in valid_types, \
+                f"{agency_name}: unknown scraper_type '{config['scraper_type']}'"
+
+    def test_config_dict_has_active_field(self):
+        """Each config dict must contain an 'active' key set to True (inactive filtered out)."""
+        config_dir = get_config_dir(_SCRAPERS_MODULE)
+        agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
+        for agency_name, config in agency_urls.items():
+            assert "active" in config, f"{agency_name} missing active field"
+            assert config["active"] is True, f"{agency_name}: active should be True (inactive are filtered)"

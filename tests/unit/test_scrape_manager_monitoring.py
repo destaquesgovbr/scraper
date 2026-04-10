@@ -20,7 +20,7 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_records_success_run(self, mock_load, mock_ws_cls):
-        mock_load.return_value = {"mec": "https://www.gov.br/mec"}
+        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
             {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"}
@@ -43,7 +43,7 @@ class TestScrapeManagerMonitoring:
     def test_records_error_with_classification(self, mock_load, mock_ws_cls):
         from govbr_scraper.scrapers.webscraper import ScrapingError
 
-        mock_load.return_value = {"mec": "https://www.gov.br/mec"}
+        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.side_effect = ScrapingError(
             "Anti-bot protection detected for mec"
@@ -61,7 +61,10 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_continues_if_tracking_fails(self, mock_load, mock_ws_cls):
-        mock_load.return_value = {"mec": "https://www.gov.br/mec", "mds": "https://www.gov.br/mds"}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True},
+            "mds": {"url": "https://www.gov.br/mds", "scraper_type": "html", "active": True},
+        }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
             {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"}
@@ -84,7 +87,7 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_measures_execution_time(self, mock_load, mock_ws_cls):
-        mock_load.return_value = {"mec": "https://www.gov.br/mec"}
+        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = []
         mock_ws_cls.return_value = mock_scraper
@@ -101,7 +104,7 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_records_empty_no_error(self, mock_load, mock_ws_cls):
         """0 articles without error = success with articles_scraped=0."""
-        mock_load.return_value = {"mec": "https://www.gov.br/mec"}
+        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = []  # No articles
         mock_ws_cls.return_value = mock_scraper
