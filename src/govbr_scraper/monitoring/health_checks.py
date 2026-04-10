@@ -95,12 +95,15 @@ def compute_coverage_report(conn, hours: int = 24) -> dict:
             COUNT(DISTINCT agency_key) FILTER (WHERE status = 'success') AS agencies_scraped,
             COUNT(DISTINCT agency_key) FILTER (WHERE status = 'error') AS agencies_with_errors,
             COALESCE(SUM(articles_saved), 0) AS total_articles,
-            (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs) AS total_active,
+            (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs
+             WHERE scraped_at > NOW() - INTERVAL '7 days') AS total_active,
             CASE
-                WHEN (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs) > 0
+                WHEN (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs
+                      WHERE scraped_at > NOW() - INTERVAL '7 days') > 0
                 THEN ROUND(
                     COUNT(DISTINCT agency_key) FILTER (WHERE status = 'success')::numeric /
-                    (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs)::numeric,
+                    (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs
+                     WHERE scraped_at > NOW() - INTERVAL '7 days')::numeric,
                     2
                 )
                 ELSE 0

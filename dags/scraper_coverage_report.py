@@ -49,7 +49,8 @@ def scraper_coverage_report_dag():
                 COUNT(DISTINCT agency_key) FILTER (WHERE status = 'success') AS agencies_scraped,
                 COUNT(DISTINCT agency_key) FILTER (WHERE status = 'error') AS agencies_with_errors,
                 COALESCE(SUM(articles_saved), 0) AS total_articles,
-                (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs) AS total_active
+                (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs
+                 WHERE scraped_at > NOW() - INTERVAL '7 days') AS total_active
             FROM scrape_runs
             WHERE scraped_at > NOW() - INTERVAL '24 hours'
         """
