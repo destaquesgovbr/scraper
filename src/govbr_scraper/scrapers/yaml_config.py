@@ -20,7 +20,7 @@ def get_config_dir(module_file: str) -> str:
 
 def load_urls_from_yaml(
     config_dir: str, file_name: str, agency: str = None
-) -> Dict[str, str]:
+) -> Dict[str, dict]:
     """
     Load URLs from a YAML file.
 
@@ -29,13 +29,14 @@ def load_urls_from_yaml(
           agency_key:
             url: str
             active: bool  # optional, defaults to True
+            scraper_type: str  # optional, defaults to 'html'
             disabled_reason: str  # optional
             disabled_date: str  # optional
 
     :param config_dir: Directory containing the YAML file.
     :param file_name: The name of the YAML file.
     :param agency: Specific agency key to filter URLs. If None, load all active URLs.
-    :return: A dict mapping agency_name to URL.
+    :return: A dict mapping agency_name to a config dict with 'url', 'scraper_type', 'active'.
     :raises ValueError: If agency not found or is inactive.
     """
     file_path = os.path.join(config_dir, file_name)
@@ -49,7 +50,11 @@ def load_urls_from_yaml(
         agency_data = agencies[agency]
         if is_agency_inactive(agency, agency_data):
             raise ValueError(f"Agency '{agency}' is inactive.")
-        return {agency: extract_url(agency_data)}
+        return {agency: {
+            "url": extract_url(agency_data),
+            "scraper_type": agency_data.get("scraper_type", "html"),
+            "active": agency_data.get("active", True),
+        }}
 
     # Load all active agencies
     agency_urls = {}
@@ -59,7 +64,11 @@ def load_urls_from_yaml(
         if is_agency_inactive(agency_key, agency_data):
             inactive_agencies.append(agency_key)
             continue
-        agency_urls[agency_key] = extract_url(agency_data)
+        agency_urls[agency_key] = {
+            "url": extract_url(agency_data),
+            "scraper_type": agency_data.get("scraper_type", "html"),
+            "active": agency_data.get("active", True),
+        }
 
     if inactive_agencies:
         logging.info(

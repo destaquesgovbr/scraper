@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 from govbr_scraper.models.monitoring import classify_error
 from govbr_scraper.monitoring.structured_log import log_scrape_result
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
+from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
@@ -83,14 +84,20 @@ class ScrapeManager:
             # Create list of (agency_name, scraper) tuples
             # Query known URLs for each agency to enable early stop optimization
             webscrapers = []
-            for agency_name, url in agency_urls.items():
+            for agency_name, agency_config in agency_urls.items():
+                url = agency_config["url"]
+                scraper_type = agency_config.get("scraper_type", "html")
                 try:
                     known_urls = self.dataset_manager.get_recent_urls(agency_name)
                 except Exception:
                     known_urls = set()  # Fallback: no optimization
-                webscrapers.append(
-                    (agency_name, WebScraper(min_date, url, max_date=max_date, known_urls=known_urls))
-                )
+                # Strategy Pattern: select scraper based on config
+                if scraper_type == "plone6_api":
+                    scraper = Plone6APIScraper(min_date, url, max_date=max_date, known_urls=known_urls)
+                    logging.info(f"Using Plone6APIScraper for {agency_name}")
+                else:
+                    scraper = WebScraper(min_date, url, max_date=max_date, known_urls=known_urls)
+                webscrapers.append((agency_name, scraper))
 
             if sequential:
                 for agency_name, scraper in webscrapers:
