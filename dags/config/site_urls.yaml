@@ -474,7 +474,7 @@ agencies:
     active: false
     disabled_date: "2025-01-15"
   sri:
-    url: https://www.gov.br/sri/pt-br/noticias
+    url: https://www.gov.br/sri/pt-br/noticias/mais-noticias/ultimas-noticias
     active: true
   sudam:
     url: https://www.gov.br/sudam/pt-br/noticias-1

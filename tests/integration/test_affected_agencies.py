@@ -34,7 +34,7 @@ SCRAPABLE_AGENCIES = {
     "sudam": "https://www.gov.br/sudam/pt-br/noticias-1",
     "cemaden": "https://www.gov.br/cemaden/pt-br/assuntos/noticias-cemaden/ultimas-noticias",
     "semanaenef": "https://www.gov.br/semanaenef/pt-br/noticias",
-    "sri": "https://www.gov.br/sri/pt-br/noticias",
+    "sri": "https://www.gov.br/sri/pt-br/noticias/mais-noticias/ultimas-noticias",
 }
 
 # Agencies that use Volto/SPA (require JavaScript to render content)

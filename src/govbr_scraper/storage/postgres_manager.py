@@ -15,6 +15,12 @@ from psycopg2.extras import RealDictCursor, execute_values
 
 from govbr_scraper.models.news import Agency, NewsInsert, Theme
 
+# Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from govbr_scraper.models.monitoring import ScrapeRunResult
+
 
 class PostgresManager:
     """
@@ -337,6 +343,65 @@ class PostgresManager:
         finally:
             cursor.close()
             self.put_connection(conn)
+
+    def record_scrape_run(self, run: "ScrapeRunResult") -> None:
+        """Record a scrape execution result.
+
+        Args:
+            run: The scrape run result to persist.
+        """
+        query = """
+            INSERT INTO scrape_runs
+                (agency_key, status, error_category, error_message,
+                 articles_scraped, articles_saved, execution_time_seconds, scraped_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, (
+                    run.agency_key,
+                    run.status,
+                    str(run.error_category) if run.error_category else None,
+                    str(run.error_message)[:500] if run.error_message else None,
+                    run.articles_scraped,
+                    run.articles_saved,
+                    run.execution_time_seconds,
+                    run.scraped_at,
+                ))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error recording scrape run for {run.agency_key}: {e}")
+            raise
+        finally:
+            self.pool.putconn(conn)
+
+    def get_recent_runs(self, agency_key: str, limit: int = 5) -> list[dict]:
+        """Get the most recent scrape runs for an agency.
+
+        Args:
+            agency_key: The agency identifier.
+            limit: Maximum number of runs to return.
+
+        Returns:
+            List of run dicts ordered by scraped_at DESC.
+        """
+        query = """
+            SELECT agency_key, status, error_category, error_message,
+                   articles_scraped, articles_saved, execution_time_seconds, scraped_at
+            FROM scrape_runs
+            WHERE agency_key = %s
+            ORDER BY scraped_at DESC
+            LIMIT %s
+        """
+        conn = self.pool.getconn()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (agency_key, limit))
+                return [dict(row) for row in cur.fetchall()]
+        finally:
+            self.pool.putconn(conn)
 
     def __enter__(self) -> "PostgresManager":
         """Context manager entry."""

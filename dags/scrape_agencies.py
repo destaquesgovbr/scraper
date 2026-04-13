@@ -19,6 +19,19 @@ from airflow.decorators import dag, task
 logger = logging.getLogger(__name__)
 
 
+def _on_scrape_failure(context):
+    """Callback para log estruturado de falha na DAG de scraping."""
+    ti = context.get("task_instance")
+    dag_id = ti.dag_id if ti else "unknown"
+    task_id = ti.task_id if ti else "unknown"
+    exception = context.get("exception", "unknown")
+    try_number = ti.try_number if ti else 0
+    logger.error(
+        "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
+        dag_id, task_id, try_number, exception,
+    )
+
+
 def _load_agencies_config() -> dict:
     """Carrega config de agências ativas do YAML.
 
@@ -63,6 +76,7 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
             "retry_exponential_backoff": True,
             "max_retry_delay": timedelta(minutes=15),
             "execution_timeout": timedelta(minutes=10),
+            "on_failure_callback": _on_scrape_failure,
         },
     )
     def scraper_dag():
