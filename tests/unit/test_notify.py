@@ -11,6 +11,7 @@ class TestSendTelegramAlert:
 
     @patch("dags.notify.httpx")
     def test_posts_to_telegram_api(self, mock_httpx):
+        # Import inside method so @patch("dags.notify.httpx") is active before import
         from dags.notify import send_telegram_alert
 
         mock_response = MagicMock()

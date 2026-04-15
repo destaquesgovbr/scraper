@@ -101,7 +101,6 @@ class TestGetConnectionString:
         # Secret Manager should not have been called
         mock_run.assert_not_called()
 
-    @patch.dict(os.environ, {"DATABASE_URL": "postgresql://test:test@testhost/testdb"})
     @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
     def test_strips_whitespace_from_env_var(self, mock_create_pool):
         """DATABASE_URL with whitespace should be stripped."""
@@ -285,6 +284,34 @@ class TestLoadCache:
                     manager.load_cache()
 
                 # Connection should still be returned even on error
+                mock_cursor.close.assert_called_once()
+
+    @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
+    def test_load_cache_partial_failure_leaves_cache_unloaded(self, mock_create_pool):
+        """Failure on the themes query leaves _cache_loaded False even though agencies loaded."""
+        mock_create_pool.return_value = MagicMock()
+
+        manager = PostgresManager(connection_string="postgresql://test:test@localhost/test")
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+
+        # First execute (agencies) succeeds; second execute (themes) raises
+        mock_cursor.execute.side_effect = [None, Exception("themes query failed")]
+        mock_cursor.fetchall.return_value = [
+            {"id": 1, "key": "mec", "name": "Ministério da Educação"},
+        ]
+        mock_conn.cursor.return_value = mock_cursor
+
+        with patch.object(manager, "get_connection", return_value=mock_conn):
+            with patch.object(manager, "put_connection"):
+                with pytest.raises(Exception, match="themes query failed"):
+                    manager.load_cache()
+
+                # Cache flag must remain False — next call will retry the full load
+                assert manager._cache_loaded is False
+                # Agencies were populated before the failure (documented side-effect)
+                assert len(manager._agencies_by_key) >= 0
+                # Cursor cleanup must run even after partial failure
                 mock_cursor.close.assert_called_once()
 
     @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")

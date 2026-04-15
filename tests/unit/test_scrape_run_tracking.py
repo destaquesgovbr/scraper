@@ -139,22 +139,18 @@ class TestGetRecentRunsExtended:
 
         assert results == []
 
-    def test_limit_constrains_result_count(self):
-        """Limit parameter correctly constrains result count."""
+    def test_limit_parameter_passed_to_query(self):
+        """Limit value is forwarded as a SQL parameter to the database query."""
         pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
-        # Mock returns more rows than limit
         mock_cursor.fetchall.return_value = [
             {"agency_key": "fazenda", "status": "success", "scraped_at": f"2026-04-06T{12+i}:00"}
             for i in range(10)
         ]
 
-        results = pg.get_recent_runs("fazenda", limit=5)
+        pg.get_recent_runs("fazenda", limit=5)
 
-        # fetchall returns DB result, but limit was passed to query
         params = mock_cursor.execute.call_args[0][1]
         assert 5 in params
-        # In real scenario DB would limit, here we just verify parameter was passed
-        assert len(results) == 10  # Mock returns all, but query had LIMIT 5
 
     def test_query_filters_by_agency_key(self):
         """Query includes WHERE clause filtering by agency_key."""

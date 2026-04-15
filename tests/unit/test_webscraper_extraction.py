@@ -289,14 +289,14 @@ class TestExtractCategory:
 class TestStrategy4Validation:
     """Tests for validation in extract_title_and_url Strategy 4."""
 
-    @pytest.mark.parametrize("excluded_link,excluded_text,valid_link,valid_title", [
-        ('<a class="share-button" href="/share">Compartilhar</a>', "share", "/noticia", "Título da Notícia"),
-        ('<a class="social-icon" href="https://facebook.com">Facebook</a>', "social", "/noticia", "Notícia"),
-        ('<a class="nav-link" href="/menu">Menu</a>', "nav", "/noticia", "Notícia Principal"),
-        ('<a href="/icon"></a>', "empty", "/noticia", "Texto da Notícia"),
-        ('<a class="button" href="/action">Clique Aqui</a>', "button", "/noticia", "Artigo"),
+    @pytest.mark.parametrize("excluded_link,valid_link,valid_title", [
+        ('<a class="share-button" href="/share">Compartilhar</a>', "/noticia", "Título da Notícia"),
+        ('<a class="social-icon" href="https://facebook.com">Facebook</a>', "/noticia", "Notícia"),
+        ('<a class="nav-link" href="/menu">Menu</a>', "/noticia", "Notícia Principal"),
+        ('<a href="/icon"></a>', "/noticia", "Texto da Notícia"),
+        ('<a class="button" href="/action">Clique Aqui</a>', "/noticia", "Artigo"),
     ], ids=["share", "social", "nav", "empty", "button"])
-    def test_excludes_non_article_links(self, scraper, excluded_link, excluded_text, valid_link, valid_title):
+    def test_excludes_non_article_links(self, scraper, excluded_link, valid_link, valid_title):
         """Test that various non-article link types are excluded."""
         html = f"""
         <div class="item">
@@ -308,8 +308,7 @@ class TestStrategy4Validation:
         title, url = scraper.extract_title_and_url(item)
 
         assert url == valid_link
-        if excluded_text != "empty":  # empty link test doesn't check title
-            assert title == valid_title
+        assert title == valid_title
 
     def test_case_insensitive_class_matching(self, scraper):
         """Test that class exclusion is case-insensitive."""

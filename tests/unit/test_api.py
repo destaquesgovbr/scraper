@@ -234,17 +234,20 @@ class TestPayloadValidation:
         detail = response.json()["detail"]
         assert any("start_date" in str(err).lower() for err in detail)
 
-    def test_invalid_start_date_format_returns_422(self):
-        """Invalid date format should return HTTP 422."""
+    @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    def test_invalid_start_date_format_returns_500(self, mock_storage_cls, mock_manager_cls):
+        """Invalid date format passes Pydantic (start_date is str) but fails in the scraper, returning HTTP 500."""
+        mock_manager = MagicMock()
+        mock_manager.run_scraper.side_effect = ValueError("invalid date format: not-a-date")
+        mock_manager_cls.return_value = mock_manager
+
         response = client.post("/scrape/agencies", json={
             "start_date": "not-a-date",
             "agencies": ["mec"]
         })
 
-        # FastAPI/Pydantic validation doesn't validate date format by default
-        # but it will fail when the scraper tries to parse it
-        # For now, this tests that the API accepts the string
-        assert response.status_code in [422, 500]  # Either validation or runtime error
+        assert response.status_code == 500
 
     def test_invalid_json_returns_422(self):
         """Malformed JSON should return HTTP 422."""
