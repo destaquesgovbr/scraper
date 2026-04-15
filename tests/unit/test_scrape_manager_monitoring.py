@@ -117,3 +117,117 @@ class TestScrapeManagerMonitoring:
         assert run.status == "success"
         assert run.articles_scraped == 0
         assert run.error_category is None
+
+
+class TestScrapeManagerPreprocessing:
+    """ScrapeManager data preprocessing and unique ID generation."""
+
+    def _make_manager(self, mock_storage=None):
+        from govbr_scraper.scrapers.scrape_manager import ScrapeManager
+
+        storage = mock_storage or MagicMock()
+        storage.get_recent_urls.return_value = set()
+        return ScrapeManager(storage), storage
+
+    def test_preprocess_data_generates_unique_id(self):
+        """_preprocess_data should generate unique_id for each article."""
+        manager, storage = self._make_manager()
+
+        data = [
+            {
+                "agency": "mec",
+                "published_at": "2026-01-15T14:30:00Z",
+                "title": "Nova política educacional",
+                "url": "https://www.gov.br/mec/noticia",
+                "content": "Conteúdo da notícia",
+            }
+        ]
+
+        result = manager._preprocess_data(data)
+
+        assert "unique_id" in result
+        assert len(result["unique_id"]) == 1
+        assert isinstance(result["unique_id"][0], str)
+        assert len(result["unique_id"][0]) > 0
+
+    def test_preprocess_data_converts_to_columnar(self):
+        """_preprocess_data should convert list of dicts to columnar OrderedDict."""
+        from collections import OrderedDict
+
+        manager, storage = self._make_manager()
+
+        data = [
+            {
+                "agency": "mec",
+                "published_at": "2026-01-15T14:30:00Z",
+                "title": "Notícia 1",
+                "url": "https://www.gov.br/mec/noticia1",
+                "content": "Conteúdo 1",
+            },
+            {
+                "agency": "mec",
+                "published_at": "2026-01-16T10:00:00Z",
+                "title": "Notícia 2",
+                "url": "https://www.gov.br/mec/noticia2",
+                "content": "Conteúdo 2",
+            },
+        ]
+
+        result = manager._preprocess_data(data)
+
+        assert isinstance(result, OrderedDict)
+        assert "title" in result
+        assert "url" in result
+        assert "agency" in result
+        assert len(result["title"]) == 2
+        assert result["title"][0] == "Notícia 1"
+        assert result["title"][1] == "Notícia 2"
+
+    def test_generate_unique_id_delegates_to_module(self):
+        """_generate_unique_id should delegate to unique_id module."""
+        from govbr_scraper.scrapers import unique_id
+
+        manager, storage = self._make_manager()
+
+        # Test that it produces a valid unique ID
+        result = manager._generate_unique_id(
+            agency="mec",
+            published_at_value="2026-01-15T14:30:00Z",
+            title="Nova política educacional"
+        )
+
+        # Should be in format: slug_suffix (e.g., "nova-politica-educacional_abc123")
+        assert isinstance(result, str)
+        assert "_" in result  # Should have underscore separator
+        parts = result.split("_")
+        assert len(parts) == 2  # slug and suffix
+        assert len(parts[1]) == 6  # suffix is 6 characters
+
+    def test_preprocess_preserves_all_fields(self):
+        """_preprocess_data should preserve all input fields."""
+        manager, storage = self._make_manager()
+
+        data = [
+            {
+                "agency": "mec",
+                "published_at": "2026-01-15T14:30:00Z",
+                "title": "Notícia",
+                "url": "https://www.gov.br/mec/noticia",
+                "content": "Conteúdo",
+                "category": "Educação",
+                "tags": ["educacao", "ensino"],
+                "image": "https://img.com/photo.jpg",
+                "editorial_lead": "Especial",
+                "subtitle": "Subtítulo",
+            }
+        ]
+
+        result = manager._preprocess_data(data)
+
+        assert "category" in result
+        assert "tags" in result
+        assert "image" in result
+        assert "editorial_lead" in result
+        assert "subtitle" in result
+        assert result["category"][0] == "Educação"
+        assert result["tags"][0] == ["educacao", "ensino"]

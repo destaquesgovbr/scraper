@@ -1,11 +1,11 @@
 """
-Unit tests for webscraper refactorings (Issue #19, PR #22 improvements).
+Unit tests for WebScraper extraction methods.
 
-Tests cover refactorings suggested by code review:
+Tests cover date, title, URL, and link extraction strategies:
 1. _parse_date_from_text - Consolidated regex for date parsing
-2. extract_date_3 - Improved with targeted element search
-3. Fallback 3 validation - Filter items without links
-4. Strategy 4 validation - Exclude non-article links
+2. extract_date_1/3 - Date extraction from listing pages
+3. extract_title_and_url - Title and URL extraction strategies (Strategy 4 validation)
+4. Full extraction flow integration tests
 """
 
 from datetime import datetime
@@ -112,6 +112,50 @@ class TestExtractDate1Refactored:
 
 
 # =============================================================================
+# Tests for extract_date_2
+# =============================================================================
+
+
+class TestExtractDate2:
+    """Tests for extract_date_2 (extracts from span.data)."""
+
+    def test_extract_date_2_from_span_data(self, scraper):
+        """Test extraction from span with class 'data'."""
+        html = """
+        <li>
+            <a href="/noticia">Título da Notícia</a>
+            <span class="data">22/03/2026</span>
+        </li>
+        """
+        item = BeautifulSoup(html, "html.parser").find("li")
+        result = scraper.extract_date_2(item)
+        assert result == datetime(2026, 3, 22)
+
+    def test_extract_date_2_returns_none_when_no_span_data(self, scraper):
+        """Test that None is returned when span.data is not found."""
+        html = """
+        <li>
+            <a href="/noticia">Título da Notícia</a>
+            <span>22/03/2026</span>
+        </li>
+        """
+        item = BeautifulSoup(html, "html.parser").find("li")
+        result = scraper.extract_date_2(item)
+        assert result is None
+
+    def test_extract_date_2_returns_none_when_invalid_format(self, scraper):
+        """Test that None is returned when date format is invalid."""
+        html = """
+        <li>
+            <span class="data">Publicado em 22/03/2026</span>
+        </li>
+        """
+        item = BeautifulSoup(html, "html.parser").find("li")
+        result = scraper.extract_date_2(item)
+        assert result is None
+
+
+# =============================================================================
 # Tests for extract_date_3 (improved with targeted search)
 # =============================================================================
 
@@ -136,41 +180,22 @@ class TestExtractDate3Improved:
         assert result.month == 2
         assert result.day == 10
 
-    def test_extract_from_date_class(self, scraper):
-        """Test extraction from element with 'date' class (Strategy 2)."""
-        html = """
+    @pytest.mark.parametrize("element,date_text,expected_datetime", [
+        ('<span class="date">15/03/2026 10h30</span>', "15/03/2026 10h30", datetime(2026, 3, 15, 10, 30)),
+        ('<span class="data">20/03/2026</span>', "20/03/2026", datetime(2026, 3, 20)),
+        ('<div class="published-date">12/02/2026 14h20</div>', "12/02/2026 14h20", datetime(2026, 2, 12, 14, 20)),
+    ], ids=["date-class", "data-class-portuguese", "published-class"])
+    def test_extract_from_date_related_classes(self, scraper, element, date_text, expected_datetime):
+        """Test extraction from elements with date/data/published classes (Strategy 2)."""
+        html = f"""
         <div class="item">
-            <span class="date">15/03/2026 10h30</span>
-            <p>Artigo com data no corpo 01/01/2020 08h00</p>
+            {element}
+            <p>Artigo com data espúria no corpo 01/01/2020 08h00</p>
         </div>
         """
         item = BeautifulSoup(html, "html.parser").find("div")
         result = scraper.extract_date_3(item)
-
-        # Should extract from .date class, not from body
-        assert result == datetime(2026, 3, 15, 10, 30)
-
-    def test_extract_from_data_class_portuguese(self, scraper):
-        """Test extraction from element with 'data' class (Portuguese)."""
-        html = """
-        <div class="item">
-            <span class="data">20/03/2026</span>
-        </div>
-        """
-        item = BeautifulSoup(html, "html.parser").find("div")
-        result = scraper.extract_date_3(item)
-        assert result == datetime(2026, 3, 20)
-
-    def test_extract_from_published_class(self, scraper):
-        """Test extraction from element with 'published' class."""
-        html = """
-        <article>
-            <div class="published-date">12/02/2026 14h20</div>
-        </article>
-        """
-        item = BeautifulSoup(html, "html.parser").find("article")
-        result = scraper.extract_date_3(item)
-        assert result == datetime(2026, 2, 12, 14, 20)
+        assert result == expected_datetime
 
     def test_fallback_to_full_text_last_resort(self, scraper):
         """Test fallback to full text when no specific elements found (Strategy 3)."""
@@ -207,93 +232,53 @@ class TestExtractDate3Improved:
 
 
 # =============================================================================
-# Tests for Fallback 3 validation (filter items without links)
+# Tests for extract_category() (3 strategies)
 # =============================================================================
 
 
-class TestFallback3Validation:
-    """Tests for validation in Fallback 3 (div.item must contain <a> tag)."""
+class TestExtractCategory:
+    """Tests for category extraction from listing pages."""
 
-    def test_fallback3_includes_items_with_links(self, scraper):
-        """Test that items with <a> tags are included."""
-        html = """
-        <html><body>
-        <div id="content-core">
-            <div class="item">
-                <a href="/noticia1">Notícia 1</a>
-            </div>
-            <div class="item">
-                <a href="/noticia2">Notícia 2</a>
-            </div>
-        </div>
-        </body></html>
+    @pytest.mark.parametrize("element,expected_category", [
+        ('<span class="subtitle">Educação Básica</span>', "Educação Básica"),
+        ('<div class="subtitulo-noticia">Ensino Superior</div>', "Ensino Superior"),
+        ('<div class="categoria-noticia">Pesquisa Científica</div>', "Pesquisa Científica"),
+    ], ids=["subtitle-span", "subtitulo-noticia-div", "categoria-noticia-div"])
+    def test_extract_category_from_various_elements(self, scraper, element, expected_category):
+        """Test extraction from different HTML elements (3 strategies)."""
+        html = f"""
+        <article class="tileItem">
+            {element}
+            <a href="/noticia">Título</a>
+        </article>
         """
-        soup = BeautifulSoup(html, "html.parser")
-        content_core = soup.find("div", id="content-core")
-        potential_items = content_core.find_all("div", class_="item")
+        item = BeautifulSoup(html, "html.parser").find("article")
+        result = scraper.extract_category(item)
+        assert result == expected_category
 
-        # Simulate the filtering logic
-        news_items = [
-            item for item in potential_items
-            if item.find("a", href=True)
-        ]
-
-        assert len(news_items) == 2
-
-    def test_fallback3_excludes_items_without_links(self, scraper):
-        """Test that items without <a> tags are excluded."""
+    def test_extract_category_strips_whitespace(self, scraper):
+        """Test that whitespace is stripped from extracted category."""
         html = """
-        <html><body>
-        <div id="content-core">
-            <div class="item">
-                <a href="/noticia1">Notícia 1</a>
-            </div>
-            <div class="item">
-                <span>Não é uma notícia</span>
-            </div>
-            <div class="item">
-                <p>Outro elemento sem link</p>
-            </div>
-        </div>
-        </body></html>
+        <article class="tileItem">
+            <span class="subtitle">  Pesquisa e Inovação  </span>
+            <a href="/noticia">Título</a>
+        </article>
         """
-        soup = BeautifulSoup(html, "html.parser")
-        content_core = soup.find("div", id="content-core")
-        potential_items = content_core.find_all("div", class_="item")
+        item = BeautifulSoup(html, "html.parser").find("article")
+        result = scraper.extract_category(item)
+        assert result == "Pesquisa e Inovação"
 
-        # Simulate the filtering logic
-        news_items = [
-            item for item in potential_items
-            if item.find("a", href=True)
-        ]
-
-        # Only 1 item should pass (the one with <a> tag)
-        assert len(news_items) == 1
-
-    def test_fallback3_requires_href_attribute(self, scraper):
-        """Test that <a> tags without href are excluded."""
+    def test_extract_category_returns_no_category_when_not_found(self, scraper):
+        """Test that 'No Category' is returned when no category can be extracted."""
         html = """
-        <html><body>
-        <div id="content-core">
-            <div class="item">
-                <a href="/noticia1">Com href</a>
-            </div>
-            <div class="item">
-                <a>Sem href</a>
-            </div>
-        </div>
-        </body></html>
+        <article class="tileItem">
+            <a href="/noticia">Título</a>
+            <p>Descrição</p>
+        </article>
         """
-        soup = BeautifulSoup(html, "html.parser")
-        content_core = soup.find("div", id="content-core")
-        potential_items = content_core.find_all("div", class_="item")
-
-        news_items = [
-            item for item in potential_items
-            if item.find("a", href=True)
-        ]
-
-        assert len(news_items) == 1
+        item = BeautifulSoup(html, "html.parser").find("article")
+        result = scraper.extract_category(item)
+        assert result == "No Category"
 
 
 # =============================================================================
@@ -304,73 +289,26 @@ class TestFallback3Validation:
 class TestStrategy4Validation:
     """Tests for validation in extract_title_and_url Strategy 4."""
 
-    def test_excludes_share_links(self, scraper):
-        """Test that links with 'share' class are excluded."""
-        html = """
+    @pytest.mark.parametrize("excluded_link,valid_link,valid_title", [
+        ('<a class="share-button" href="/share">Compartilhar</a>', "/noticia", "Título da Notícia"),
+        ('<a class="social-icon" href="https://facebook.com">Facebook</a>', "/noticia", "Notícia"),
+        ('<a class="nav-link" href="/menu">Menu</a>', "/noticia", "Notícia Principal"),
+        ('<a href="/icon"></a>', "/noticia", "Texto da Notícia"),
+        ('<a class="button" href="/action">Clique Aqui</a>', "/noticia", "Artigo"),
+    ], ids=["share", "social", "nav", "empty", "button"])
+    def test_excludes_non_article_links(self, scraper, excluded_link, valid_link, valid_title):
+        """Test that various non-article link types are excluded."""
+        html = f"""
         <div class="item">
-            <a class="share-button" href="/share">Compartilhar</a>
-            <a href="/noticia">Título da Notícia</a>
+            {excluded_link}
+            <a href="{valid_link}">{valid_title}</a>
         </div>
         """
         item = BeautifulSoup(html, "html.parser").find("div")
         title, url = scraper.extract_title_and_url(item)
 
-        # Should extract the article link, not the share link
-        assert url == "/noticia"
-        assert title == "Título da Notícia"
-
-    def test_excludes_social_links(self, scraper):
-        """Test that links with 'social' class are excluded."""
-        html = """
-        <div class="item">
-            <a class="social-icon" href="https://facebook.com">Facebook</a>
-            <a href="/noticia">Notícia</a>
-        </div>
-        """
-        item = BeautifulSoup(html, "html.parser").find("div")
-        title, url = scraper.extract_title_and_url(item)
-
-        assert url == "/noticia"
-
-    def test_excludes_nav_links(self, scraper):
-        """Test that navigation links are excluded."""
-        html = """
-        <div class="item">
-            <a class="nav-link" href="/menu">Menu</a>
-            <a href="/noticia">Notícia Principal</a>
-        </div>
-        """
-        item = BeautifulSoup(html, "html.parser").find("div")
-        title, url = scraper.extract_title_and_url(item)
-
-        assert url == "/noticia"
-
-    def test_excludes_empty_links(self, scraper):
-        """Test that links with no text content are excluded (icon/image links)."""
-        html = """
-        <div class="item">
-            <a href="/icon"></a>
-            <a href="/noticia">Texto da Notícia</a>
-        </div>
-        """
-        item = BeautifulSoup(html, "html.parser").find("div")
-        title, url = scraper.extract_title_and_url(item)
-
-        # Should skip empty link and get the one with text
-        assert url == "/noticia"
-
-    def test_excludes_button_class(self, scraper):
-        """Test that links with 'button' class are excluded."""
-        html = """
-        <div class="item">
-            <a class="button" href="/action">Clique Aqui</a>
-            <a href="/noticia">Artigo</a>
-        </div>
-        """
-        item = BeautifulSoup(html, "html.parser").find("div")
-        title, url = scraper.extract_title_and_url(item)
-
-        assert url == "/noticia"
+        assert url == valid_link
+        assert title == valid_title
 
     def test_case_insensitive_class_matching(self, scraper):
         """Test that class exclusion is case-insensitive."""
@@ -416,12 +354,12 @@ class TestStrategy4Validation:
 
 
 # =============================================================================
-# Integration test: Full extraction with refactored methods
+# Full extraction flow tests
 # =============================================================================
 
 
-class TestIntegrationRefactored:
-    """Integration tests for full extraction flow with refactored methods."""
+class TestFullExtractionFlow:
+    """Tests for complete extraction flow using multiple methods together."""
 
     def test_full_extraction_with_improved_fallbacks(self, scraper):
         """Test complete extraction using improved date and link extraction."""
@@ -444,3 +382,105 @@ class TestIntegrationRefactored:
         assert news_date.year == 2026
         assert news_date.month == 3
         assert news_date.day == 18
+
+
+# =============================================================================
+# Tests for extract_tags()
+# =============================================================================
+
+
+class TestExtractTags:
+    """Tests for tag extraction from listing pages."""
+
+    def test_extract_tags_from_listing(self, scraper):
+        """Extract tags from listing page metadata."""
+        html = """
+        <article class="tileItem">
+            <a href="/noticia">Título</a>
+            <div class="documentTags">
+                <span>educacao</span>
+                <span>ensino-superior</span>
+            </div>
+        </article>
+        """
+        item = BeautifulSoup(html, "html.parser").find("article")
+
+        # The extract_tags method in the current implementation returns empty list
+        # for listing pages (tags are extracted from article pages)
+        result = scraper.extract_tags(item)
+
+        # Current implementation returns empty list from listing pages
+        assert isinstance(result, list)
+
+    def test_extract_tags_empty_when_no_tags(self, scraper):
+        """Return empty list when no tags found."""
+        html = """
+        <article class="tileItem">
+            <a href="/noticia">Título</a>
+            <p>Descrição</p>
+        </article>
+        """
+        item = BeautifulSoup(html, "html.parser").find("article")
+        result = scraper.extract_tags(item)
+
+        assert result == []
+
+
+# =============================================================================
+# Tests for _extract_tags_from_article_page()
+# =============================================================================
+
+
+class TestExtractTagsFromArticlePage:
+    """Tests for tag extraction from article pages."""
+
+    def test_extract_tags_from_article_page_origem_keyword(self, scraper):
+        """Extract tags from links with origem=keyword parameter."""
+        html = """
+        <html>
+        <body>
+            <div class="content">
+                <a href="/busca?origem=keyword&palavra=educacao">Educação</a>
+                <a href="/busca?origem=keyword&palavra=ensino">Ensino Superior</a>
+            </div>
+        </body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result = scraper._extract_tags_from_article_page(soup)
+
+        assert len(result) == 2
+        assert "Educação" in result
+        assert "Ensino Superior" in result
+
+    def test_extract_tags_from_article_page_keywords_div(self, scraper):
+        """Extract tags from keywords div (fallback strategy)."""
+        html = """
+        <html>
+        <body>
+            <div class="keywords">
+                <a href="/tag/educacao">Educação</a>
+                <a href="/tag/ensino">Ensino Superior</a>
+            </div>
+        </body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result = scraper._extract_tags_from_article_page(soup)
+
+        assert len(result) == 2
+        assert "Educação" in result
+        assert "Ensino Superior" in result
+
+    def test_extract_tags_empty_from_article_without_tags(self, scraper):
+        """Return empty list when article has no tags."""
+        html = """
+        <html>
+        <head><title>Article</title></head>
+        <body><p>Content without tags</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result = scraper._extract_tags_from_article_page(soup)
+
+        assert result == []

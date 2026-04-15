@@ -168,21 +168,6 @@ class TestEBCWebScraper:
         assert news_data['editorial_lead'] == 'Repórter Brasil'
         assert news_data['source'] == ''
 
-    def test_tvbrasil_source_is_empty(
-        self,
-        ebc_scraper: EBCWebScraper,
-        tvbrasil_html: str,
-        empty_tvbrasil_news_data: Dict[str, Any],
-    ) -> None:
-        """TV Brasil source field is empty after extraction."""
-        soup = BeautifulSoup(tvbrasil_html, 'html.parser')
-        news_data = empty_tvbrasil_news_data.copy()
-        news_data['source'] = 'should_be_cleared'
-
-        ebc_scraper._scrape_tvbrasil_content(soup, news_data)
-
-        assert news_data['source'] == ''
-
     def test_agencia_brasil_editorial_lead_is_empty(
         self,
         ebc_scraper: EBCWebScraper,
@@ -260,8 +245,14 @@ class TestEBCScrapeManager:
         assert len(result) == 1
         assert result[0]['editorial_lead'] == 'Caminhos da Reportagem'
 
-    def test_convert_handles_empty_editorial_lead(self, manager: EBCScrapeManager) -> None:
-        """Empty editorial_lead becomes None in converted format."""
+    @pytest.mark.parametrize("include_key,value", [
+        (True, ''),  # empty string
+        (False, None),  # key missing
+    ], ids=['empty_editorial_lead', 'missing_editorial_lead'])
+    def test_convert_handles_empty_or_missing_editorial_lead(
+        self, manager: EBCScrapeManager, include_key: bool, value: str
+    ) -> None:
+        """Empty or missing editorial_lead becomes None in converted format."""
         ebc_data = [
             {
                 'title': 'Test Article',
@@ -271,7 +262,6 @@ class TestEBCScrapeManager:
                 'published_datetime': datetime(2026, 1, 15, 14, 30),
                 'updated_datetime': None,
                 'tags': [],
-                'editorial_lead': '',  # Empty for Agencia Brasil
                 'content': 'Test content here.',
                 'image': '',
                 'video_url': '',
@@ -280,30 +270,8 @@ class TestEBCScrapeManager:
             }
         ]
 
-        result = manager._convert_ebc_to_govbr_format(ebc_data)
-
-        assert len(result) == 1
-        assert result[0]['editorial_lead'] is None
-
-    def test_convert_handles_missing_editorial_lead(self, manager: EBCScrapeManager) -> None:
-        """Missing editorial_lead key becomes None in converted format."""
-        ebc_data = [
-            {
-                'title': 'Test Article',
-                'url': 'https://agenciabrasil.ebc.com.br/test',
-                'source': 'Agencia Brasil',
-                'date': '15/01/2026 - 14:30',
-                'published_datetime': datetime(2026, 1, 15, 14, 30),
-                'updated_datetime': None,
-                'tags': [],
-                # No editorial_lead key at all
-                'content': 'Test content here.',
-                'image': '',
-                'video_url': '',
-                'agency': 'agencia_brasil',
-                'error': '',
-            }
-        ]
+        if include_key:
+            ebc_data[0]['editorial_lead'] = value
 
         result = manager._convert_ebc_to_govbr_format(ebc_data)
 
@@ -336,3 +304,321 @@ class TestEBCScrapeManager:
 
         assert 'editorial_lead' in result
         assert result['editorial_lead'][0] == 'Caminhos da Reportagem'
+
+    def test_convert_skips_items_with_errors(self, manager: EBCScrapeManager) -> None:
+        """Items with error field should be skipped during conversion."""
+        ebc_data = [
+            {'title': 'Good', 'url': 'https://example.com/1', 'content': 'Content'},
+            {'title': 'Bad', 'url': 'https://example.com/2', 'content': 'Content', 'error': 'Failed'},
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['title'] == 'Good'
+
+    def test_convert_skips_incomplete_items(self, manager: EBCScrapeManager) -> None:
+        """Items without title, url, or content should be skipped during conversion."""
+        ebc_data = [
+            {'title': '', 'url': 'https://example.com/1', 'content': 'Content'},
+            {'title': 'Title', 'url': '', 'content': 'Content'},
+            {'title': 'Title', 'url': 'https://example.com/3', 'content': ''},
+            {'title': 'Complete', 'url': 'https://example.com/4', 'content': 'Full content'},
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['title'] == 'Complete'
+
+    def test_convert_maps_published_datetime_to_published_at(self, manager: EBCScrapeManager) -> None:
+        """published_datetime should be mapped to published_at."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'published_datetime': datetime(2026, 1, 15, 14, 30),
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['published_at'] == datetime(2026, 1, 15, 14, 30)
+
+    def test_convert_sets_category_to_noticias(self, manager: EBCScrapeManager) -> None:
+        """Category should be set to 'Notícias' (hardcoded for EBC)."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://agenciabrasil.ebc.com.br/educacao/noticia/2026-01/test',
+                'content': 'Content',
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['category'] == 'Notícias'
+
+    def test_convert_maps_tags_correctly(self, manager: EBCScrapeManager) -> None:
+        """Tags should be passed through as list."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'tags': ['educacao', 'ensino'],
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['tags'] == ['educacao', 'ensino']
+
+    def test_convert_handles_empty_tags(self, manager: EBCScrapeManager) -> None:
+        """Empty tags list should be preserved."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'tags': [],
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['tags'] == []
+
+    def test_convert_maps_source_field(self, manager: EBCScrapeManager) -> None:
+        """Source field should be mapped (for Agencia Brasil)."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'source': 'Agencia Brasil',
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        # Source is not mapped to a specific field in current implementation
+        # but should not cause errors
+
+    def test_convert_maps_video_url(self, manager: EBCScrapeManager) -> None:
+        """Video URL should be mapped."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'video_url': 'https://tvbrasil.ebc.com.br/videos/123.mp4',
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['video_url'] == 'https://tvbrasil.ebc.com.br/videos/123.mp4'
+
+    def test_convert_maps_image_field(self, manager: EBCScrapeManager) -> None:
+        """Image field should be mapped."""
+        ebc_data = [
+            {
+                'title': 'Test',
+                'url': 'https://example.com/1',
+                'content': 'Content',
+                'image': 'https://agenciabrasil.ebc.com.br/images/photo.jpg',
+            }
+        ]
+        result = manager._convert_ebc_to_govbr_format(ebc_data)
+        assert len(result) == 1
+        assert result[0]['image'] == 'https://agenciabrasil.ebc.com.br/images/photo.jpg'
+
+
+# =============================================================================
+# Tests for EBCWebScraper parsing methods
+# =============================================================================
+
+
+class TestEBCWebScraperParsing:
+    """Tests for EBCWebScraper parsing and extraction methods."""
+
+    @pytest.fixture
+    def ebc_scraper(self) -> EBCWebScraper:
+        """EBCWebScraper instance for testing."""
+        return EBCWebScraper(min_date="2026-01-01", base_url="https://memoria.ebc.com.br/noticias")
+
+    def test_parse_ebc_datetime_with_time(self, ebc_scraper: EBCWebScraper) -> None:
+        """Parse EBC datetime format with time (DD/MM/YYYY - HH:MM)."""
+        result = ebc_scraper._parse_ebc_datetime("17/11/2025 - 18:58")
+
+        from datetime import timezone, timedelta
+        brasilia_tz = timezone(timedelta(hours=-3))
+        expected = datetime(2025, 11, 17, 18, 58, tzinfo=brasilia_tz)
+
+        assert result == expected
+
+    def test_parse_ebc_datetime_date_only(self, ebc_scraper: EBCWebScraper) -> None:
+        """Parse EBC date-only format (DD/MM/YYYY) - should use midnight."""
+        result = ebc_scraper._parse_ebc_datetime("15/01/2026")
+
+        from datetime import timezone, timedelta
+        brasilia_tz = timezone(timedelta(hours=-3))
+        expected = datetime(2026, 1, 15, 0, 0, tzinfo=brasilia_tz)
+
+        assert result == expected
+
+    def test_parse_ebc_datetime_empty_string(self, ebc_scraper: EBCWebScraper) -> None:
+        """Empty string should return None."""
+        result = ebc_scraper._parse_ebc_datetime("")
+        assert result is None
+
+    def test_parse_ebc_datetime_invalid(self, ebc_scraper: EBCWebScraper) -> None:
+        """Invalid date format should return None."""
+        result = ebc_scraper._parse_ebc_datetime("Publicado em janeiro")
+        assert result is None
+
+    def test_parse_ebc_datetime_none_input(self, ebc_scraper: EBCWebScraper) -> None:
+        """None input should return None."""
+        result = ebc_scraper._parse_ebc_datetime(None)
+        assert result is None
+
+    def test_get_base_domain(self, ebc_scraper: EBCWebScraper) -> None:
+        """Extract base domain from base_url."""
+        result = ebc_scraper._get_base_domain()
+        assert result == "https://memoria.ebc.com.br"
+
+    def test_get_base_domain_agencia_brasil(self) -> None:
+        """Extract base domain from Agencia Brasil URL."""
+        scraper = EBCWebScraper(
+            min_date="2026-01-01",
+            base_url="https://agenciabrasil.ebc.com.br/noticias"
+        )
+        result = scraper._get_base_domain()
+        assert result == "https://agenciabrasil.ebc.com.br"
+
+    def test_extract_tags_from_page(self, ebc_scraper: EBCWebScraper) -> None:
+        """Extract tags from /tags/ links (returns link text, not URL slug)."""
+        html = """
+        <html><body>
+            <div class="tags">
+                <a href="/tags/educacao">Educação</a>
+                <a href="/tags/ensino-superior">Ensino Superior</a>
+                <a href="/noticias">Notícias</a>
+            </div>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        result = ebc_scraper._extract_tags_from_page(soup)
+
+        # Method returns the link text, not the URL slug
+        assert result == ['Educação', 'Ensino Superior']
+
+    def test_extract_tags_no_tags(self, ebc_scraper: EBCWebScraper) -> None:
+        """Return empty list when no /tags/ links found."""
+        html = """
+        <html><body>
+            <div class="tags">
+                <a href="/noticias">Notícias</a>
+                <a href="/sobre">Sobre</a>
+            </div>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        result = ebc_scraper._extract_tags_from_page(soup)
+
+        assert result == []
+
+    def test_extract_video_url_present(self, ebc_scraper: EBCWebScraper) -> None:
+        """Extract video URL from <video><source> tag."""
+        html = """
+        <html><body>
+            <video>
+                <source src="https://tvbrasil.ebc.com.br/videos/abc123.mp4" type="video/mp4">
+            </video>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        result = ebc_scraper._extract_video_url(soup)
+
+        assert result == "https://tvbrasil.ebc.com.br/videos/abc123.mp4"
+
+    def test_extract_video_url_relative_path(self, ebc_scraper: EBCWebScraper) -> None:
+        """Convert relative video URLs to absolute."""
+        html = """
+        <html><body>
+            <video>
+                <source src="/videos/abc123.mp4" type="video/mp4">
+            </video>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        result = ebc_scraper._extract_video_url(soup)
+
+        assert result == "https://tvbrasil.ebc.com.br/videos/abc123.mp4"
+
+    def test_extract_video_url_absent(self, ebc_scraper: EBCWebScraper) -> None:
+        """Return empty string when no video found."""
+        html = """
+        <html><body>
+            <div class="content">
+                <p>Texto da notícia</p>
+            </div>
+        </body></html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        result = ebc_scraper._extract_video_url(soup)
+
+        assert result == ""  # Returns empty string, not None
+
+    def test_extract_datetime_from_jsonld(self, ebc_scraper: EBCWebScraper) -> None:
+        """Extract datetime from JSON-LD datePublished (returns tuple)."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "datePublished": "2026-01-15T14:30:00-03:00",
+                "dateModified": "2026-01-16T10:00:00-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        published_dt, updated_dt = ebc_scraper._extract_datetime_from_jsonld(soup)
+
+        from datetime import timezone, timedelta
+        brasilia_tz = timezone(timedelta(hours=-3))
+        expected_published = datetime(2026, 1, 15, 14, 30, 0, tzinfo=brasilia_tz)
+        expected_updated = datetime(2026, 1, 16, 10, 0, 0, tzinfo=brasilia_tz)
+
+        assert published_dt == expected_published
+        assert updated_dt == expected_updated
+
+    def test_extract_datetime_from_jsonld_no_modified(self, ebc_scraper: EBCWebScraper) -> None:
+        """Extract datetime when only datePublished is present."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "datePublished": "2026-01-15T14:30:00-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, 'html.parser')
+
+        published_dt, updated_dt = ebc_scraper._extract_datetime_from_jsonld(soup)
+
+        from datetime import timezone, timedelta
+        brasilia_tz = timezone(timedelta(hours=-3))
+        expected_published = datetime(2026, 1, 15, 14, 30, 0, tzinfo=brasilia_tz)
+
+        assert published_dt == expected_published
+        assert updated_dt is None

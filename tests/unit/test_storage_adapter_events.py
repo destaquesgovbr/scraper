@@ -1,8 +1,9 @@
 """
-Integration tests for StorageAdapter + EventPublisher.
+Unit tests for StorageAdapter event publishing after insert.
 
 Tests that events are published after successful inserts,
 not published on empty inserts, and not published on failures.
+All external dependencies (PostgresManager, EventPublisher) are mocked.
 """
 
 from collections import OrderedDict

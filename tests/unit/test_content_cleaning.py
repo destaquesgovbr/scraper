@@ -250,6 +250,57 @@ class TestIsJunkLineActualJunk:
 
 
 # =============================================================================
+# Tests: _is_junk_line — Edge cases
+# =============================================================================
+
+
+class TestIsJunkLineEdgeCases:
+    """Edge cases that test boundary behaviors of junk detection."""
+
+    def test_line_with_only_numbers_is_not_junk(self, scraper):
+        """Lines with only numbers should not be considered junk."""
+        assert scraper._is_junk_line("12345 67890") is False
+        assert scraper._is_junk_line("2026") is False
+
+    def test_line_with_only_special_chars_not_detected_as_junk(self, scraper):
+        """Lines with only special characters are not detected by current implementation.
+
+        Note: This documents current behavior. These lines are rare in actual content
+        and would be filtered by length checks elsewhere in the pipeline.
+        """
+        # Current implementation doesn't specifically target special-only lines
+        assert scraper._is_junk_line("--- *** ---") is False
+        assert scraper._is_junk_line("* * * * *") is False
+
+    def test_url_path_without_domain_not_detected_as_junk(self, scraper):
+        """URL paths without domain are not specifically targeted by junk detection.
+
+        Note: These are typically handled by HTML parsing/extraction logic,
+        not by the line-by-line junk detection.
+        """
+        # Short navigation paths
+        assert scraper._is_junk_line("/noticias") is False
+        # Longer URL paths with context
+        assert scraper._is_junk_line("/noticias/2026/01/15/artigo-completo-sobre-programa") is False
+
+    def test_legitimate_content_with_keyword_in_proper_name(self, scraper):
+        """Keywords appearing in proper names should not trigger false positives."""
+        line = "O Ministério da Assessoria Jurídica da União lançou novo programa de compliance"
+        # This is a legitimate ministry name with "Assessoria" in it
+        assert scraper._is_junk_line(line) is False
+
+    def test_very_long_line_with_keyword_at_start(self, scraper):
+        """Long lines with keyword at start but substantial content should not be junk."""
+        line = (
+            "Assessoria técnica do governo federal divulgou relatório de 200 páginas "
+            "detalhando os investimentos em infraestrutura realizados ao longo de 2026, "
+            "incluindo dados sobre rodovias, ferrovias e portos em todas as regiões do país."
+        )
+        # Long enough to be substantive content, not just attribution
+        assert scraper._is_junk_line(line) is False
+
+
+# =============================================================================
 # Tests: _clean_markdown_content — Full pipeline
 # =============================================================================
 
