@@ -281,11 +281,11 @@ class TestPayloadValidation:
         assert response.status_code == 422
 
     def test_invalid_field_type_returns_422(self):
-        """Invalid field type (e.g., sequential as string) should return HTTP 422."""
+        """Invalid field type that cannot be coerced should return HTTP 422."""
         response = client.post("/scrape/agencies", json={
             "start_date": "2025-01-01",
             "agencies": ["mec"],
-            "sequential": "yes"  # Should be boolean
+            "sequential": {"invalid": "object"}  # Invalid type that cannot be coerced to bool
         })
 
         assert response.status_code == 422
@@ -310,18 +310,34 @@ class TestPayloadValidation:
         # Should succeed despite extra fields
         assert response.status_code == 200
 
-    def test_future_start_date_is_accepted(self):
+    @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    def test_future_start_date_is_accepted(self, mock_storage_cls, mock_manager_cls):
         """Future dates should be accepted (validation is up to business logic)."""
+        mock_manager = MagicMock()
+        mock_manager.run_scraper.return_value = _mock_run_scraper(
+            articles_scraped=0, articles_saved=0, agencies_processed=["mec"]
+        )
+        mock_manager_cls.return_value = mock_manager
+
         response = client.post("/scrape/agencies", json={
             "start_date": "2099-12-31",
             "agencies": ["mec"]
         })
 
-        # Should not fail at validation layer (may fail in scraper logic)
-        assert response.status_code in [200, 207, 500]  # Not 422
+        # Should not fail at validation layer
+        assert response.status_code == 200
 
-    def test_end_date_before_start_date_accepted_at_api_layer(self):
+    @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    def test_end_date_before_start_date_accepted_at_api_layer(self, mock_storage_cls, mock_manager_cls):
         """end_date before start_date accepted at API layer (logic validation elsewhere)."""
+        mock_manager = MagicMock()
+        mock_manager.run_scraper.return_value = _mock_run_scraper(
+            articles_scraped=0, articles_saved=0, agencies_processed=["mec"]
+        )
+        mock_manager_cls.return_value = mock_manager
+
         response = client.post("/scrape/agencies", json={
             "start_date": "2025-12-31",
             "end_date": "2025-01-01",  # Before start_date
@@ -329,4 +345,4 @@ class TestPayloadValidation:
         })
 
         # API layer doesn't validate date logic, only types
-        assert response.status_code in [200, 207, 500]  # Not 422
+        assert response.status_code == 200
