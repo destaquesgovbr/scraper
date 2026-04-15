@@ -51,13 +51,6 @@ class TestGetAgencyName:
         scraper = _make_scraper()
         assert scraper.agency == "susep"
 
-    def test_extracts_different_agency(self):
-        scraper = Plone6APIScraper(
-            "2026-01-01",
-            "https://www.gov.br/pncp/pt-br/central-de-conteudo/noticias",
-        )
-        assert scraper.agency == "pncp"
-
 
 class TestBuildApiUrl:
     """Test URL transformation from base URL to Plone REST API endpoint."""

@@ -200,6 +200,207 @@ class TestExtractDatetimeFromText:
 
 
 # =============================================================================
+# Tests for _extract_datetime_from_jsonld()
+# =============================================================================
+
+
+class TestExtractDatetimeFromJsonLD:
+    """Tests for JSON-LD datetime extraction."""
+
+    def test_extract_datetime_from_valid_jsonld(self, scraper):
+        """Valid JSON-LD with datePublished should be extracted."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Test Article",
+                "datePublished": "2026-02-10T17:05:07-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        brasilia_tz = timezone(timedelta(hours=-3))
+
+        result = scraper._extract_datetime_from_jsonld(soup)
+
+        assert result == datetime(2026, 2, 10, 17, 5, 7, tzinfo=brasilia_tz)
+
+    def test_extract_datetime_returns_none_on_malformed_json(self, scraper):
+        """Malformed JSON (unescaped quotes) should return None."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": ""Em 2026, serão 40 leilões", afirmou ministro",
+                "datePublished": "2026-02-10T17:05:07-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result = scraper._extract_datetime_from_jsonld(soup)
+
+        assert result is None
+
+    def test_extract_datetime_returns_none_on_missing_field(self, scraper):
+        """JSON-LD without datePublished field should return None."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Test Article",
+                "author": "Gov.br"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result = scraper._extract_datetime_from_jsonld(soup)
+
+        assert result is None
+
+    def test_extract_datetime_handles_multiple_jsonld_blocks(self, scraper):
+        """Page with multiple JSON-LD blocks should extract from first NewsArticle."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "Organization",
+                "name": "Ministério da Educação"
+            }
+            </script>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Test Article",
+                "datePublished": "2026-03-15T14:30:00-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        brasilia_tz = timezone(timedelta(hours=-3))
+
+        result = scraper._extract_datetime_from_jsonld(soup)
+
+        assert result == datetime(2026, 3, 15, 14, 30, 0, tzinfo=brasilia_tz)
+
+    def test_extract_datetime_returns_none_when_no_script_tag(self, scraper):
+        """Page without JSON-LD should return None."""
+        html = """
+        <html>
+        <head><title>Test</title></head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result = scraper._extract_datetime_from_jsonld(soup)
+
+        assert result is None
+
+
+# =============================================================================
+# Tests for _extract_updated_datetime_from_jsonld()
+# =============================================================================
+
+
+class TestExtractUpdatedDatetimeFromJsonLD:
+    """Tests for JSON-LD updated datetime extraction."""
+
+    def test_extract_updated_datetime_from_jsonld(self, scraper):
+        """Valid JSON-LD with dateModified should be extracted."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Test Article",
+                "datePublished": "2026-02-10T17:05:07-03:00",
+                "dateModified": "2026-02-11T09:30:00-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        brasilia_tz = timezone(timedelta(hours=-3))
+
+        result = scraper._extract_updated_datetime_from_jsonld(soup)
+
+        assert result == datetime(2026, 2, 11, 9, 30, 0, tzinfo=brasilia_tz)
+
+    def test_extract_updated_datetime_returns_none_when_missing(self, scraper):
+        """JSON-LD without dateModified should return None."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "NewsArticle",
+                "headline": "Test Article",
+                "datePublished": "2026-02-10T17:05:07-03:00"
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result = scraper._extract_updated_datetime_from_jsonld(soup)
+
+        assert result is None
+
+    def test_extract_updated_datetime_returns_none_on_malformed_json(self, scraper):
+        """Malformed JSON should return None for updated datetime."""
+        html = """
+        <html>
+        <head>
+            <script type="application/ld+json">
+            {
+                "dateModified": "invalid json structure
+            }
+            </script>
+        </head>
+        <body><p>Content</p></body>
+        </html>
+        """
+        soup = BeautifulSoup(html, "html.parser")
+
+        result = scraper._extract_updated_datetime_from_jsonld(soup)
+
+        assert result is None
+
+
+# =============================================================================
 # Tests for listing date fallback in extract_news_info
 # =============================================================================
 

@@ -78,47 +78,31 @@ def pg_manager(mock_pool):
 class TestInsertReturnType:
     """Tests for insert() return type."""
 
-    def test_returns_tuple(self, pg_manager, mock_pool, sample_news):
-        """insert() returns a tuple of (int, list[dict])."""
+    @pytest.mark.parametrize("returned_ids,expected_count", [
+        ([("mec-2026-01-01-noticia-1",), ("mds-2026-01-02-noticia-2",)], 2),
+        ([("mec-2026-01-01-noticia-1",)], 1),
+        ([], 0),
+    ], ids=["two-inserts", "one-insert", "all-conflicts"])
+    def test_return_value_structure_and_count(self, pg_manager, mock_pool, sample_news, returned_ids, expected_count):
+        """insert() returns (int, list[dict]) with count matching RETURNING rows."""
         _, _, mock_cursor = mock_pool
 
-        # execute_values with fetch=True returns list of tuples
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",), ("mds-2026-01-02-noticia-2",)],
+            return_value=returned_ids,
         ):
             result = pg_manager.insert(sample_news)
 
+        # Verify structure
         assert isinstance(result, tuple)
         assert len(result) == 2
         assert isinstance(result[0], int)
         assert isinstance(result[1], list)
 
-    def test_count_matches_returned_ids(self, pg_manager, mock_pool, sample_news):
-        """Count equals number of RETURNING rows."""
-        _, _, mock_cursor = mock_pool
-
-        with patch(
-            "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
-        ):
-            count, articles = pg_manager.insert(sample_news)
-
-        assert count == 1
-        assert len(articles) == 1
-
-    def test_zero_inserts_on_all_conflicts(self, pg_manager, mock_pool, sample_news):
-        """Returns (0, []) when all rows conflict."""
-        _, _, mock_cursor = mock_pool
-
-        with patch(
-            "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
-        ):
-            count, articles = pg_manager.insert(sample_news)
-
-        assert count == 0
-        assert articles == []
+        # Verify count matches RETURNING rows
+        count, articles = result
+        assert count == expected_count
+        assert len(articles) == expected_count
 
 
 # =============================================================================
@@ -192,8 +176,8 @@ class TestInsertQuery:
 class TestInsertedArticlesMetadata:
     """Tests for the inserted_articles list contents."""
 
-    def test_articles_have_required_keys(self, pg_manager, mock_pool, sample_news):
-        """Each article dict has unique_id, agency_key, published_at."""
+    def test_articles_contain_correct_metadata(self, pg_manager, mock_pool, sample_news):
+        """Each article has required keys with values matching the original NewsInsert."""
         _, _, mock_cursor = mock_pool
 
         with patch(
@@ -203,23 +187,14 @@ class TestInsertedArticlesMetadata:
             _, articles = pg_manager.insert(sample_news)
 
         article = articles[0]
+        # Has required keys
         assert "unique_id" in article
         assert "agency_key" in article
         assert "published_at" in article
-
-    def test_articles_match_input_metadata(self, pg_manager, mock_pool, sample_news):
-        """Metadata in articles matches the original NewsInsert objects."""
-        _, _, mock_cursor = mock_pool
-
-        with patch(
-            "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
-        ):
-            _, articles = pg_manager.insert(sample_news)
-
-        assert articles[0]["unique_id"] == "mec-2026-01-01-noticia-1"
-        assert articles[0]["agency_key"] == "mec"
-        assert articles[0]["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        # Values match input
+        assert article["unique_id"] == "mec-2026-01-01-noticia-1"
+        assert article["agency_key"] == "mec"
+        assert article["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
 
     def test_only_returned_ids_in_articles(self, pg_manager, mock_pool, sample_news):
         """Only IDs returned by RETURNING appear in inserted_articles."""
