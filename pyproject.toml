@@ -84,3 +84,6 @@ addopts = [
     "--cov=govbr_scraper",
     "--cov-report=term-missing",
 ]
+markers = [
+    "integration: tests that make real HTTP requests to external services",
+]
