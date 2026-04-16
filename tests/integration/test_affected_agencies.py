@@ -42,9 +42,9 @@ WORKING_AGENCY = {
 # Agencies that work with BeautifulSoup (traditional HTML templates)
 SCRAPABLE_AGENCIES = {key: _ALL_URLS[key]["url"] for key in _SCRAPABLE_AGENCY_KEYS}
 
-# Agencies that use Plone6 REST API (scraper_type: plone6_api)
-# Covered by test_plone6_integration.py, not tested here
-PLONE6_AGENCIES = {"ctav", "esg", "esporte", "hfa", "memp", "reconstrucaors"}
+# Agencies with scraper_type: plone6_api (ctav, esg, esporte, hfa, memp,
+# patrimonio, pncp, povosindigenas, propriedade-intelectual, reconstrucaors, susep)
+# are covered by test_plone6_integration.py, not tested here.
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

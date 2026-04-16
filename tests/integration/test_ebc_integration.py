@@ -204,8 +204,10 @@ class TestEBCWebScraper:
 
             try:
                 article_urls = scraper.scrape_index_page(base_url)
+            except requests.exceptions.RequestException as e:
+                pytest.skip(f"Failed to fetch {agency_key} index page (network issue): {e}")
             except Exception as e:
-                pytest.skip(f"Failed to fetch {agency_key} index page: {e}")
+                pytest.fail(f"scrape_index_page() raised unexpected error for {agency_key}: {e}")
 
             # Should find articles with any of the 3 strategies
             assert len(article_urls) > 0, (
