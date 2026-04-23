@@ -147,7 +147,7 @@ agencies:
     url: https://www.gov.br/cti/pt-br/assuntos/noticias
     active: true
   ctir:
-    url: https://www.gov.br/ctir/pt-br/assuntos/noticias/2025
+    url: https://www.gov.br/ctir/pt-br/assuntos/noticias
     active: true
   cultura:
     url: https://www.gov.br/cultura/pt-br/assuntos/noticias
@@ -470,7 +470,7 @@ agencies:
     active: false
     disabled_date: "2025-01-15"
   sri:
-    url: https://www.gov.br/sri/pt-br/noticias/mais-noticias/ultimas-noticias
+    url: https://www.gov.br/sri/pt-br/noticias
     active: true
   sudam:
     url: https://www.gov.br/sudam/pt-br/noticias-1
