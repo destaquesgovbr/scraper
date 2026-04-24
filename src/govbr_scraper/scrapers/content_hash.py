@@ -13,6 +13,10 @@ def normalize_text(text: str | None) -> str:
     return text
 
 
-def compute_content_hash(title: str, content: str | None) -> str:
-    normalized = normalize_text(title) + "\n" + normalize_text(content)
+def compute_content_hash(title: str, content: str | None) -> str | None:
+    norm_title = normalize_text(title)
+    norm_content = normalize_text(content)
+    if not norm_title and not norm_content:
+        return None
+    normalized = norm_title + "\n" + norm_content
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]

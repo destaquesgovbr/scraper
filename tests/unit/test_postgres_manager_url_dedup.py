@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+from psycopg2 import errors
 
 from govbr_scraper.models.news import NewsInsert
 from govbr_scraper.storage.postgres_manager import PostgresManager
@@ -59,16 +60,15 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
-        ):
+        ) as mock_exec:
             count, articles = pg_manager.insert(news)
 
-        update_call = mock_cursor.execute.call_args_list[-1]
-        sql = update_call[0][0]
-        params = update_call[0][1]
-        assert "UPDATE news" in sql
-        assert params[0] == "Titulo editado"
-        assert params[-1] == "existing-uid-123"
+        assert mock_exec.call_count == 1
+        sql = mock_exec.call_args[0][1]
+        rows = mock_exec.call_args[0][2]
+        assert "UPDATE news SET" in sql
+        assert rows[0][0] == "Titulo editado"
+        assert rows[0][-1] == "existing-uid-123"
         assert count == 1
         assert articles[0]["unique_id"] == "existing-uid-123"
 
@@ -87,7 +87,8 @@ class TestUrlBasedDedup:
         ) as mock_exec:
             count, articles = pg_manager.insert(news)
 
-        values = mock_exec.call_args[0][2]
+        insert_call = mock_exec.call_args
+        values = insert_call[0][2]
         assert len(values) == 2
         assert count == 2
 
@@ -118,7 +119,6 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
         ):
             count, articles = pg_manager.insert(news)
 
@@ -139,16 +139,14 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
-        ):
+        ) as mock_exec:
             pg_manager.insert(news)
 
-        update_call = mock_cursor.execute.call_args_list[-1]
-        params = update_call[0][1]
-        assert params[0] == "Novo titulo"
-        assert params[1] == "Novo conteudo"
-        assert params[2] == "abc123def456789a"
-        assert params[-1] == "existing-uid"
+        rows = mock_exec.call_args[0][2]
+        assert rows[0][0] == "Novo titulo"
+        assert rows[0][1] == "Novo conteudo"
+        assert rows[0][2] == "abc123def456789a"
+        assert rows[0][-1] == "existing-uid"
 
     def test_update_includes_updated_datetime_and_extracted_at(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
@@ -164,17 +162,32 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
-        ):
+        ) as mock_exec:
             pg_manager.insert(news)
 
-        update_call = mock_cursor.execute.call_args_list[-1]
-        sql = update_call[0][0]
-        params = update_call[0][1]
+        sql = mock_exec.call_args[0][1]
+        rows = mock_exec.call_args[0][2]
         assert "updated_datetime" in sql
         assert "extracted_at" in sql
-        assert updated_dt in params
-        assert extracted_dt in params
+        assert rows[0][10] == updated_dt
+        assert rows[0][11] == extracted_dt
+
+    def test_update_invalidates_embedding(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("existing-uid", "ebc", "https://example.com/article"),
+        ]
+
+        news = [_make_news("new-uid", title="Titulo editado")]
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+        ) as mock_exec:
+            pg_manager.insert(news)
+
+        sql = mock_exec.call_args[0][1]
+        assert "content_embedding = NULL" in sql
+        assert "embedding_generated_at = NULL" in sql
 
     def test_mixed_batch_new_and_existing(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
@@ -189,11 +202,14 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("brand-new-uid",)],
+            side_effect=[None, [("brand-new-uid",)]],
         ) as mock_exec:
             count, articles = pg_manager.insert(news)
 
-        insert_values = mock_exec.call_args[0][2]
+        assert mock_exec.call_count == 2
+        update_sql = mock_exec.call_args_list[0][0][1]
+        assert "UPDATE news SET" in update_sql
+        insert_values = mock_exec.call_args_list[1][0][2]
         assert len(insert_values) == 1
         assert insert_values[0][0] == "brand-new-uid"
         assert count == 2
@@ -209,7 +225,6 @@ class TestUrlBasedDedup:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[],
         ):
             count, articles = pg_manager.insert(news)
 
@@ -236,3 +251,27 @@ class TestUrlBasedDedup:
         values = mock_exec.call_args[0][2]
         assert len(values) == 1
         assert values[0][6] == "Titulo novo"
+
+    def test_race_condition_retries_on_unique_violation(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.side_effect = [
+            [],
+            [("race-uid", "ebc", "https://example.com/article")],
+        ]
+
+        news = [_make_news("new-uid")]
+        violation = errors.UniqueViolation()
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            side_effect=[violation, None],
+        ):
+            count, articles = pg_manager.insert(news)
+
+        savepoint_calls = [
+            c for c in mock_cursor.execute.call_args_list
+            if isinstance(c[0][0], str) and "SAVEPOINT" in c[0][0]
+        ]
+        assert any("ROLLBACK TO SAVEPOINT" in c[0][0] for c in savepoint_calls)
+        assert count == 1
+        assert articles[0]["unique_id"] == "race-uid"

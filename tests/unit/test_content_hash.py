@@ -73,3 +73,14 @@ class TestComputeContentHash:
         h1 = compute_content_hash("titulo", "")
         h2 = compute_content_hash("titulo", None)
         assert h1 == h2
+
+    def test_both_empty_returns_none(self):
+        assert compute_content_hash("", None) is None
+        assert compute_content_hash("", "") is None
+
+    def test_pinned_vectors(self):
+        """Fixed reference vectors to detect drift between scraper and data-platform."""
+        assert normalize_text("Educação Pública") == "educacao publica"
+        assert normalize_text("R$ 1 bilhão em 2025") == "r 1 bilhao em 2025"
+        assert compute_content_hash("Lula", "conteudo") == "7af6a8c98b1e027b"
+        assert compute_content_hash("Governo anuncia programa", "Texto da notícia") == "ca58538e360baaf4"
