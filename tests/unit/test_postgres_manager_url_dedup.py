@@ -148,6 +148,33 @@ class TestUrlBasedDedup:
         assert params[0] == "Novo titulo"
         assert params[1] == "Novo conteudo"
         assert params[2] == "abc123def456789a"
+        assert params[-1] == "existing-uid"
+
+    def test_update_includes_updated_datetime_and_extracted_at(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("existing-uid", "ebc", "https://example.com/article"),
+        ]
+
+        updated_dt = datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc)
+        extracted_dt = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+        news = [_make_news("new-uid")]
+        news[0].updated_datetime = updated_dt
+        news[0].extracted_at = extracted_dt
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[],
+        ):
+            pg_manager.insert(news)
+
+        update_call = mock_cursor.execute.call_args_list[-1]
+        sql = update_call[0][0]
+        params = update_call[0][1]
+        assert "updated_datetime" in sql
+        assert "extracted_at" in sql
+        assert updated_dt in params
+        assert extracted_dt in params
 
     def test_mixed_batch_new_and_existing(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool

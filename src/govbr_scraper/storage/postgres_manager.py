@@ -412,7 +412,8 @@ class PostgresManager:
                 SET title = %s, content = %s, content_hash = %s,
                     summary = %s, image_url = %s, video_url = %s,
                     category = %s, tags = %s, editorial_lead = %s,
-                    subtitle = %s, updated_at = NOW()
+                    subtitle = %s, updated_datetime = %s,
+                    extracted_at = %s, updated_at = NOW()
                 WHERE unique_id = %s
                 """,
                 (
@@ -426,6 +427,8 @@ class PostgresManager:
                     new_data.tags,
                     new_data.editorial_lead,
                     new_data.subtitle,
+                    new_data.updated_datetime,
+                    new_data.extracted_at,
                     existing_uid,
                 ),
             )
