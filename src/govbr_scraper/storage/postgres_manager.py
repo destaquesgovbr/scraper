@@ -10,7 +10,7 @@ from typing import Any, cast
 from urllib.parse import quote_plus
 
 from loguru import logger
-from psycopg2 import extensions, pool
+from psycopg2 import errors, extensions, pool
 from psycopg2.extras import RealDictCursor, execute_values
 
 from govbr_scraper.models.news import Agency, NewsInsert, Theme
@@ -213,8 +213,6 @@ class PostgresManager:
             raise ValueError("News list cannot be empty")
 
         # Deduplicate by unique_id (keep first occurrence)
-        # Same pattern as HuggingFace backend's drop_duplicates()
-        # This handles race conditions where the same article appears on multiple pages
         seen_ids: set[str] = set()
         deduped_news: list[NewsInsert] = []
         for n in news:
@@ -225,7 +223,27 @@ class PostgresManager:
         if len(deduped_news) < len(news):
             logger.info(f"Removed {len(news) - len(deduped_news)} duplicate items by unique_id")
 
-        news = deduped_news
+        # Deduplicate by (agency_key, url) in-memory. Last occurrence wins.
+        # The scraper delivers articles in listing order (newest first), so the
+        # last item for a given URL is the oldest in the page — but the final
+        # value is overwritten by the Phase-1 UPDATE anyway, making the choice
+        # within a single batch inconsequential.
+        seen_urls: dict[tuple[str, str], NewsInsert] = {}
+        url_deduped: list[NewsInsert] = []
+        for n in deduped_news:
+            if n.url and n.agency_key:
+                key = (n.agency_key, n.url)
+                seen_urls[key] = n
+            else:
+                url_deduped.append(n)
+        url_deduped.extend(seen_urls.values())
+
+        if len(url_deduped) < len(deduped_news):
+            logger.info(
+                f"Removed {len(deduped_news) - len(url_deduped)} duplicate items by (agency_key, url)"
+            )
+
+        news = url_deduped
 
         logger.info(f"Inserting {len(news)} news records (allow_update={allow_update})")
 
@@ -239,101 +257,41 @@ class PostgresManager:
         try:
             cursor = conn.cursor()
 
-            # Prepare INSERT query
-            columns = [
-                "unique_id",
-                "agency_id",
-                "theme_l1_id",
-                "theme_l2_id",
-                "theme_l3_id",
-                "most_specific_theme_id",
-                "title",
-                "url",
-                "image_url",
-                "video_url",
-                "category",
-                "tags",
-                "content",
-                "editorial_lead",
-                "subtitle",
-                "summary",
-                "published_at",
-                "updated_datetime",
-                "extracted_at",
-                "agency_key",
-                "agency_name",
-            ]
+            # Two-phase insert: pre-check URLs against existing records
+            url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
+            existing_by_url = self._find_existing_by_url(url_pairs, cursor)
 
-            # Build values list
-            values = []
+            to_update: list[tuple[str, NewsInsert]] = []
+            to_insert: list[NewsInsert] = []
             for n in news:
-                values.append(
-                    (
-                        n.unique_id,
-                        n.agency_id,
-                        n.theme_l1_id,
-                        n.theme_l2_id,
-                        n.theme_l3_id,
-                        n.most_specific_theme_id,
-                        n.title,
-                        n.url,
-                        n.image_url,
-                        n.video_url,
-                        n.category,
-                        n.tags,
-                        n.content,
-                        n.editorial_lead,
-                        n.subtitle,
-                        n.summary,
-                        n.published_at,
-                        n.updated_datetime,
-                        n.extracted_at,
-                        n.agency_key,
-                        n.agency_name,
-                    )
+                key = (n.agency_key, n.url) if n.url and n.agency_key else None
+                if key and key in existing_by_url:
+                    to_update.append((existing_by_url[key], n))
+                else:
+                    to_insert.append(n)
+
+            if to_update:
+                logger.info(f"Updating {len(to_update)} existing articles by URL match")
+
+            # Phase 1: UPDATE existing articles matched by URL
+            updated_articles = self._update_existing_articles(to_update, cursor)
+            inserted_articles.extend(updated_articles)
+
+            # Phase 2: INSERT new articles
+            if to_insert:
+                new_inserted, new_articles = self._insert_new_articles(
+                    to_insert, allow_update, cursor, news_by_uid,
                 )
+                inserted = new_inserted
+                inserted_articles.extend(new_articles)
 
-            # Base INSERT
-            insert_query = f"""
-                INSERT INTO news ({", ".join(columns)})
-                VALUES %s
-            """
-
-            if allow_update:
-                # ON CONFLICT UPDATE
-                update_cols = [
-                    c for c in columns if c not in ["unique_id", "agency_id", "published_at"]
-                ]
-                update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-                insert_query += f"""
-                    ON CONFLICT (unique_id)
-                    DO UPDATE SET {update_set}, updated_at = NOW()
-                """
-            else:
-                # ON CONFLICT DO NOTHING
-                insert_query += " ON CONFLICT (unique_id) DO NOTHING"
-
-            # RETURNING to get IDs of actually inserted/updated rows
-            insert_query += " RETURNING unique_id"
-
-            # Execute batch insert with fetch=True to get RETURNING results
-            result = execute_values(cursor, insert_query, values, fetch=True)
-            returned_ids = [row[0] for row in result]
-            inserted = len(returned_ids)
             conn.commit()
 
-            # Build inserted articles metadata for event publishing
-            for uid in returned_ids:
-                n = news_by_uid.get(uid)
-                if n:
-                    inserted_articles.append({
-                        "unique_id": uid,
-                        "agency_key": n.agency_key or "",
-                        "published_at": n.published_at,
-                    })
-
-            logger.success(f"Inserted/updated {inserted} news records")
-            return inserted, inserted_articles
+            total = inserted + len(updated_articles)
+            logger.success(
+                f"Inserted {inserted}, updated {len(updated_articles)} news records (total={total})"
+            )
+            return total, inserted_articles
 
         except Exception as e:
             conn.rollback()
@@ -343,6 +301,194 @@ class PostgresManager:
         finally:
             cursor.close()
             self.put_connection(conn)
+
+    _INSERT_COLUMNS = [
+        "unique_id", "agency_id", "theme_l1_id", "theme_l2_id",
+        "theme_l3_id", "most_specific_theme_id", "title", "url",
+        "image_url", "video_url", "category", "tags", "content",
+        "editorial_lead", "subtitle", "summary", "content_hash",
+        "published_at", "updated_datetime", "extracted_at",
+        "agency_key", "agency_name",
+    ]
+
+    def _insert_new_articles(
+        self,
+        to_insert: list[NewsInsert],
+        allow_update: bool,
+        cursor,
+        news_by_uid: dict[str, NewsInsert],
+    ) -> tuple[int, list[dict]]:
+        """INSERT new articles with SAVEPOINT to handle (agency_key, url) race conditions."""
+        values = [
+            (
+                n.unique_id, n.agency_id, n.theme_l1_id, n.theme_l2_id,
+                n.theme_l3_id, n.most_specific_theme_id, n.title, n.url,
+                n.image_url, n.video_url, n.category, n.tags, n.content,
+                n.editorial_lead, n.subtitle, n.summary, n.content_hash,
+                n.published_at, n.updated_datetime, n.extracted_at,
+                n.agency_key, n.agency_name,
+            )
+            for n in to_insert
+        ]
+
+        insert_query = f"""
+            INSERT INTO news ({", ".join(self._INSERT_COLUMNS)})
+            VALUES %s
+        """
+
+        if allow_update:
+            update_cols = [
+                c for c in self._INSERT_COLUMNS
+                if c not in ["unique_id", "agency_id", "published_at"]
+            ]
+            update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            insert_query += f"""
+                ON CONFLICT (unique_id)
+                DO UPDATE SET {update_set}, updated_at = NOW()
+            """
+        else:
+            insert_query += " ON CONFLICT (unique_id) DO NOTHING"
+
+        insert_query += " RETURNING unique_id"
+
+        cursor.execute("SAVEPOINT phase2_insert")
+        try:
+            result = execute_values(cursor, insert_query, values, fetch=True)
+            cursor.execute("RELEASE SAVEPOINT phase2_insert")
+        except errors.UniqueViolation:
+            cursor.execute("ROLLBACK TO SAVEPOINT phase2_insert")
+            logger.warning(
+                "UniqueViolation on INSERT (race condition with concurrent worker). "
+                "Re-checking URLs and retrying."
+            )
+            url_pairs = [(n.agency_key, n.url) for n in to_insert if n.url and n.agency_key]
+            now_existing = self._find_existing_by_url(url_pairs, cursor)
+            retry_update: list[tuple[str, NewsInsert]] = []
+            retry_insert: list[NewsInsert] = []
+            for n in to_insert:
+                key = (n.agency_key, n.url) if n.url and n.agency_key else None
+                if key and key in now_existing:
+                    retry_update.append((now_existing[key], n))
+                else:
+                    retry_insert.append(n)
+            updated_articles = self._update_existing_articles(retry_update, cursor)
+            if retry_insert:
+                retry_values = [
+                    (
+                        n.unique_id, n.agency_id, n.theme_l1_id, n.theme_l2_id,
+                        n.theme_l3_id, n.most_specific_theme_id, n.title, n.url,
+                        n.image_url, n.video_url, n.category, n.tags, n.content,
+                        n.editorial_lead, n.subtitle, n.summary, n.content_hash,
+                        n.published_at, n.updated_datetime, n.extracted_at,
+                        n.agency_key, n.agency_name,
+                    )
+                    for n in retry_insert
+                ]
+                result = execute_values(cursor, insert_query, retry_values, fetch=True)
+            else:
+                result = []
+            returned_ids = [row[0] for row in result]
+            inserted_articles = list(updated_articles)
+            for uid in returned_ids:
+                n = news_by_uid.get(uid)
+                if n:
+                    inserted_articles.append({
+                        "unique_id": uid,
+                        "agency_key": n.agency_key or "",
+                        "published_at": n.published_at,
+                    })
+            return len(returned_ids) + len(updated_articles), inserted_articles
+
+        returned_ids = [row[0] for row in result]
+        inserted_articles: list[dict] = []
+        for uid in returned_ids:
+            n = news_by_uid.get(uid)
+            if n:
+                inserted_articles.append({
+                    "unique_id": uid,
+                    "agency_key": n.agency_key or "",
+                    "published_at": n.published_at,
+                })
+        return len(returned_ids), inserted_articles
+
+    def _find_existing_by_url(
+        self,
+        url_pairs: list[tuple[str, str]],
+        cursor,
+    ) -> dict[tuple[str, str], str]:
+        if not url_pairs:
+            return {}
+
+        query = """
+            SELECT unique_id, agency_key, url FROM news
+            WHERE (agency_key, url) IN %s
+        """
+        cursor.execute(query, (tuple(url_pairs),))
+        result: dict[tuple[str, str], str] = {}
+        for row in cursor.fetchall():
+            result[(row[1], row[2])] = row[0]
+        return result
+
+    def _update_existing_articles(
+        self,
+        updates: list[tuple[str, NewsInsert]],
+        cursor,
+    ) -> list[dict]:
+        """Batch-UPDATE existing articles matched by URL.
+
+        Must be called within the caller's transaction (shared cursor).
+        """
+        if not updates:
+            return []
+
+        rows = [
+            (
+                new_data.title,
+                new_data.content,
+                new_data.content_hash,
+                new_data.summary,
+                new_data.image_url,
+                new_data.video_url,
+                new_data.category,
+                new_data.tags,
+                new_data.editorial_lead,
+                new_data.subtitle,
+                new_data.updated_datetime,
+                new_data.extracted_at,
+                existing_uid,
+            )
+            for existing_uid, new_data in updates
+        ]
+
+        execute_values(
+            cursor,
+            """
+            UPDATE news SET
+                title = v.title, content = v.content, content_hash = v.content_hash,
+                summary = v.summary, image_url = v.image_url, video_url = v.video_url,
+                category = v.category, tags = v.tags, editorial_lead = v.editorial_lead,
+                subtitle = v.subtitle, updated_datetime = v.updated_datetime,
+                extracted_at = v.extracted_at, updated_at = NOW(),
+                content_embedding = NULL, embedding_generated_at = NULL
+            FROM (VALUES %s) AS v(
+                title, content, content_hash, summary, image_url, video_url,
+                category, tags, editorial_lead, subtitle, updated_datetime,
+                extracted_at, unique_id
+            )
+            WHERE news.unique_id = v.unique_id
+            """,
+            rows,
+            template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        )
+
+        return [
+            {
+                "unique_id": existing_uid,
+                "agency_key": new_data.agency_key or "",
+                "published_at": new_data.published_at,
+            }
+            for existing_uid, new_data in updates
+        ]
 
     def record_scrape_run(self, run: "ScrapeRunResult") -> None:
         """Record a scrape execution result.
