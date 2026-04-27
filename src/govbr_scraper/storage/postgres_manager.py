@@ -223,7 +223,11 @@ class PostgresManager:
         if len(deduped_news) < len(news):
             logger.info(f"Removed {len(news) - len(deduped_news)} duplicate items by unique_id")
 
-        # Deduplicate by (agency_key, url) in-memory (last wins = most recent title)
+        # Deduplicate by (agency_key, url) in-memory. Last occurrence wins.
+        # The scraper delivers articles in listing order (newest first), so the
+        # last item for a given URL is the oldest in the page — but the final
+        # value is overwritten by the Phase-1 UPDATE anyway, making the choice
+        # within a single batch inconsequential.
         seen_urls: dict[tuple[str, str], NewsInsert] = {}
         url_deduped: list[NewsInsert] = []
         for n in deduped_news:
