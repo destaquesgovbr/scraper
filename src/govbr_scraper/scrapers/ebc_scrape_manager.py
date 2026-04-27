@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 from govbr_scraper.models.monitoring import classify_error
 from govbr_scraper.monitoring.structured_log import log_scrape_result
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
+from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
@@ -278,6 +279,10 @@ class EBCScrapeManager:
                 item.get("agency", ""),
                 item.get("published_at", ""),
                 item.get("title", ""),
+            )
+            item["content_hash"] = compute_content_hash(
+                item.get("title", ""),
+                item.get("content"),
             )
 
         # Convert to columnar format

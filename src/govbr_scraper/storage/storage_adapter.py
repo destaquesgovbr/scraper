@@ -152,6 +152,7 @@ class StorageAdapter:
                     editorial_lead=safe_get("editorial_lead"),
                     subtitle=safe_get("subtitle"),
                     summary=safe_get("summary"),
+                    content_hash=safe_get("content_hash"),
                     published_at=published_at,
                     updated_datetime=self._parse_datetime(safe_get("updated_datetime")),
                     extracted_at=self._parse_datetime(safe_get("extracted_at")),
