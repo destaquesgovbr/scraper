@@ -7,7 +7,7 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'pyproject.toml'
-      - 'dags/config/site_urls.yaml'
+      - 'dags/**'
   workflow_dispatch:
 
 jobs:

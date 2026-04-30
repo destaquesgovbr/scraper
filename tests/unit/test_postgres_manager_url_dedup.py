@@ -1,38 +1,13 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import call, patch
 
 import pytest
 from psycopg2 import errors
 
 from govbr_scraper.models.news import NewsInsert
-from govbr_scraper.storage.postgres_manager import PostgresManager
 
 
-@pytest.fixture
-def mock_pool():
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = []
-    mock_conn.cursor.return_value = mock_cursor
-
-    mock_pool = MagicMock()
-    mock_pool.getconn.return_value = mock_conn
-
-    return mock_pool, mock_conn, mock_cursor
-
-
-@pytest.fixture
-def pg_manager(mock_pool):
-    pool_obj, _, _ = mock_pool
-    manager = PostgresManager.__new__(PostgresManager)
-    manager.connection_string = "postgresql://test"
-    manager.pool = pool_obj
-    manager._agencies_by_key = {}
-    manager._agencies_by_id = {}
-    manager._themes_by_code = {}
-    manager._themes_by_id = {}
-    manager._cache_loaded = False
-    return manager
+# mock_pool and pg_manager fixtures provided by tests/unit/conftest.py
 
 
 def _make_news(unique_id, agency_key="ebc", url="https://example.com/article", title="Titulo", content="Conteudo"):
