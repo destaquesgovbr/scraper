@@ -6,17 +6,14 @@ metadata correctness, deduplication, and ON CONFLICT modes.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import patch, call
 
 import pytest
 
 from govbr_scraper.models.news import NewsInsert
-from govbr_scraper.storage.postgres_manager import PostgresManager
 
 
-# =============================================================================
-# Fixtures
-# =============================================================================
+# mock_pool and pg_manager fixtures provided by tests/unit/conftest.py
 
 
 @pytest.fixture
@@ -40,34 +37,6 @@ def sample_news():
             published_at=datetime(2026, 1, 2, 15, 30, tzinfo=timezone.utc),
         ),
     ]
-
-
-@pytest.fixture
-def mock_pool():
-    """Mock connection pool."""
-    mock_conn = MagicMock()
-    mock_cursor = MagicMock()
-    mock_conn.cursor.return_value = mock_cursor
-
-    mock_pool = MagicMock()
-    mock_pool.getconn.return_value = mock_conn
-
-    return mock_pool, mock_conn, mock_cursor
-
-
-@pytest.fixture
-def pg_manager(mock_pool):
-    """PostgresManager with mocked pool."""
-    pool_obj, _, _ = mock_pool
-    manager = PostgresManager.__new__(PostgresManager)
-    manager._connection_string = "postgresql://test"
-    manager.pool = pool_obj
-    manager._agencies_by_key = {}
-    manager._agencies_by_id = {}
-    manager._themes_by_code = {}
-    manager._themes_by_id = {}
-    manager._cache_loaded = False
-    return manager
 
 
 # =============================================================================

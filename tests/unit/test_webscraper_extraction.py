@@ -12,21 +12,8 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 import pytest
 
-from govbr_scraper.scrapers.webscraper import WebScraper
 
-
-# =============================================================================
-# Fixtures
-# =============================================================================
-
-
-@pytest.fixture
-def scraper():
-    """Create a WebScraper instance for testing."""
-    return WebScraper(
-        base_url="https://www.gov.br/test/pt-br/noticias",
-        min_date="2026-01-01",
-    )
+# scraper fixture provided by tests/unit/conftest.py
 
 
 # =============================================================================
