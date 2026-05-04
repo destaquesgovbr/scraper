@@ -89,7 +89,9 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
             import httpx
             from airflow.models import Variable
 
-            scraper_api_url = Variable.get("scraper_api_url")
+            scraper_api_url = Variable.get("scraper_api_url", default_var="")
+            if not scraper_api_url:
+                raise ValueError("Missing required Airflow Variable: scraper_api_url")
 
             # Token IAM para autenticação no Cloud Run
             auth_req = google.auth.transport.requests.Request()

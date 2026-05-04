@@ -119,6 +119,27 @@ class TestScrapeManagerMonitoring:
         assert run.error_category is None
 
 
+    @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
+    @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
+    def test_non_sequential_logs_articles_scraped_as_saved(self, mock_load, mock_ws_cls):
+        """Non-sequential mode must not log articles_saved=0 for successful scrapes."""
+        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_scraper = MagicMock()
+        mock_scraper.scrape_news.return_value = [
+            {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"},
+            {"agency": "mec", "title": "Test2", "published_at": "2026-01-01", "url": "http://y"},
+        ]
+        mock_ws_cls.return_value = mock_scraper
+
+        manager, storage = self._make_manager()
+        storage.insert.return_value = 2
+        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=False)
+
+        storage.record_scrape_run.assert_called_once()
+        run = storage.record_scrape_run.call_args[0][0]
+        assert run.articles_saved > 0, f"Expected articles_saved > 0, got {run.articles_saved}"
+
+
 class TestScrapeManagerPreprocessing:
     """ScrapeManager data preprocessing and unique ID generation."""
 

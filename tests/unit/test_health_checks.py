@@ -52,6 +52,13 @@ class TestFindConsecutiveFailures:
         result = find_consecutive_failures(mock_conn, threshold=3)
         assert result == []
 
+    def test_query_uses_most_recent_error_not_max(self, mock_cursor_with_rows):
+        """last_error must come from the most recent row (rn=1), not alphabetical MAX."""
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        find_consecutive_failures(mock_conn)
+        sql = mock_cursor.execute.call_args[0][0]
+        assert "MAX(error_category) AS last_error" not in sql
+
 
 class TestFindStaleAgencies:
 

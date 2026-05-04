@@ -35,7 +35,7 @@ def pg_manager(mock_pool):
     """PostgresManager with mocked connection pool."""
     pool_obj, _, _ = mock_pool
     manager = PostgresManager.__new__(PostgresManager)
-    manager.connection_string = "postgresql://test"
+    manager._connection_string = "postgresql://test"
     manager.pool = pool_obj
     manager._agencies_by_key = {}
     manager._agencies_by_id = {}

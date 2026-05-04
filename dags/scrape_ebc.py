@@ -48,7 +48,9 @@ def scrape_ebc_dag():
         import httpx
         from airflow.models import Variable
 
-        scraper_api_url = Variable.get("scraper_api_url")
+        scraper_api_url = Variable.get("scraper_api_url", default_var="")
+        if not scraper_api_url:
+            raise ValueError("Missing required Airflow Variable: scraper_api_url")
 
         auth_req = google.auth.transport.requests.Request()
         token = google.oauth2.id_token.fetch_id_token(auth_req, scraper_api_url)

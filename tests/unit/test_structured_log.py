@@ -1,9 +1,9 @@
 """Tests for structured logging of scrape results."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from govbr_scraper.models.monitoring import ErrorCategory, ScrapeRunResult
-from govbr_scraper.monitoring.structured_log import log_scrape_result
+from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 
 
 class TestLogScrapeResult:
@@ -60,3 +60,24 @@ class TestLogScrapeResult:
             error_message="Connection timed out",
         )
         mock_bound.error.assert_called_once()
+
+
+class TestRecordScrapeRunSafe:
+
+    def test_delegates_to_storage(self):
+        mock_storage = MagicMock()
+        mock_run = MagicMock()
+        record_scrape_run_safe(mock_storage, mock_run, "mec")
+        mock_storage.record_scrape_run.assert_called_once_with(mock_run)
+
+    def test_swallows_exception(self):
+        mock_storage = MagicMock()
+        mock_storage.record_scrape_run.side_effect = Exception("DB down")
+        record_scrape_run_safe(mock_storage, MagicMock(), "mec")
+
+    @patch("govbr_scraper.monitoring.structured_log.logger")
+    def test_logs_warning_on_failure(self, mock_logger):
+        mock_storage = MagicMock()
+        mock_storage.record_scrape_run.side_effect = Exception("DB down")
+        record_scrape_run_safe(mock_storage, MagicMock(), "mec")
+        mock_logger.warning.assert_called_once()

@@ -46,7 +46,7 @@ class PostgresManager:
             min_connections: Minimum number of pooled connections
             max_connections: Maximum number of pooled connections
         """
-        self.connection_string = connection_string or self._get_connection_string()
+        self._connection_string = connection_string or self._get_connection_string()
         self.pool = self._create_pool(min_connections, max_connections)
 
         # In-memory caches
@@ -55,6 +55,9 @@ class PostgresManager:
         self._themes_by_code: dict[str, Theme] = {}
         self._themes_by_id: dict[int, Theme] = {}
         self._cache_loaded = False
+
+    def __repr__(self) -> str:
+        return f"PostgresManager(pool_size={self.pool.minconn}-{self.pool.maxconn})"
 
     def _get_connection_string(self) -> str:
         """
@@ -125,7 +128,7 @@ class PostgresManager:
         return pool.SimpleConnectionPool(
             min_conn,
             max_conn,
-            self.connection_string,
+            self._connection_string,
         )
 
     def get_connection(self) -> extensions.connection:
