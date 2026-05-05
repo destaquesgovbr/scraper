@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 IMAGE_CHECK_TIMEOUT = 10
 CONTENT_CHECK_TIMEOUT = 15
+MAX_CONTENT_SIZE = 5 * 1024 * 1024  # 5 MB — limite de download para evitar OOM no Cloud Run
+_CONTENT_CHUNK_SIZE = 65536
 
 
 def check_image(image_url: str, timeout: int = IMAGE_CHECK_TIMEOUT) -> dict:
@@ -43,7 +45,7 @@ def check_image(image_url: str, timeout: int = IMAGE_CHECK_TIMEOUT) -> dict:
             allow_redirects=True,
         )
         content_type = resp.headers.get("content-type", "")
-        is_image = content_type.startswith("image/") or resp.status_code == 200
+        is_image = content_type.startswith("image/")
 
         if resp.status_code == 200 and is_image:
             status = "ok"
@@ -73,6 +75,32 @@ def check_image(image_url: str, timeout: int = IMAGE_CHECK_TIMEOUT) -> dict:
             "image_checked_at": now,
             "image_content_type": None,
         }
+
+
+def _extract_article_html(soup: BeautifulSoup):
+    """Localiza o corpo do artigo no DOM.
+
+    Espelha o seletor usado por ``WebScraper.get_article_content`` em produção
+    (`div#content`) e adiciona fallback para Volto/Plone 6 antes de desistir.
+
+    Retorna o elemento BeautifulSoup ou ``None`` se não for possível localizar
+    um corpo confiável — o chamador deve tratar ``None`` como ``error`` em vez
+    de hashear a página inteira, que contém header/footer variáveis e produz
+    falso positivo ``changed`` permanente.
+    """
+    article_body = soup.find("div", id="content")
+    if article_body:
+        return article_body
+
+    # Volto / Plone 6 (SPA). O scraper de produção consome API REST para essas
+    # agências em plone6_api_scraper.py, mas tentar o DOM é um fallback barato.
+    main = soup.find("main", id="main-content")
+    if main:
+        article = main.find("article")
+        if article:
+            return article
+
+    return None
 
 
 def check_content(
@@ -111,9 +139,10 @@ def check_content(
         headers["If-None-Match"] = stored_etag
 
     try:
-        resp = requests.get(source_url, headers=headers, timeout=timeout)
+        resp = requests.get(source_url, headers=headers, timeout=timeout, stream=True)
 
         if resp.status_code == 304:
+            resp.close()
             return {
                 "content_status": "unchanged",
                 "content_hash": stored_hash,
@@ -123,6 +152,7 @@ def check_content(
             }
 
         if resp.status_code == 404:
+            resp.close()
             return {
                 "content_status": "removed",
                 "content_hash": stored_hash,
@@ -132,6 +162,7 @@ def check_content(
             }
 
         if resp.status_code != 200:
+            resp.close()
             return {
                 "content_status": "error",
                 "content_hash": stored_hash,
@@ -140,25 +171,61 @@ def check_content(
                 "new_image_url": None,
             }
 
-        # Extrair corpo do artigo e calcular hash
-        soup = BeautifulSoup(resp.content, "html.parser")
-        article_body = soup.find("div", {"id": "content-core"}) or soup.find(
-            "div", class_="content"
-        )
+        # Download limitado para evitar OOM (5MB). Páginas gov.br típicas
+        # pesam <500KB; exceder o limite indica payload anômalo → error.
+        chunks = bytearray()
+        oversize = False
+        for chunk in resp.iter_content(chunk_size=_CONTENT_CHUNK_SIZE):
+            if not chunk:
+                continue
+            chunks.extend(chunk)
+            if len(chunks) > MAX_CONTENT_SIZE:
+                oversize = True
+                break
+        resp.close()
 
-        body_html = str(article_body) if article_body else resp.text
+        if oversize:
+            logger.warning(
+                f"Conteúdo de {source_url} excedeu {MAX_CONTENT_SIZE} bytes — abortado"
+            )
+            return {
+                "content_status": "error",
+                "content_hash": stored_hash,
+                "content_checked_at": now,
+                "source_etag": stored_etag,
+                "new_image_url": None,
+            }
+
+        body_bytes = bytes(chunks)
+        soup = BeautifulSoup(body_bytes, "html.parser")
+        article_body = _extract_article_html(soup)
+
+        if article_body is None:
+            logger.warning(f"Corpo do artigo não encontrado em {source_url}")
+            return {
+                "content_status": "error",
+                "content_hash": stored_hash,
+                "content_checked_at": now,
+                "source_etag": stored_etag,
+                "new_image_url": None,
+            }
+
+        body_html = str(article_body)
         new_hash = "sha256:" + hashlib.sha256(body_html.encode("utf-8")).hexdigest()
 
-        # Extrair imagem atual da página
         new_image_url = None
-        if article_body:
-            first_img = article_body.find("img")
-            if first_img and first_img.get("src"):
-                new_image_url = first_img["src"]
+        first_img = article_body.find("img")
+        if first_img and first_img.get("src"):
+            new_image_url = first_img["src"]
 
         new_etag = resp.headers.get("etag")
 
-        if stored_hash and new_hash != stored_hash:
+        if stored_hash is None:
+            # Primeira verificação: estabelece baseline, não conclui nada sobre
+            # mudança. Tratar como "unchanged" inflaria métricas e mascararia
+            # artigos sem histórico.
+            content_status = "baseline"
+        elif new_hash != stored_hash:
             content_status = "changed"
         else:
             content_status = "unchanged"
