@@ -64,14 +64,14 @@ def monitor_scraping_health_dag():
                 WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
             ),
             recent AS (
-                SELECT agency_key, status, error_category, scraped_at
+                SELECT agency_key, status, error_category, scraped_at, rn
                 FROM ranked
                 WHERE rn <= %(threshold)s
             )
             SELECT
                 agency_key,
                 COUNT(*) AS consecutive_failures,
-                MAX(error_category) AS last_error,
+                MAX(error_category) FILTER (WHERE rn = 1) AS last_error,
                 MAX(scraped_at) AS last_failure_at
             FROM recent
             GROUP BY agency_key

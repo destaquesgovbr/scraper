@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List
 
 from govbr_scraper.models.monitoring import classify_error
-from govbr_scraper.monitoring.structured_log import log_scrape_result
+from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
@@ -122,10 +122,7 @@ class EBCScrapeManager:
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
-                    try:
-                        self.dataset_manager.record_scrape_run(run)
-                    except Exception as tracking_err:
-                        logging.warning(f"Failed to record scrape run for {agency_name}: {tracking_err}")
+                    record_scrape_run_safe(self.dataset_manager, run, agency_name)
             else:
                 all_news_data = []
                 for agency_name, scraper in webscrapers:
@@ -143,6 +140,7 @@ class EBCScrapeManager:
                             agency_key=agency_name,
                             status="success",
                             articles_scraped=len(scraped_data) if scraped_data else 0,
+                            articles_saved=len(scraped_data) if scraped_data else 0,
                             execution_time_seconds=elapsed,
                         )
                     except Exception as e:
@@ -156,10 +154,7 @@ class EBCScrapeManager:
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
-                    try:
-                        self.dataset_manager.record_scrape_run(run)
-                    except Exception as tracking_err:
-                        logging.warning(f"Failed to record scrape run for {agency_name}: {tracking_err}")
+                    record_scrape_run_safe(self.dataset_manager, run, agency_name)
 
                 if all_news_data:
                     logging.info("Appending all collected news to dataset.")

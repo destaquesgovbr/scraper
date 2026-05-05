@@ -64,3 +64,11 @@ def log_scrape_result(
         )
 
     return result
+
+
+def record_scrape_run_safe(storage, run: ScrapeRunResult, agency_key: str) -> None:
+    """Record a scrape run, logging but not raising on failure."""
+    try:
+        storage.record_scrape_run(run)
+    except Exception as err:
+        logger.warning("Failed to record scrape run for {agency}: {err}", agency=agency_key, err=err)

@@ -30,7 +30,7 @@ class TestGetConnectionString:
         mock_create_pool.return_value = MagicMock()
         manager = PostgresManager()
 
-        assert manager.connection_string == "postgresql://user:pass@localhost/db"
+        assert manager._connection_string == "postgresql://user:pass@localhost/db"
 
     @patch.dict(os.environ, {}, clear=True)
     @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
@@ -53,9 +53,9 @@ class TestGetConnectionString:
         manager = PostgresManager()
 
         # Should detect proxy and return localhost with extracted password
-        assert "127.0.0.1" in manager.connection_string
-        assert "destaquesgovbr_app" in manager.connection_string
-        assert manager.connection_string.startswith("postgresql://")
+        assert "127.0.0.1" in manager._connection_string
+        assert "destaquesgovbr_app" in manager._connection_string
+        assert manager._connection_string.startswith("postgresql://")
 
     @patch.dict(os.environ, {}, clear=True)
     @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
@@ -78,7 +78,7 @@ class TestGetConnectionString:
         manager = PostgresManager()
 
         # Should return original secret connection string
-        assert manager.connection_string == "postgresql://user:pass@cloudsql-host/db"
+        assert manager._connection_string == "postgresql://user:pass@cloudsql-host/db"
 
     @patch.dict(os.environ, {"DATABASE_URL": "postgresql://custom:custom@custom-host/custom"})
     @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
@@ -97,7 +97,7 @@ class TestGetConnectionString:
         manager = PostgresManager()
 
         # Should use env var, not Secret Manager
-        assert manager.connection_string == "postgresql://custom:custom@custom-host/custom"
+        assert manager._connection_string == "postgresql://custom:custom@custom-host/custom"
         # Secret Manager should not have been called
         mock_run.assert_not_called()
 
@@ -110,14 +110,35 @@ class TestGetConnectionString:
             manager = PostgresManager()
 
             # Should strip whitespace
-            assert manager.connection_string == "postgresql://test:test@testhost/testdb"
-            assert not manager.connection_string.startswith(" ")
-            assert not manager.connection_string.endswith(" ")
+            assert manager._connection_string == "postgresql://test:test@testhost/testdb"
+            assert not manager._connection_string.startswith(" ")
+            assert not manager._connection_string.endswith(" ")
 
 
 # =============================================================================
 # Tests for load_cache()
 # =============================================================================
+
+
+class TestCredentialProtection:
+    """Tests that connection string credentials are not exposed."""
+
+    @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
+    def test_connection_string_not_in_repr(self, mock_create_pool):
+        """__repr__ must not expose the connection string password."""
+        mock_create_pool.return_value = MagicMock()
+        manager = PostgresManager(connection_string="postgresql://user:s3cret@host/db")
+        representation = repr(manager)
+        assert "s3cret" not in representation
+        assert "connection_string" not in representation
+
+    @patch("govbr_scraper.storage.postgres_manager.PostgresManager._create_pool")
+    def test_connection_string_is_private(self, mock_create_pool):
+        """Connection string should be stored as private attribute."""
+        mock_create_pool.return_value = MagicMock()
+        manager = PostgresManager(connection_string="postgresql://user:pass@host/db")
+        assert hasattr(manager, "_connection_string")
+        assert not hasattr(manager, "connection_string")
 
 
 class TestLoadCache:
