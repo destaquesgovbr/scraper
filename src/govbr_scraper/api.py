@@ -10,7 +10,7 @@ import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -106,6 +106,61 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
         message=message,
     )
     return JSONResponse(content=response.model_dump(), status_code=http_status)
+
+
+# Allowlist de domínios aceitos pelo /verify/integrity. Mitiga SSRF contra o
+# metadata server do GCP (169.254.169.254) e sondagem da rede interna do Cloud
+# Run. Manter em sincronia com site_urls.yaml (gov.br) e ebc_webscraper.py (EBC).
+_ALLOWED_URL_PREFIXES = (
+    "https://www.gov.br/",
+    "https://agenciabrasil.ebc.com.br/",
+    "https://memoria.ebc.com.br/",
+    "https://tvbrasil.ebc.com.br/",
+)
+
+
+def _validate_allowed_url(value: str | None) -> str | None:
+    if value is None:
+        return value
+    if not any(value.startswith(prefix) for prefix in _ALLOWED_URL_PREFIXES):
+        raise ValueError(
+            "URL fora da allowlist; domínios aceitos: "
+            + ", ".join(p.rstrip("/") for p in _ALLOWED_URL_PREFIXES)
+        )
+    return value
+
+
+class VerifyArticle(BaseModel):
+    unique_id: str
+    url: str | None = None
+    image_url: str | None = None
+    content_hash: str | None = None
+    source_etag: str | None = None
+    check_content: bool = False
+
+    @field_validator("url", "image_url")
+    @classmethod
+    def _check_url_allowlist(cls, value: str | None) -> str | None:
+        return _validate_allowed_url(value)
+
+
+class VerifyRequest(BaseModel):
+    articles: list[VerifyArticle]
+
+
+@app.post("/verify/integrity")
+def verify_integrity(req: VerifyRequest):
+    from govbr_scraper.integrity.service import verify_batch
+
+    logger.info(f"Verificando integridade de {len(req.articles)} artigos")
+
+    try:
+        result = verify_batch([a.model_dump() for a in req.articles])
+    except Exception as e:
+        logger.error(f"Verificação de integridade falhou: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return result
 
 
 @app.post("/scrape/ebc", response_model=ScrapeResponse)
