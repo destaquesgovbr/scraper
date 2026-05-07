@@ -114,8 +114,11 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
 _ALLOWED_URL_PREFIXES = (
     "https://www.gov.br/",
     "https://agenciabrasil.ebc.com.br/",
+    "https://imagens.ebc.com.br/",
     "https://memoria.ebc.com.br/",
     "https://tvbrasil.ebc.com.br/",
+    "https://live.staticflickr.com/",
+    "https://storage.googleapis.com/destaquesgovbr-thumbnails/",
 )
 
 

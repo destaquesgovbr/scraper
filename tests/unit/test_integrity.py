@@ -353,6 +353,34 @@ class TestVerifyArticleAllowlist:
             image_url="https://tvbrasil.ebc.com.br/img.jpg",
         )
 
+    def test_accepts_imagens_ebc(self):
+        art = VerifyArticle(
+            unique_id="x",
+            image_url="https://imagens.ebc.com.br/unsafe/800x450/smart/https://agenciabrasil.ebc.com.br/sites/default/files/atoms/image/foto.jpg",
+        )
+        assert art.image_url.startswith("https://imagens.ebc.com.br/")
+
+    def test_accepts_staticflickr(self):
+        art = VerifyArticle(
+            unique_id="x",
+            image_url="https://live.staticflickr.com/65535/12345678901_abcdef1234_b.jpg",
+        )
+        assert art.image_url.startswith("https://live.staticflickr.com/")
+
+    def test_accepts_gcs_thumbnails(self):
+        art = VerifyArticle(
+            unique_id="x",
+            image_url="https://storage.googleapis.com/destaquesgovbr-thumbnails/thumbnails/article_123.jpg",
+        )
+        assert art.image_url.startswith("https://storage.googleapis.com/destaquesgovbr-thumbnails/")
+
+    def test_rejects_other_gcs_bucket(self):
+        with pytest.raises(ValidationError):
+            VerifyArticle(
+                unique_id="x",
+                image_url="https://storage.googleapis.com/destaquesgovbr-thumbnails-evil/payload",
+            )
+
     def test_allows_null_fields(self):
         # url e image_url são opcionais
         art = VerifyArticle(unique_id="x")
