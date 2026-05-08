@@ -8,7 +8,8 @@ Designed to run on Cloud Run, called by Airflow DAGs.
 import logging
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
@@ -20,6 +21,21 @@ app = FastAPI(
     description="HTTP wrapper for gov.br and EBC news scrapers",
     version="1.0.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors with details for debugging."""
+    errors = exc.errors()
+    logger.warning(
+        f"Validation error on {request.url.path}: {len(errors)} error(s) - {errors}"
+    )
+    # Return JSONResponse directly with explicit status code
+    response = JSONResponse(
+        status_code=422,
+        content={"detail": errors},
+    )
+    return response
 
 
 class ScrapeAgenciesRequest(BaseModel):
