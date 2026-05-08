@@ -24,18 +24,18 @@ app = FastAPI(
 
 
 @app.exception_handler(RequestValidationError)
-def validation_exception_handler(request: Request, exc: RequestValidationError):
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Log validation errors with details for debugging."""
     errors = exc.errors()
+    truncated = errors[:5]
+    suffix = f" (mostrando 5 de {len(errors)})" if len(errors) > 5 else ""
     logger.warning(
-        f"Validation error on {request.url.path}: {len(errors)} error(s) - {errors}"
+        f"Validation error on {request.url.path}: {len(errors)} error(s){suffix} - {truncated}"
     )
-    # Return JSONResponse directly with explicit status code
-    response = JSONResponse(
+    return JSONResponse(
         status_code=422,
         content={"detail": errors},
     )
-    return response
 
 
 class ScrapeAgenciesRequest(BaseModel):
