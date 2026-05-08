@@ -387,6 +387,12 @@ class TestVerifyArticleAllowlist:
         assert art.url is None
         assert art.image_url is None
 
+    def test_allows_empty_string_fields(self):
+        # String vazia no banco deve ser tratada como None
+        art = VerifyArticle(unique_id="x", url="", image_url="")
+        assert art.url is None
+        assert art.image_url is None
+
     def test_rejects_gcp_metadata(self):
         with pytest.raises(ValidationError):
             VerifyArticle(
