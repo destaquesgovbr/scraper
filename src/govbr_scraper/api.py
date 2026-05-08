@@ -139,8 +139,8 @@ _ALLOWED_URL_PREFIXES = (
 
 
 def _validate_allowed_url(value: str | None) -> str | None:
-    if value is None:
-        return value
+    if not value:
+        return None
     if not any(value.startswith(prefix) for prefix in _ALLOWED_URL_PREFIXES):
         raise ValueError(
             "URL fora da allowlist; domínios aceitos: "
