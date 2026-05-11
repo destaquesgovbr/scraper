@@ -172,7 +172,12 @@ class TestLoadUrlsReturnsConfigDict:
 
     def test_plone6_agencies_have_correct_scraper_type(self):
         """Plone 6 agencies must be configured with scraper_type=plone6_api."""
-        plone6_agencies = ["susep", "patrimonio", "propriedade-intelectual", "pncp"]
+        plone6_agencies = [
+            "susep", "patrimonio", "propriedade-intelectual", "pncp",
+            "censipam", "inpp", "esd", "transferegov", "fundacentro",
+            "museugoeldi", "aids", "anpd", "florestal", "ouvidorias",
+            "mulheres", "insa",
+        ]
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         for agency in plone6_agencies:
             result = load_urls_from_yaml(config_dir, "site_urls.yaml", agency=agency)

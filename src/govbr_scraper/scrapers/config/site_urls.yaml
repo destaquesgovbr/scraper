@@ -23,6 +23,7 @@ agencies:
   aids:
     url: https://www.gov.br/aids/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   ana:
     url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
     active: true
@@ -47,6 +48,7 @@ agencies:
   anpd:
     url: https://www.gov.br/anpd/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   ans:
     url: https://www.gov.br/ans/pt-br/assuntos/noticias
     active: true
@@ -95,6 +97,7 @@ agencies:
   censipam:
     url: https://www.gov.br/censipam/pt-br/central-de-conteudos/noticias
     active: true
+    scraper_type: plone6_api
   cetem:
     url: https://www.gov.br/cetem/pt-br/noticias
     active: true
@@ -176,6 +179,7 @@ agencies:
   esd:
     url: https://www.gov.br/esd/pt-br/central-de-conteudo/noticias
     active: true
+    scraper_type: plone6_api
   esg:
     url: https://www.gov.br/esg/pt-br/centrais-de-conteudo/noticias
     active: true
@@ -193,6 +197,7 @@ agencies:
   florestal:
     url: https://www.gov.br/florestal/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   fnde:
     url: https://www.gov.br/fnde/pt-br/assuntos/noticias
     active: true
@@ -206,8 +211,9 @@ agencies:
     url: https://www.gov.br/funarte/pt-br/assuntos/noticias/todas-noticias
     active: true
   fundacentro:
-    url: https://www.gov.br/fundacentro/pt-br/comunicacao/noticias/noticias/ultimas-noticias
+    url: https://www.gov.br/fundacentro/pt-br/comunicacao/noticias
     active: true
+    scraper_type: plone6_api
   fundaj:
     url: https://www.gov.br/fundaj/pt-br/centrais-de-conteudo/noticias-1
     active: true
@@ -284,9 +290,11 @@ agencies:
   inpp:
     url: https://www.gov.br/inpp/pt-br/noticias
     active: true
+    scraper_type: plone6_api
   insa:
     url: https://www.gov.br/insa/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   inss:
     url: https://www.gov.br/inss/pt-br/noticias/ultimas-noticias
     active: true
@@ -371,12 +379,14 @@ agencies:
   mulheres:
     url: https://www.gov.br/mulheres/pt-br/central-de-conteudos/noticias
     active: true
+    scraper_type: plone6_api
   museudoindio:
     url: https://www.gov.br/museudoindio/pt-br/assuntos/noticias
     active: true
   museugoeldi:
     url: https://www.gov.br/museugoeldi/pt-br/arquivos/noticias
     active: true
+    scraper_type: plone6_api
   museus:
     url: https://www.gov.br/museus/pt-br/assuntos/noticias
     active: true
@@ -389,6 +399,7 @@ agencies:
   ouvidorias:
     url: https://www.gov.br/ouvidorias/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   palmares:
     url: https://www.gov.br/palmares/pt-br/assuntos/noticias
     active: true
@@ -495,8 +506,9 @@ agencies:
     url: https://www.gov.br/trabalho-e-emprego/pt-br/noticias-e-conteudo
     active: true
   transferegov:
-    url: https://www.gov.br/transferegov/pt-br/noticias/noticias/2025
+    url: https://www.gov.br/transferegov/pt-br/noticias
     active: true
+    scraper_type: plone6_api
   transportes:
     url: https://www.gov.br/transportes/pt-br/assuntos/noticias
     active: true
