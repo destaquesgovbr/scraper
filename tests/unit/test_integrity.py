@@ -184,6 +184,17 @@ class TestCheckContent:
         assert result["new_image_url"] == "https://gov.br/nova.jpg"
 
     @patch("govbr_scraper.integrity.checker.requests.get")
+    def test_content_absolutizes_relative_image_url(self, mock_get):
+        html = b'<div id="content"><img src="resolveuid/abc123/@@images/image"/><p>Texto</p></div>'
+        mock_get.return_value = _mock_get_response(html)
+
+        result = check_content(
+            "https://www.gov.br/mec/pt-br/noticias/artigo", stored_hash="sha256:old"
+        )
+        assert result["new_image_url"].startswith("https://")
+        assert "resolveuid" in result["new_image_url"]
+
+    @patch("govbr_scraper.integrity.checker.requests.get")
     def test_content_error_when_body_not_found(self, mock_get):
         # Agências Volto/Plone 6 ou páginas com DOM inesperado: sem corpo
         # identificável, reportar error em vez de hashear a página inteira
@@ -417,12 +428,7 @@ class TestVerifyArticleAllowlist:
 
 class TestVerifyIntegrityEndpoint:
     def test_endpoint_rejects_bad_url_with_422(self, caplog):
-        """Test that validation errors are logged with details.
-
-        Note: The handler is async and returns 422 in production, but TestClient
-        with raise_server_exceptions=False still returns 500 due to Starlette
-        internals. The important behavior (logging) is verified here.
-        """
+        """Validation errors must return 422 with JSON-serializable detail."""
         import logging
         caplog.set_level(logging.WARNING)
 
@@ -436,8 +442,25 @@ class TestVerifyIntegrityEndpoint:
             },
         )
 
-        # Verify validation error was logged with truncated details
-        assert any("Validation error on /verify/integrity" in record.message
-                   for record in caplog.records)
+        assert resp.status_code == 422
+        body = resp.json()
+        assert isinstance(body["detail"], list)
         assert any("169.254.169.254" in record.message
                    for record in caplog.records)
+
+    def test_relative_url_returns_422_not_500(self):
+        """Plone resolveuid relative URLs must return 422, not 500."""
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(
+            "/verify/integrity",
+            json={
+                "articles": [
+                    {"unique_id": "x", "image_url": "resolveuid/abc123/@@images/image"}
+                ]
+            },
+        )
+
+        assert resp.status_code == 422
+        body = resp.json()
+        assert isinstance(body["detail"], list)
+        assert body["detail"][0]["type"] == "value_error"
