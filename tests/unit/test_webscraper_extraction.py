@@ -471,3 +471,53 @@ class TestExtractTagsFromArticlePage:
         result = scraper._extract_tags_from_article_page(soup)
 
         assert result == []
+
+
+# =============================================================================
+# Tests for _extract_image_url (URL absolutization)
+# =============================================================================
+
+
+class TestExtractImageUrl:
+    """Tests for _extract_image_url with relative URL absolutization."""
+
+    def test_absolute_url_unchanged(self, scraper):
+        html = '<div><img src="https://www.gov.br/img.jpg"/></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(body, article_url="https://www.gov.br/mec/noticia")
+        assert result == "https://www.gov.br/img.jpg"
+
+    def test_relative_resolveuid_absolutized(self, scraper):
+        html = '<div><img src="resolveuid/6d007f028ca14a1abc427a81fabbf029/@@images/image/Imagem-6C"/></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(
+            body, article_url="https://www.gov.br/mec/pt-br/noticias/artigo"
+        )
+        assert result.startswith("https://www.gov.br/")
+        assert "resolveuid" in result
+
+    def test_slash_relative_url_absolutized(self, scraper):
+        html = '<div><img src="/mec/images/foto.jpg"/></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(
+            body, article_url="https://www.gov.br/mec/pt-br/noticias/artigo"
+        )
+        assert result == "https://www.gov.br/mec/images/foto.jpg"
+
+    def test_no_img_returns_none(self, scraper):
+        html = '<div><p>No image here</p></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(body, article_url="https://www.gov.br/mec/noticia")
+        assert result is None
+
+    def test_img_without_src_returns_none(self, scraper):
+        html = '<div><img alt="no src"/></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(body, article_url="https://www.gov.br/mec/noticia")
+        assert result is None
+
+    def test_backward_compat_no_article_url(self, scraper):
+        html = '<div><img src="https://www.gov.br/img.jpg"/></div>'
+        body = BeautifulSoup(html, "html.parser").div
+        result = scraper._extract_image_url(body)
+        assert result == "https://www.gov.br/img.jpg"

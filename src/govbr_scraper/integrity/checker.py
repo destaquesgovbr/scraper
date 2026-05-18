@@ -3,6 +3,7 @@
 import hashlib
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -216,7 +217,8 @@ def check_content(
         new_image_url = None
         first_img = article_body.find("img")
         if first_img and first_img.get("src"):
-            new_image_url = first_img["src"]
+            img_src = first_img["src"]
+            new_image_url = urljoin(source_url, img_src) if not img_src.startswith("http") else img_src
 
         new_etag = resp.headers.get("etag")
 
