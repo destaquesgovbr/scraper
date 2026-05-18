@@ -151,7 +151,7 @@ def monitor_scraping_health_dag():
     def send_alerts(failures: list[dict], stale: list[dict]):
         """Envia alertas agregados via Telegram (ou loga)."""
         from airflow.models import Variable
-        from notify import send_alert
+        from scraper.notify import send_alert
 
         if not failures and not stale:
             logger.info("Sem alertas para enviar.")

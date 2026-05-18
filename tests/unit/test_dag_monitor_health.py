@@ -31,10 +31,18 @@ def _make_airflow_mocks():
     mock_models = MagicMock()
     mock_models.Variable = mock_variable
 
+    mock_notify = MagicMock()
+    mock_notify.send_alert = MagicMock(return_value=True)
+
+    mock_scraper_pkg = MagicMock()
+    mock_scraper_pkg.notify = mock_notify
+
     return {
         "airflow": MagicMock(),
         "airflow.decorators": mock_decorators,
         "airflow.models": mock_models,
+        "scraper": mock_scraper_pkg,
+        "scraper.notify": mock_notify,
     }
 
 
@@ -190,3 +198,28 @@ class TestAlertMessageFormatting:
         failures = []
         stale = []
         assert not failures and not stale
+
+
+class TestSendAlertsTask:
+    """Tests for the send_alerts task importing scraper.notify correctly."""
+
+    def test_send_alerts_imports_from_scraper_notify(self):
+        """send_alerts must import from scraper.notify, not bare notify."""
+        import inspect
+        mod = _load_module()
+        # The fake_task decorator stores the original function
+        # We need to find it among tasks created during module load
+        source = inspect.getsource(mod.monitor_scraping_health_dag)
+        assert "from scraper.notify import send_alert" in source
+
+    def test_module_loads_with_scraper_notify_mock(self):
+        """DAG module must load successfully when scraper.notify is available."""
+        airflow_mocks = _make_airflow_mocks()
+
+        for key in list(sys.modules):
+            if key.startswith("dags.monitor_scraping_health"):
+                del sys.modules[key]
+
+        with patch.dict(sys.modules, airflow_mocks):
+            import dags.monitor_scraping_health as mod
+            assert mod.monitor_scraping_health_dag is not None
