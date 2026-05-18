@@ -5,6 +5,7 @@ import re
 import time
 from datetime import date, datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -838,7 +839,7 @@ class WebScraper:
             category = self._extract_category_from_article_page(soup)
 
             # Extract image before cleaning
-            image_url = self._extract_image_url(article_body)
+            image_url = self._extract_image_url(article_body, article_url=url)
 
             # Extract datetimes from already-fetched soup (avoid redundant HTTP request)
             published_dt = self._extract_datetime_from_jsonld(soup)
@@ -883,15 +884,23 @@ class WebScraper:
 
         return article_body
 
-    def _extract_image_url(self, article_body) -> Optional[str]:
+    def _extract_image_url(self, article_body, article_url: str = "") -> Optional[str]:
         """
-        Extract the first image URL from article body.
+        Extract the first image URL from article body, absolutizing relative paths.
 
         :param article_body: BeautifulSoup element
-        :return: Image URL or None
+        :param article_url: The article URL used as base for relative path resolution
+        :return: Absolute image URL or None
         """
         first_img = article_body.find("img")
-        return first_img["src"] if first_img else None
+        if not first_img:
+            return None
+        img_src = first_img.get("src")
+        if not img_src:
+            return None
+        if not img_src.startswith("http"):
+            return urljoin(article_url, img_src)
+        return img_src
 
     def _clean_html_with_validation(self, article_body, url: str, editorial_lead: Optional[str] = None, subtitle: Optional[str] = None):
         """

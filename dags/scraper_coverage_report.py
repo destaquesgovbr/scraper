@@ -104,7 +104,7 @@ def scraper_coverage_report_dag():
     def alert_on_low_coverage(report: dict):
         """Alerta se cobertura abaixo do threshold."""
         from airflow.models import Variable
-        from notify import send_alert
+        from scraper.notify import send_alert
 
         min_ratio = float(Variable.get("scraper_min_coverage_ratio", default_var=0.8))
 
