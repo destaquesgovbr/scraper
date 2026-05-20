@@ -1,12 +1,12 @@
 # DestaquesGovBr Scraper
 
-Scraper standalone para notícias de sites governamentais brasileiros (~155 agências gov.br + EBC). Suporta três tipos de scraper (HTML, EBC, Plone6 API), publica eventos Pub/Sub após inserção, e inclui sistema completo de monitoramento com alertas.
+Scraper standalone para notícias de sites governamentais brasileiros (~155 agências gov.br + EBC). Suporta três tipos de scraper (HTML, EBC, Plone6 API), publica eventos Pub/Sub após inserção, e inclui sistema completo de monitoramento com alertas. O sistema inclui 3 DAGs de manutenção.
 
 ## Visão Geral
 
 O scraper coleta notícias publicadas em sites gov.br e da EBC (Agência Brasil, TV Brasil, etc.), extraindo título, conteúdo, data de publicação e metadados. Os dados são persistidos no PostgreSQL (upsert por unique_id, deduplicação por URL). Após persistência, eventos são publicados no Pub/Sub (`dgb.news.scraped`) para consumo downstream.
 
-A coleta é orquestrada por **DAGs Airflow** (Cloud Composer) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 4 DAGs de manutenção para monitoramento, alertas e retenção de dados.
+A coleta é orquestrada por **DAGs Airflow** (Cloud Composer) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
 
 ## Arquitetura
 
@@ -263,7 +263,9 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 Cada DAG de scraping:
 - Chama a API no Cloud Run via HTTP POST
 - Autentica com ID token IAM (`google.oauth2.id_token`)
-- Retry: 2x com backoff exponencial (base 5min)
+- Retry: 2x com delay de 5min
+  - **Agências gov.br:** backoff exponencial (`retry_exponential_backoff=True`), max_retry_delay 15min
+  - **EBC:** flat 5min, sem exponencial
 - Timeout: 10min (agências) / 30min (EBC)
 
 ### DAGs de manutenção
@@ -282,7 +284,8 @@ Cada DAG de scraping:
 
 | Coluna | Tipo | Notas |
 |--------|------|-------|
-| `unique_id` | text PK | Formato: `{slug}_{suffix}` |
+| `id` | serial | PK interno (autoincrement) |
+| `unique_id` | text unique | Formato: `{slug}_{suffix}` |
 | `agency_id` | int FK | → agencies.id |
 | `title` | text | |
 | `url` | text | |
@@ -306,7 +309,9 @@ Cada DAG de scraping:
 | `content_embedding` | vector(768) | Phase 4.7 |
 | `embedding_generated_at` | timestamptz | Phase 4.7 |
 
-**Constraints:** `unique_id` é PK (unique). Deduplicação por `(agency_key, url)` via pré-check + SAVEPOINT.
+**Constraints:** `unique_id` é unique. Deduplicação por `(agency_key, url)` via pré-check + SAVEPOINT.
+
+**Nuance do `allow_update`:** Artigos com mesmo `(agency_key, url)` são **sempre** atualizados via pre-check, independentemente do `allow_update`. O parâmetro controla apenas o comportamento para artigos novos com conflito em `unique_id` (ON CONFLICT DO UPDATE vs DO NOTHING).
 
 ### Tabela `agencies`
 
@@ -433,6 +438,10 @@ gsutil -m rsync -r -d dags/ gs://{COMPOSER_BUCKET}/dags/scraper/
 ```bash
 # Instalar dependências
 poetry install
+
+# Variáveis de ambiente mínimas (apenas DATABASE_URL é obrigatória)
+export DATABASE_URL=postgresql://user:pass@localhost:5432/destaquesgovbr
+# export PUBSUB_TOPIC_NEWS_SCRAPED=...  # opcional — graceful degradation se ausente
 
 # Rodar API localmente
 poetry run uvicorn govbr_scraper.api:app --reload

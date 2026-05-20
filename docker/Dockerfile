@@ -21,7 +21,7 @@ RUN poetry config virtualenvs.create false
 RUN poetry install --no-root --no-interaction --no-ansi
 
 # Copy readme (referenced in pyproject.toml) and source code
-COPY CLAUDE.md ./
+COPY README.md ./
 COPY src/ src/
 
 # Install the package itself

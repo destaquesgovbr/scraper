@@ -19,14 +19,22 @@ Procedimentos para operar e manter os ~155 scrapers em produção.
        scraper_type: plone6_api  # omitir para html
    ```
 
-4. Sincronize o arquivo:
+4. **Insira a agência no banco de dados** (obrigatório — sem isso, todos os artigos serão descartados silenciosamente):
+   ```sql
+   INSERT INTO agencies (key, name, type, url)
+   VALUES ('nova_agencia', 'Nome da Agência', 'federal', 'https://www.gov.br/nova-agencia/...')
+   ON CONFLICT (key) DO NOTHING;
+   ```
+   O `storage_adapter.py` faz lookup por `agency_key` no cache do banco. Se a agência não existir, cada artigo é pulado com `logger.warning("Skipping record: unknown agency")` — sem erro visível na DAG.
+
+5. Sincronize o arquivo:
    ```bash
    cp src/govbr_scraper/scrapers/config/site_urls.yaml dags/config/site_urls.yaml
    ```
 
-5. Abra PR. O CI valida que os YAML estão sincronizados.
+6. Abra PR. O CI valida que os YAML estão sincronizados.
 
-6. Após merge, a DAG `scrape_nova_agencia` será criada automaticamente pelo `scrape_agencies.py` (geração dinâmica).
+7. Após merge, a DAG `scrape_nova_agencia` será criada automaticamente pelo `scrape_agencies.py` (geração dinâmica).
 
 ## Adicionar Endpoint EBC
 
@@ -44,13 +52,13 @@ agencies:
     disabled_date: "2026-05-10"
 ```
 
-A DAG continuará existindo no Airflow mas o `load_urls_from_yaml()` filtra agências inativas e loga o motivo.
+A DAG **deixa de ser gerada** — o `scrape_agencies.py` gera DAGs dinamicamente apenas para agências ativas. No Airflow UI, a DAG ficará em estado "missing" após o próximo deploy das DAGs. O `load_urls_from_yaml()` loga um resumo das agências filtradas em INFO (motivo individual por agência em DEBUG).
 
 ## Migrar Agência para Plone6
 
 Quando uma agência migra de Plone clássico para Plone 6 (Volto/React):
 
-1. Verifique que a API REST está acessível: `curl https://www.gov.br/{agencia}/pt-br/assuntos/noticias/++api++/@search?portal_type=News+Item`
+1. Verifique que a API REST está acessível: `curl https://www.gov.br/{agencia}/++api++/pt-br/assuntos/noticias/@search?portal_type=News+Item`
 2. Altere `scraper_type` no YAML:
    ```yaml
    agencia_migrada:
@@ -89,7 +97,7 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria.
 ### 3. Verificar logs no Cloud Run
 
 ```bash
-gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="destaquesgovbr-scraper-api"' --limit=50 --format=json
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="destaquesgovbr-scraper-api"' --project=destaquesgovbr --limit=50 --format=json
 ```
 
 ### 4. Testar localmente
