@@ -23,6 +23,7 @@ _SCRAPERS_MODULE = os.path.join(
 )
 
 MIGRATED_AGENCIES = [
+    # 12 agencias originais (maio 2026, data-platform#147)
     "censipam",
     "inpp",
     "esd",
@@ -35,6 +36,12 @@ MIGRATED_AGENCIES = [
     "ouvidorias",
     "mulheres",
     "insa",
+    # 5 agencias novas (maio 2026, scraper#53)
+    "funai",
+    "previc",
+    "int",
+    "portos-e-aeroportos",
+    "iphan",
 ]
 
 
