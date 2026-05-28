@@ -205,8 +205,9 @@ agencies:
     url: https://www.gov.br/funag/pt-br/centrais-de-conteudo/noticias
     active: true
   funai:
-    url: https://www.gov.br/funai/pt-br/assuntos/noticias/2025
+    url: https://www.gov.br/funai/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   funarte:
     url: https://www.gov.br/funarte/pt-br/assuntos/noticias/todas-noticias
     active: true
@@ -301,6 +302,7 @@ agencies:
   int:
     url: https://www.gov.br/int/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   investidor:
     url: https://www.gov.br/pt-br/noticias
     active: false
@@ -309,6 +311,7 @@ agencies:
   iphan:
     url: https://www.gov.br/iphan/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   ird:
     url: https://www.gov.br/ird/pt-br/assuntos/noticias
     active: true
@@ -426,6 +429,7 @@ agencies:
   portos-e-aeroportos:
     url: https://www.gov.br/portos-e-aeroportos/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   povosindigenas:
     url: https://www.gov.br/povosindigenas/pt-br/assuntos/noticias
     active: true
@@ -433,6 +437,7 @@ agencies:
   previc:
     url: https://www.gov.br/previc/pt-br/noticias
     active: true
+    scraper_type: plone6_api
   previdencia:
     url: https://www.gov.br/previdencia/pt-br/noticias
     active: true

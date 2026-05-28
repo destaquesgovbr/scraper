@@ -1,6 +1,6 @@
 """
-Testes validando que as 12 agencias migradas na issue data-platform#147
-estao configuradas para usar Plone6APIScraper.
+Testes validando que agencias migradas para Plone6APIScraper estao
+configuradas corretamente (17 agencias: 12 em data-platform#147 + 5 em scraper#53).
 """
 import os
 
@@ -23,6 +23,7 @@ _SCRAPERS_MODULE = os.path.join(
 )
 
 MIGRATED_AGENCIES = [
+    # 12 agencias originais (maio 2026, data-platform#147)
     "censipam",
     "inpp",
     "esd",
@@ -35,11 +36,17 @@ MIGRATED_AGENCIES = [
     "ouvidorias",
     "mulheres",
     "insa",
+    # 5 agencias novas (maio 2026, scraper#53)
+    "funai",
+    "previc",
+    "int",
+    "portos-e-aeroportos",
+    "iphan",
 ]
 
 
 class TestMigratedAgenciesConfig:
-    """Valida que o YAML tem scraper_type=plone6_api para todas as 12 agencias."""
+    """Valida que o YAML tem scraper_type=plone6_api para todas as 17 agencias."""
 
     @pytest.fixture
     def config_dir(self):
@@ -71,6 +78,17 @@ class TestMigratedAgenciesConfig:
         url = result["fundacentro"]["url"]
         assert "ultimas-noticias" not in url, (
             f"URL da fundacentro nao deve conter 'ultimas-noticias'. Got: {url}"
+        )
+
+    def test_funai_url_not_year_specific(self, config_dir):
+        """URL da funai NAO deve apontar para subfolder de ano."""
+        result = load_urls_from_yaml(config_dir, "site_urls.yaml", agency="funai")
+        url = result["funai"]["url"]
+        assert "/2025" not in url, (
+            f"URL da funai nao deve conter /2025 (ano especifico). Got: {url}"
+        )
+        assert "/2026" not in url, (
+            f"URL da funai nao deve conter /2026 (ano especifico). Got: {url}"
         )
 
 
