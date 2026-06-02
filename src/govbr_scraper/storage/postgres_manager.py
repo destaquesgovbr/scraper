@@ -469,9 +469,11 @@ class PostgresManager:
             UPDATE news SET
                 title = v.title, content = v.content, content_hash = v.content_hash,
                 summary = v.summary, image_url = v.image_url, video_url = v.video_url,
-                category = v.category, tags = v.tags, editorial_lead = v.editorial_lead,
-                subtitle = v.subtitle, updated_datetime = v.updated_datetime,
-                extracted_at = v.extracted_at, updated_at = NOW(),
+                category = v.category, tags = v.tags::TEXT[], editorial_lead = v.editorial_lead,
+                subtitle = v.subtitle,
+                updated_datetime = v.updated_datetime::TIMESTAMPTZ,
+                extracted_at = v.extracted_at::TIMESTAMPTZ,
+                updated_at = NOW(),
                 content_embedding = NULL, embedding_generated_at = NULL
             FROM (VALUES %s) AS v(
                 title, content, content_hash, summary, image_url, video_url,

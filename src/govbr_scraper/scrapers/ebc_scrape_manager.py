@@ -1,7 +1,7 @@
 import logging
 import time
 from collections import OrderedDict
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 from govbr_scraper.models.monitoring import classify_error
@@ -228,7 +228,7 @@ class EBCScrapeManager:
                 "image": item.get("image", "").strip(),
                 "video_url": item.get("video_url", "").strip(),
                 "agency": agency,
-                "extracted_at": datetime.now(),
+                "extracted_at": datetime.now(timezone.utc),
             }
 
             # Only add items with essential data
