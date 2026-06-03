@@ -237,6 +237,7 @@ agencies:
   ibc:
     url: https://www.gov.br/ibc/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   ibde:
     url: https://www.gov.br/ibde/pt-br/assuntos/noticias
     active: false
@@ -267,6 +268,7 @@ agencies:
   incra:
     url: https://www.gov.br/incra/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   inep:
     url: https://www.gov.br/inep/pt-br/assuntos/noticias
     active: true
@@ -324,6 +326,7 @@ agencies:
   lapoc:
     url: https://www.gov.br/lapoc/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   lna:
     url: https://www.gov.br/lna/pt-br/assuntos/noticias
     active: true
@@ -333,6 +336,7 @@ agencies:
   mast:
     url: https://www.gov.br/mast/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   mcom:
     url: https://www.gov.br/mcom/pt-br/noticias
     active: true
@@ -494,6 +498,7 @@ agencies:
   sudeco:
     url: https://www.gov.br/sudeco/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   sudene:
     url: https://www.gov.br/sudene/pt-br/assuntos/noticias
     active: true
