@@ -2,6 +2,7 @@ agencies:
   abc:
     url: https://www.gov.br/abc/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   abcd:
     url: https://www.gov.br/abcd/pt-br/noticias
     active: true
@@ -33,6 +34,7 @@ agencies:
   anatel:
     url: https://www.gov.br/anatel/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   ancine:
     url: https://www.gov.br/ancine/pt-br/assuntos/noticias
     active: true
@@ -52,6 +54,10 @@ agencies:
   ans:
     url: https://www.gov.br/ans/pt-br/assuntos/noticias
     active: true
+  ansn:
+    url: https://www.gov.br/ansn/pt-br/assuntos/noticias
+    active: true
+    scraper_type: plone6_api
   antaq:
     url: https://www.gov.br/antaq/pt-br/noticias
     active: true
@@ -235,7 +241,7 @@ agencies:
     url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
     active: true
   ibc:
-    url: https://www.gov.br/ibc/pt-br/assuntos/noticias
+    url: https://www.gov.br/ibc/pt-br/centrais-de-conteudos/noticias
     active: true
     scraper_type: plone6_api
   ibde:
@@ -325,8 +331,10 @@ agencies:
     active: true
   lapoc:
     url: https://www.gov.br/lapoc/pt-br/assuntos/noticias
-    active: true
+    active: false
     scraper_type: plone6_api
+    disabled_reason: "Órgão renomeado para ANSN (Autoridade Nacional de Segurança Nuclear) - retorna 403"
+    disabled_date: "2026-06-11"
   lna:
     url: https://www.gov.br/lna/pt-br/assuntos/noticias
     active: true
@@ -364,6 +372,7 @@ agencies:
   memoriasreveladas:
     url: https://www.gov.br/memoriasreveladas/pt-br/centrais-de-conteudo/destaques
     active: true
+    scraper_type: plone6_api
   memp:
     url: https://www.gov.br/memp/pt-br/assuntos/noticias
     active: true
@@ -426,6 +435,7 @@ agencies:
   planejamento:
     url: https://www.gov.br/planejamento/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   pncp:
     url: https://www.gov.br/pncp/pt-br/central-de-conteudo/noticias
     active: true

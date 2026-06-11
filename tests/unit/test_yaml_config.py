@@ -170,23 +170,6 @@ class TestLoadUrlsReturnsConfigDict:
         for agency_name, config in agency_urls.items():
             assert "scraper_type" in config, f"{agency_name} missing scraper_type"
 
-    def test_plone6_agencies_have_correct_scraper_type(self):
-        """Plone 6 agencies must be configured with scraper_type=plone6_api."""
-        plone6_agencies = [
-            "aids", "anpd", "censipam", "ctav", "esd", "esg", "esporte",
-            "florestal", "funai", "fundacentro", "hfa", "ibc", "incra",
-            "inpp", "insa", "int", "iphan", "lapoc", "mast", "memp",
-            "mulheres", "museugoeldi", "ouvidorias", "patrimonio", "pncp",
-            "portos-e-aeroportos", "povosindigenas", "previc",
-            "propriedade-intelectual", "reconstrucaors", "sudeco", "susep",
-            "transferegov",
-        ]
-        config_dir = get_config_dir(_SCRAPERS_MODULE)
-        for agency in plone6_agencies:
-            result = load_urls_from_yaml(config_dir, "site_urls.yaml", agency=agency)
-            assert result[agency]["scraper_type"] == "plone6_api", \
-                f"{agency} should have scraper_type=plone6_api"
-
     def test_regular_agencies_default_to_html_scraper_type(self):
         """Agencies without explicit scraper_type must default to 'html'."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)

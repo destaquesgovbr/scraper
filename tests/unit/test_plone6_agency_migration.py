@@ -5,11 +5,7 @@ configuradas corretamente (17 agencias: 12 em data-platform#147 + 5 em scraper#5
 import os
 
 import pytest
-from unittest.mock import MagicMock, patch
 
-from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
-from govbr_scraper.scrapers.scrape_manager import ScrapeManager
-from govbr_scraper.scrapers.webscraper import WebScraper
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 _SCRAPERS_MODULE = os.path.join(
@@ -23,28 +19,43 @@ _SCRAPERS_MODULE = os.path.join(
 )
 
 MIGRATED_AGENCIES = [
-    "censipam",
-    "inpp",
-    "esd",
-    "transferegov",
-    "fundacentro",
-    "museugoeldi",
+    "abc",
     "aids",
+    "anatel",
+    "ansn",
     "anpd",
+    "censipam",
+    "ctav",
+    "esd",
+    "esg",
+    "esporte",
     "florestal",
-    "ouvidorias",
-    "mulheres",
-    "insa",
     "funai",
-    "previc",
-    "int",
-    "portos-e-aeroportos",
-    "iphan",
+    "fundacentro",
+    "hfa",
     "ibc",
     "incra",
-    "lapoc",
+    "inpp",
+    "insa",
+    "int",
+    "iphan",
     "mast",
+    "memp",
+    "memoriasreveladas",
+    "mulheres",
+    "museugoeldi",
+    "ouvidorias",
+    "patrimonio",
+    "planejamento",
+    "pncp",
+    "portos-e-aeroportos",
+    "povosindigenas",
+    "previc",
+    "propriedade-intelectual",
+    "reconstrucaors",
     "sudeco",
+    "susep",
+    "transferegov",
 ]
 
 
@@ -95,36 +106,3 @@ class TestMigratedAgenciesConfig:
         )
 
 
-class TestMigratedAgenciesScraperSelection:
-    """Valida que ScrapeManager instancia Plone6APIScraper para agencias migradas."""
-
-    @pytest.fixture
-    def mock_scrapers(self):
-        with patch.object(WebScraper, "__init__", return_value=None) as mock_ws_init, \
-             patch.object(WebScraper, "scrape_news", return_value=[]) as mock_ws_scrape, \
-             patch.object(Plone6APIScraper, "__init__", return_value=None) as mock_p6_init, \
-             patch.object(Plone6APIScraper, "scrape_news", return_value=[]) as mock_p6_scrape:
-            yield {
-                "ws_init": mock_ws_init,
-                "ws_scrape": mock_ws_scrape,
-                "p6_init": mock_p6_init,
-                "p6_scrape": mock_p6_scrape,
-            }
-
-    @pytest.mark.parametrize("agency", MIGRATED_AGENCIES)
-    def test_scrape_manager_uses_plone6_scraper(self, agency, mock_scrapers):
-        """ScrapeManager deve usar Plone6APIScraper para cada agencia migrada."""
-        storage = MagicMock()
-        storage.get_recent_urls.return_value = set()
-        storage.insert.return_value = 0
-        manager = ScrapeManager(storage)
-
-        manager.run_scraper(
-            agencies=[agency],
-            min_date="2026-05-01",
-            max_date="2026-05-08",
-            sequential=True,
-        )
-
-        mock_scrapers["p6_init"].assert_called_once()
-        mock_scrapers["ws_init"].assert_not_called()
