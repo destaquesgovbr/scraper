@@ -51,8 +51,12 @@ class TestScraperTypeSelection:
         manager.run_scraper(agencies=["mec"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
+        # WebScraper is primary, Plone6 instantiated as fallback
         mock_scrapers["ws_init"].assert_called_once()
-        mock_scrapers["p6_init"].assert_not_called()
+        mock_scrapers["p6_init"].assert_called_once()
+        # But only WebScraper is called (fallback not triggered)
+        mock_scrapers["ws_scrape"].assert_called_once()
+        mock_scrapers["p6_scrape"].assert_not_called()
 
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_plone6_api_type_uses_plone6_scraper(self, mock_load, mock_scrapers):
@@ -79,9 +83,10 @@ class TestScraperTypeSelection:
         manager.run_scraper(agencies=["mec", "susep"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
-        # Both scrapers should be instantiated once each
+        # WebScraper instantiated once (mec primary)
+        # Plone6 instantiated twice (mec fallback + susep primary)
         assert mock_scrapers["ws_init"].call_count == 1
-        assert mock_scrapers["p6_init"].call_count == 1
+        assert mock_scrapers["p6_init"].call_count == 2
 
 
 class TestBackwardCompatibility:
@@ -98,8 +103,12 @@ class TestBackwardCompatibility:
         manager.run_scraper(agencies=["mec"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
+        # WebScraper is primary (default), Plone6 instantiated as fallback
         mock_scrapers["ws_init"].assert_called_once()
-        mock_scrapers["p6_init"].assert_not_called()
+        mock_scrapers["p6_init"].assert_called_once()
+        # But only WebScraper is called (fallback not triggered)
+        mock_scrapers["ws_scrape"].assert_called_once()
+        mock_scrapers["p6_scrape"].assert_not_called()
 
 
 class TestKnownUrlsPassthrough:

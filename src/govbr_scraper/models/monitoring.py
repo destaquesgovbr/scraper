@@ -78,3 +78,7 @@ class ScrapeRunResult(BaseModel):
     articles_saved: int = 0
     execution_time_seconds: Optional[float] = None
     scraped_at: datetime
+    primary_scraper: Optional[str] = None
+    fallback_triggered: bool = False
+    fallback_scraper: Optional[str] = None
+    fallback_success: Optional[bool] = None
