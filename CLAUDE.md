@@ -165,6 +165,36 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `HTML_CHANGED` | no articles found (estrutura mudou) |
 | `UNKNOWN` | fallback |
 
+### Fallback Automático (HTML_CHANGED)
+
+Quando WebScraper falha com erro `HTML_CHANGED` (estrutura HTML mudou), o sistema tenta automaticamente Plone6APIScraper como fallback. Este mecanismo é útil para agências que migraram para Plone 6 Volto mas ainda estão configuradas como `scraper_type: html`.
+
+**Condições para acionar:**
+- Scraper primário é WebScraper (não Plone6)
+- Erro classificado como HTML_CHANGED ("No articles found on first page")
+- Fallback disponível (instanciado apenas para `scraper_type: html`)
+
+**Não aciona em:**
+- NETWORK_ERROR, ANTI_BOT, URL_BROKEN, EMPTY_CONTENT
+- Plone6 → WebScraper (tecnicamente inútil para SPAs)
+
+**Campos de monitoramento adicionados:**
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `primary_scraper` | str | "webscraper" ou "plone6_api" |
+| `fallback_triggered` | bool | Se fallback foi acionado |
+| `fallback_scraper` | str\|None | Tipo do scraper de fallback |
+| `fallback_success` | bool\|None | Se fallback teve sucesso |
+
+**Log de recomendação:** Se fallback bem-sucedido, o sistema loga:
+```
+{agency}: Plone6 API fallback SUCCEEDED. Found {N} articles.
+RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
+```
+
+**Overhead:** Zero em agências funcionais. Fallback só é executado quando WebScraper falha com HTML_CHANGED.
+
 ### Pub/Sub Events
 
 Após persistir artigos (insert ou update), `EventPublisher` publica no tópico `dgb.news.scraped`:
@@ -349,6 +379,10 @@ Cada DAG de scraping:
 | `articles_saved` | int | |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
+| `primary_scraper` | text | Tipo do scraper primário usado |
+| `fallback_triggered` | bool | Se fallback foi acionado |
+| `fallback_scraper` | text | Tipo do scraper de fallback (se usado) |
+| `fallback_success` | bool | Se fallback teve sucesso (se usado) |
 
 ## Variáveis de Ambiente (API / Cloud Run)
 
