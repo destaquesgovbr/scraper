@@ -379,10 +379,7 @@ Cada DAG de scraping:
 | `articles_saved` | int | |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
-| `primary_scraper` | text | Tipo do scraper primário usado |
-| `fallback_triggered` | bool | Se fallback foi acionado |
-| `fallback_scraper` | text | Tipo do scraper de fallback (se usado) |
-| `fallback_success` | bool | Se fallback teve sucesso (se usado) |
+| `fallback_triggered` | bool | Se fallback automático foi acionado (nullable, default FALSE) |
 
 ## Variáveis de Ambiente (API / Cloud Run)
 

@@ -51,10 +51,10 @@ class TestScraperTypeSelection:
         manager.run_scraper(agencies=["mec"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
-        # WebScraper is primary, Plone6 instantiated as fallback
+        # WebScraper is primary, Plone6 NOT instantiated (lazy instantiation)
         mock_scrapers["ws_init"].assert_called_once()
-        mock_scrapers["p6_init"].assert_called_once()
-        # But only WebScraper is called (fallback not triggered)
+        mock_scrapers["p6_init"].assert_not_called()
+        # Only WebScraper is called (fallback not triggered)
         mock_scrapers["ws_scrape"].assert_called_once()
         mock_scrapers["p6_scrape"].assert_not_called()
 
@@ -83,10 +83,10 @@ class TestScraperTypeSelection:
         manager.run_scraper(agencies=["mec", "susep"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
-        # WebScraper instantiated once (mec primary)
-        # Plone6 instantiated twice (mec fallback + susep primary)
+        # WebScraper instantiated once (mec primary, fallback not triggered)
+        # Plone6 instantiated once (susep primary, mec fallback not instantiated due to lazy loading)
         assert mock_scrapers["ws_init"].call_count == 1
-        assert mock_scrapers["p6_init"].call_count == 2
+        assert mock_scrapers["p6_init"].call_count == 1
 
 
 class TestBackwardCompatibility:
@@ -103,10 +103,10 @@ class TestBackwardCompatibility:
         manager.run_scraper(agencies=["mec"], min_date="2026-01-01",
                             max_date="2026-01-31", sequential=True)
 
-        # WebScraper is primary (default), Plone6 instantiated as fallback
+        # WebScraper is primary (default), Plone6 NOT instantiated (lazy instantiation)
         mock_scrapers["ws_init"].assert_called_once()
-        mock_scrapers["p6_init"].assert_called_once()
-        # But only WebScraper is called (fallback not triggered)
+        mock_scrapers["p6_init"].assert_not_called()
+        # Only WebScraper is called (fallback not triggered)
         mock_scrapers["ws_scrape"].assert_called_once()
         mock_scrapers["p6_scrape"].assert_not_called()
 

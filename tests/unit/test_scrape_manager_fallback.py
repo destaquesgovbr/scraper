@@ -56,7 +56,7 @@ class TestFallbackWebScraperToPlone6:
     def test_fallback_webscraper_to_plone6_success(
         self, mock_load, mock_scrapers, mock_log_scrape_result
     ):
-        """WebScraper fails with HTML_CHANGED, Plone6 succeeds."""
+        """WebScraper fails with HTML_CHANGED, Plone6 is instantiated lazily and succeeds."""
         mock_load.return_value = {"coaf": _config("https://www.gov.br/coaf/noticias", "html")}
 
         # WebScraper raises HTML_CHANGED error
@@ -74,13 +74,21 @@ class TestFallbackWebScraperToPlone6:
             agencies=["coaf"], min_date="2026-01-01", max_date="2026-01-31", sequential=True
         )
 
-        # Both scrapers should be instantiated
+        # WebScraper instantiated upfront, Plone6 instantiated lazily
         assert mock_scrapers["ws_init"].call_count == 1
         assert mock_scrapers["p6_init"].call_count == 1
 
         # Both should be called
         assert mock_scrapers["ws_scrape"].call_count == 1
         assert mock_scrapers["p6_scrape"].call_count == 1
+
+        # Verify Plone6 was instantiated with known_urls=set() (empty, not inherited)
+        p6_init_call_args = mock_scrapers["p6_init"].call_args
+        # Signature: Plone6APIScraper(min_date, url, max_date=..., known_urls=...)
+        assert p6_init_call_args[0][0] == "2026-01-01"  # min_date
+        assert p6_init_call_args[0][1] == "https://www.gov.br/coaf/noticias"  # url
+        assert p6_init_call_args[1]["max_date"] == "2026-01-31"
+        assert p6_init_call_args[1]["known_urls"] == set()  # Empty, not inherited
 
         # Check structured log was called with fallback metadata
         mock_log_scrape_result.assert_called_once()
@@ -131,7 +139,7 @@ class TestFallbackWebScraperToPlone6:
     def test_no_fallback_when_webscraper_succeeds(
         self, mock_load, mock_scrapers, mock_log_scrape_result
     ):
-        """WebScraper succeeds, Plone6 is not called."""
+        """WebScraper succeeds, Plone6 is not instantiated or called (lazy instantiation)."""
         mock_load.return_value = {"mec": _config("https://www.gov.br/mec/noticias", "html")}
 
         # WebScraper succeeds
@@ -144,9 +152,9 @@ class TestFallbackWebScraperToPlone6:
             agencies=["mec"], min_date="2026-01-01", max_date="2026-01-31", sequential=True
         )
 
-        # Both instantiated (fallback is created for html scrapers)
+        # Only WebScraper instantiated (lazy instantiation: no fallback created until needed)
         assert mock_scrapers["ws_init"].call_count == 1
-        assert mock_scrapers["p6_init"].call_count == 1
+        assert mock_scrapers["p6_init"].call_count == 0
 
         # Only WebScraper called
         assert mock_scrapers["ws_scrape"].call_count == 1

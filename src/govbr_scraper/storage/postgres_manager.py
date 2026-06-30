@@ -504,8 +504,9 @@ class PostgresManager:
         query = """
             INSERT INTO scrape_runs
                 (agency_key, status, error_category, error_message,
-                 articles_scraped, articles_saved, execution_time_seconds, scraped_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 articles_scraped, articles_saved, execution_time_seconds, scraped_at,
+                 fallback_triggered)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         conn = self.pool.getconn()
         try:
@@ -519,6 +520,7 @@ class PostgresManager:
                     run.articles_saved,
                     run.execution_time_seconds,
                     run.scraped_at,
+                    run.fallback_triggered,
                 ))
             conn.commit()
         except Exception as e:
@@ -540,7 +542,8 @@ class PostgresManager:
         """
         query = """
             SELECT agency_key, status, error_category, error_message,
-                   articles_scraped, articles_saved, execution_time_seconds, scraped_at
+                   articles_scraped, articles_saved, execution_time_seconds, scraped_at,
+                   fallback_triggered
             FROM scrape_runs
             WHERE agency_key = %s
             ORDER BY scraped_at DESC

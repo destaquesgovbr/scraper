@@ -19,7 +19,7 @@ logging.basicConfig(
 
 def _try_scrape_with_fallback(
     primary_scraper: Any,
-    fallback_scraper: Optional[Any],
+    fallback_config: Optional[Dict[str, Any]],
     agency_name: str,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
@@ -27,7 +27,7 @@ def _try_scrape_with_fallback(
 
     Args:
         primary_scraper: Scraper primário (WebScraper ou Plone6APIScraper).
-        fallback_scraper: Scraper de fallback (ou None).
+        fallback_config: Configuração para criar fallback sob demanda (ou None).
         agency_name: Nome da agência para logging.
 
     Returns:
@@ -62,7 +62,7 @@ def _try_scrape_with_fallback(
     except ScrapingError as e:
         error_category = classify_error(str(e))
 
-        if fallback_scraper and error_category == ErrorCategory.HTML_CHANGED:
+        if fallback_config and error_category == ErrorCategory.HTML_CHANGED:
             metadata["fallback_triggered"] = True
             metadata["fallback_scraper"] = "plone6_api"
 
@@ -72,6 +72,14 @@ def _try_scrape_with_fallback(
             )
 
             try:
+                # Lazy instantiation: criar fallback apenas quando necessário
+                # Começar com known_urls vazio para evitar early-stop prematuro
+                fallback_scraper = Plone6APIScraper(
+                    fallback_config["min_date"],
+                    fallback_config["url"],
+                    max_date=fallback_config["max_date"],
+                    known_urls=set()
+                )
                 data = fallback_scraper.scrape_news()
                 metadata["fallback_success"] = True
 
@@ -88,7 +96,9 @@ def _try_scrape_with_fallback(
                     f"{agency_name}: Both scrapers failed. "
                     f"WebScraper: {str(e)}. Plone6: {str(e2)}"
                 )
-                raise
+                raise ScrapingError(
+                    f"Both scrapers failed. Primary: {str(e)}. Fallback: {str(e2)}"
+                ) from e2
 
         raise
 
@@ -158,7 +168,7 @@ class ScrapeManager:
                 # Load all agency URLs if agencies list is None or empty
                 agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
 
-            # Create list of (agency_name, primary_scraper, fallback_scraper) tuples
+            # Create list of (agency_name, primary_scraper, fallback_config) tuples
             # Query known URLs for each agency to enable early stop optimization
             webscrapers = []
             for agency_name, agency_config in agency_urls.items():
@@ -169,22 +179,27 @@ class ScrapeManager:
                 except Exception:
                     known_urls = set()  # Fallback: no optimization
                 # Strategy Pattern: select scraper based on config
-                # For html scrapers, create fallback to Plone6 API
+                # For html scrapers, store config for lazy fallback instantiation
                 if scraper_type == "plone6_api":
                     primary = Plone6APIScraper(min_date, url, max_date=max_date, known_urls=known_urls)
-                    fallback = None
+                    fallback_config = None
                     logging.info(f"Using Plone6APIScraper for {agency_name}")
                 else:
                     primary = WebScraper(min_date, url, max_date=max_date, known_urls=known_urls)
-                    fallback = Plone6APIScraper(min_date, url, max_date=max_date, known_urls=known_urls)
-                webscrapers.append((agency_name, primary, fallback))
+                    # Store config for lazy instantiation (only if HTML_CHANGED occurs)
+                    fallback_config = {
+                        "min_date": min_date,
+                        "url": url,
+                        "max_date": max_date,
+                    }
+                webscrapers.append((agency_name, primary, fallback_config))
 
             if sequential:
-                for agency_name, primary_scraper, fallback_scraper in webscrapers:
+                for agency_name, primary_scraper, fallback_config in webscrapers:
                     start_time = time.monotonic()
                     try:
                         scraped_data, metadata = _try_scrape_with_fallback(
-                            primary_scraper, fallback_scraper, agency_name
+                            primary_scraper, fallback_config, agency_name
                         )
                         elapsed = time.monotonic() - start_time
                         if scraped_data:
@@ -234,11 +249,11 @@ class ScrapeManager:
                     record_scrape_run_safe(self.dataset_manager, run, agency_name)
             else:
                 all_news_data = []
-                for agency_name, primary_scraper, fallback_scraper in webscrapers:
+                for agency_name, primary_scraper, fallback_config in webscrapers:
                     start_time = time.monotonic()
                     try:
                         scraped_data, metadata = _try_scrape_with_fallback(
-                            primary_scraper, fallback_scraper, agency_name
+                            primary_scraper, fallback_config, agency_name
                         )
                         elapsed = time.monotonic() - start_time
                         if scraped_data:
