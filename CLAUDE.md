@@ -180,12 +180,19 @@ Quando WebScraper falha com erro `HTML_CHANGED` (estrutura HTML mudou), o sistem
 
 **Campos de monitoramento adicionados:**
 
+A feature de fallback automático adiciona **1 campo** à tabela `scrape_runs`:
+
 | Campo | Tipo | Descrição |
 |-------|------|-----------|
-| `primary_scraper` | str | "webscraper" ou "plone6_api" |
-| `fallback_triggered` | bool | Se fallback foi acionado |
-| `fallback_scraper` | str\|None | Tipo do scraper de fallback |
-| `fallback_success` | bool\|None | Se fallback teve sucesso |
+| `fallback_triggered` | bool | Se fallback foi acionado (default FALSE) |
+
+**Campos adicionais logados mas não persistidos no PostgreSQL:**
+
+Os campos abaixo estão disponíveis nos logs estruturados (Cloud Logging) para debugging, mas não são persistidos no banco por serem redundantes ou inferíveis:
+
+- `primary_scraper`: Inferível de `site_urls.yaml` configuração (`scraper_type: html` → webscraper, `scraper_type: plone6_api` → plone6_api)
+- `fallback_scraper`: Constante `"plone6_api"` (único fallback implementado atualmente)
+- `fallback_success`: Inferível via query: `status='success' AND fallback_triggered=true`
 
 **Log de recomendação:** Se fallback bem-sucedido, o sistema loga:
 ```

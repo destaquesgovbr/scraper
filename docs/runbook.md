@@ -68,13 +68,14 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 **Identificar agências candidatas:**
 ```sql
 -- Agências com fallback bem-sucedido nos últimos 7 dias
+-- (infere sucesso via status='success')
 SELECT 
     agency_key,
     COUNT(*) as fallback_count,
     MAX(scraped_at) as last_fallback
 FROM scrape_runs
 WHERE fallback_triggered = true 
-    AND fallback_success = true
+    AND status = 'success'
     AND scraped_at > NOW() - INTERVAL '7 days'
 GROUP BY agency_key
 ORDER BY fallback_count DESC;
@@ -186,16 +187,21 @@ O fallback automático WebScraper → Plone6API é acionado quando agências mig
 **Verificar se fallback está sendo usado:**
 ```sql
 -- Agências com fallback ativo nas últimas 24h
+-- (infere sucesso via status='success' + fallback_triggered)
 SELECT 
     agency_key,
     COUNT(*) as total_runs,
-    SUM(CASE WHEN fallback_triggered THEN 1 ELSE 0 END) as fallback_count,
-    SUM(CASE WHEN fallback_success THEN 1 ELSE 0 END) as fallback_success_count
+    COUNT(*) FILTER (WHERE fallback_triggered) as fallback_count,
+    COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') as fallback_success_count,
+    ROUND(
+        COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') * 100.0 
+        / NULLIF(COUNT(*) FILTER (WHERE fallback_triggered), 0), 
+        2
+    ) as taxa_sucesso_fallback_pct
 FROM scrape_runs
 WHERE scraped_at > NOW() - INTERVAL '24 hours'
-    AND primary_scraper = 'webscraper'
 GROUP BY agency_key
-HAVING COUNT(*) > 0 AND SUM(CASE WHEN fallback_triggered THEN 1 ELSE 0 END) > 0
+HAVING COUNT(*) FILTER (WHERE fallback_triggered) > 0
 ORDER BY fallback_count DESC;
 ```
 
@@ -209,7 +215,7 @@ gcloud logging read "resource.type=cloud_run_revision \
 
 **Quando migrar para Plone6 permanentemente:**
 - Se fallback está sendo usado >80% das execuções em 7 dias
-- Se fallback_success = true consistentemente
+- Se fallback está bem-sucedido consistentemente (status='success' quando fallback_triggered=true)
 - Ver procedimento em "Migrar Agência para Plone6"
 
 **Alertar sobre fallback recorrente:**
