@@ -165,6 +165,43 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `HTML_CHANGED` | no articles found (estrutura mudou) |
 | `UNKNOWN` | fallback |
 
+### Fallback Automático (HTML_CHANGED)
+
+Quando WebScraper falha com erro `HTML_CHANGED` (estrutura HTML mudou), o sistema tenta automaticamente Plone6APIScraper como fallback. Este mecanismo é útil para agências que migraram para Plone 6 Volto mas ainda estão configuradas como `scraper_type: html`.
+
+**Condições para acionar:**
+- Scraper primário é WebScraper (não Plone6)
+- Erro classificado como HTML_CHANGED ("No articles found on first page")
+- Fallback disponível (instanciado apenas para `scraper_type: html`)
+
+**Não aciona em:**
+- NETWORK_ERROR, ANTI_BOT, URL_BROKEN, EMPTY_CONTENT
+- Plone6 → WebScraper (tecnicamente inútil para SPAs)
+
+**Campos de monitoramento adicionados:**
+
+A feature de fallback automático adiciona **1 campo** à tabela `scrape_runs`:
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `fallback_triggered` | bool | Se fallback foi acionado (default FALSE) |
+
+**Campos adicionais logados mas não persistidos no PostgreSQL:**
+
+Os campos abaixo estão disponíveis nos logs estruturados (Cloud Logging) para debugging, mas não são persistidos no banco por serem redundantes ou inferíveis:
+
+- `primary_scraper`: Inferível de `site_urls.yaml` configuração (`scraper_type: html` → webscraper, `scraper_type: plone6_api` → plone6_api)
+- `fallback_scraper`: Constante `"plone6_api"` (único fallback implementado atualmente)
+- `fallback_success`: Inferível via query: `status='success' AND fallback_triggered=true`
+
+**Log de recomendação:** Se fallback bem-sucedido, o sistema loga:
+```
+{agency}: Plone6 API fallback SUCCEEDED. Found {N} articles.
+RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
+```
+
+**Overhead:** Zero em agências funcionais. Fallback só é executado quando WebScraper falha com HTML_CHANGED.
+
 ### Pub/Sub Events
 
 Após persistir artigos (insert ou update), `EventPublisher` publica no tópico `dgb.news.scraped`:
@@ -349,6 +386,7 @@ Cada DAG de scraping:
 | `articles_saved` | int | |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
+| `fallback_triggered` | bool | Se fallback automático foi acionado (nullable, default FALSE) |
 
 ## Variáveis de Ambiente (API / Cloud Run)
 

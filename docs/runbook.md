@@ -58,6 +58,33 @@ A DAG **deixa de ser gerada** — o `scrape_agencies.py` gera DAGs dinamicamente
 
 Quando uma agência migra de Plone clássico para Plone 6 (Volto/React):
 
+**Descoberta automática via fallback:** Desde PR #60, o sistema tenta automaticamente Plone6APIScraper quando WebScraper falha com HTML_CHANGED. Se a sua agência está falhando consistentemente e o fallback está funcionando, você verá logs com:
+
+```
+{agency}: Plone6 API fallback SUCCEEDED. Found {N} articles.
+RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
+```
+
+**Identificar agências candidatas:**
+```sql
+-- Agências com fallback bem-sucedido nos últimos 7 dias
+-- (infere sucesso via status='success')
+SELECT 
+    agency_key,
+    COUNT(*) as fallback_count,
+    MAX(scraped_at) as last_fallback
+FROM scrape_runs
+WHERE fallback_triggered = true 
+    AND status = 'success'
+    AND scraped_at > NOW() - INTERVAL '7 days'
+GROUP BY agency_key
+ORDER BY fallback_count DESC;
+```
+
+Se uma agência aparece consistentemente (>10x em 7 dias), ela é candidata para migração permanente.
+
+**Procedimento de migração:**
+
 1. Verifique que a API REST está acessível: `curl https://www.gov.br/{agencia}/++api++/pt-br/assuntos/noticias/@search?portal_type=News+Item`
 2. Altere `scraper_type` no YAML:
    ```yaml
@@ -152,3 +179,44 @@ Alertas são enviados para o chat configurado em `scraper_telegram_monitor_chat_
 ### Fallback
 
 Se Telegram não estiver configurado, alertas vão para o webhook (`scraper_alert_webhook_url`). Se nenhum estiver configurado, alertas são apenas logados.
+
+## Monitorar Fallback de Scraper
+
+O fallback automático WebScraper → Plone6API é acionado quando agências migram para Plone 6 mas ainda estão configuradas como `scraper_type: html`. Este é um mecanismo de resiliência, não uma solução permanente.
+
+**Verificar se fallback está sendo usado:**
+```sql
+-- Agências com fallback ativo nas últimas 24h
+-- (infere sucesso via status='success' + fallback_triggered)
+SELECT 
+    agency_key,
+    COUNT(*) as total_runs,
+    COUNT(*) FILTER (WHERE fallback_triggered) as fallback_count,
+    COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') as fallback_success_count,
+    ROUND(
+        COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') * 100.0 
+        / NULLIF(COUNT(*) FILTER (WHERE fallback_triggered), 0), 
+        2
+    ) as taxa_sucesso_fallback_pct
+FROM scrape_runs
+WHERE scraped_at > NOW() - INTERVAL '24 hours'
+GROUP BY agency_key
+HAVING COUNT(*) FILTER (WHERE fallback_triggered) > 0
+ORDER BY fallback_count DESC;
+```
+
+**Verificar logs no Cloud Run:**
+```bash
+gcloud logging read "resource.type=cloud_run_revision \
+  AND resource.labels.service_name=destaquesgovbr-scraper-api \
+  AND jsonPayload.fallback_triggered=true" \
+  --limit 50 --format json
+```
+
+**Quando migrar para Plone6 permanentemente:**
+- Se fallback está sendo usado >80% das execuções em 7 dias
+- Se fallback está bem-sucedido consistentemente (status='success' quando fallback_triggered=true)
+- Ver procedimento em "Migrar Agência para Plone6"
+
+**Alertar sobre fallback recorrente:**
+Se uma agência usa fallback >10x por dia por >3 dias consecutivos, considere atualizar site_urls.yaml. O fallback adiciona pequeno overhead (tentativa WebScraper + tentativa Plone6).

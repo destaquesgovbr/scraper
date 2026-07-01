@@ -18,6 +18,10 @@ def log_scrape_result(
     error_category: Optional[ErrorCategory] = None,
     error_message: Optional[str] = None,
     execution_time_seconds: Optional[float] = None,
+    primary_scraper: Optional[str] = None,
+    fallback_triggered: bool = False,
+    fallback_scraper: Optional[str] = None,
+    fallback_success: Optional[bool] = None,
 ) -> ScrapeRunResult:
     """Create a structured scrape result, log it via loguru, and return it.
 
@@ -42,6 +46,10 @@ def log_scrape_result(
         articles_saved=articles_saved,
         execution_time_seconds=execution_time_seconds,
         scraped_at=datetime.now(timezone.utc),
+        primary_scraper=primary_scraper,
+        fallback_triggered=fallback_triggered,
+        fallback_scraper=fallback_scraper,
+        fallback_success=fallback_success,
     )
 
     bound = logger.bind(
@@ -51,17 +59,30 @@ def log_scrape_result(
         articles_saved=articles_saved,
         error_category=str(error_category) if error_category else None,
         execution_time_seconds=execution_time_seconds,
+        primary_scraper=primary_scraper,
+        fallback_triggered=fallback_triggered,
+        fallback_scraper=fallback_scraper,
+        fallback_success=fallback_success,
     )
 
     if status == "error":
         bound.error("Scrape failed for {agency}: {error}", agency=agency_key, error=error_message)
     else:
-        bound.info(
-            "Scrape completed for {agency}: {scraped} scraped, {saved} saved",
-            agency=agency_key,
-            scraped=articles_scraped,
-            saved=articles_saved,
-        )
+        if fallback_triggered and fallback_success:
+            bound.info(
+                "Scrape completed for {agency} via {fallback} fallback: {scraped} scraped, {saved} saved",
+                agency=agency_key,
+                fallback=fallback_scraper,
+                scraped=articles_scraped,
+                saved=articles_saved,
+            )
+        else:
+            bound.info(
+                "Scrape completed for {agency}: {scraped} scraped, {saved} saved",
+                agency=agency_key,
+                scraped=articles_scraped,
+                saved=articles_saved,
+            )
 
     return result
 

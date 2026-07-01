@@ -28,6 +28,7 @@ agencies:
   ana:
     url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
     active: true
+    scraper_type: plone6_api
   anac:
     url: https://www.gov.br/anac/pt-br/noticias/ultimas-noticias-1
     active: true
@@ -38,6 +39,7 @@ agencies:
   ancine:
     url: https://www.gov.br/ancine/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   aneel:
     url: https://www.gov.br/aneel/pt-br/assuntos/noticias
     active: true
@@ -76,6 +78,7 @@ agencies:
   cade:
     url: https://www.gov.br/cade/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   capes:
     url: https://www.gov.br/capes/pt-br/assuntos/noticias
     active: true
@@ -91,6 +94,7 @@ agencies:
   cbpf:
     url: https://www.gov.br/cbpf/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   cbtu:
     url: https://www.gov.br/cbtu/pt-br/assuntos/noticias
     active: true
@@ -130,6 +134,7 @@ agencies:
   coaf:
     url: https://www.gov.br/coaf/pt-br/assuntos/noticias/ultimas-noticias
     active: true
+    scraper_type: plone6_api
   compras:
     url: https://www.gov.br/compras/pt-br/acesso-a-informacao/noticias
     active: true
@@ -260,6 +265,7 @@ agencies:
   ien:
     url: https://www.gov.br/ien/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   igualdaderacial:
     url: https://www.gov.br/igualdaderacial/pt-br/assuntos/copy2_of_noticias
     active: true
@@ -399,6 +405,7 @@ agencies:
   museudoindio:
     url: https://www.gov.br/museudoindio/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   museugoeldi:
     url: https://www.gov.br/museugoeldi/pt-br/arquivos/noticias
     active: true
@@ -458,6 +465,7 @@ agencies:
   prf:
     url: https://www.gov.br/prf/pt-br/noticias/nacionais
     active: true
+    scraper_type: plone6_api
   produtividade-e-comercio-exterior:
     url: https://www.gov.br/pt-br/noticias
     active: false
@@ -535,3 +543,4 @@ agencies:
   turismo:
     url: https://www.gov.br/turismo/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
