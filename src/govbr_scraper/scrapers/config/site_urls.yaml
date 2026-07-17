@@ -26,12 +26,15 @@ agencies:
     active: true
     scraper_type: plone6_api
   ana:
-    url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
+    # url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
+    url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias-periodo-eleitoral-2026/
     active: true
-    scraper_type: plone6_api
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026). Scraper alterado de plone6_api para html em 2026-07-16."
   anac:
-    url: https://www.gov.br/anac/pt-br/noticias/ultimas-noticias-1
+    # url: https://www.gov.br/anac/pt-br/noticias/ultimas-noticias-1
+    url: https://www.gov.br/anac/pt-br/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16"
   anatel:
     url: https://www.gov.br/anatel/pt-br/assuntos/noticias
     active: true
@@ -54,8 +57,10 @@ agencies:
     active: true
     scraper_type: plone6_api
   ans:
-    url: https://www.gov.br/ans/pt-br/assuntos/noticias
+    # url: https://www.gov.br/ans/pt-br/assuntos/noticias
+    url: https://www.gov.br/ans/pt-br/assuntos/noticias-1/periodo-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   ansn:
     url: https://www.gov.br/ansn/pt-br/assuntos/noticias
     active: true
@@ -64,8 +69,10 @@ agencies:
     url: https://www.gov.br/antaq/pt-br/noticias
     active: true
   antt:
-    url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias
+    # url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias
+    url: https://www.gov.br/antt/pt-br/assuntos/noticias-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   anvisa:
     url: https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa
     active: true
@@ -80,14 +87,19 @@ agencies:
     active: true
     scraper_type: plone6_api
   capes:
-    url: https://www.gov.br/capes/pt-br/assuntos/noticias
+    # url: https://www.gov.br/capes/pt-br/assuntos/noticias
+    url: https://www.gov.br/capes/pt-br/assuntos/noticias-defeso-eleitoral
     active: true
+    scraper_type: plone6_api
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026). Scraper alterado de html para plone6_api em 2026-07-16."
   casacivil:
     url: https://www.gov.br/casacivil/pt-br/assuntos/noticias
     active: true
   casaruibarbosa:
-    url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias/2025
+    # url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias/2025
+    url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16. Site em manutenção - API Plone6 indisponível."
   caslode:
     url: https://www.gov.br/caslode/pt-br/noticias
     active: true
@@ -115,8 +127,10 @@ agencies:
     url: https://www.gov.br/cetene/pt-br/assuntos/noticias
     active: true
   cgu:
-    url: https://www.gov.br/cgu/pt-br/assuntos/noticias/ultimas-noticias
+    # url: https://www.gov.br/cgu/pt-br/assuntos/noticias/ultimas-noticias
+    url: https://www.gov.br/cgu/pt-br/assuntos/noticias/2026/07-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   cidades:
     url: https://www.gov.br/cidades/pt-br/assuntos/noticias-1
     active: true
@@ -129,8 +143,10 @@ agencies:
     url: https://www.gov.br/cnen/pt-br/assunto/ultimas-noticias
     active: true
   cnpq:
-    url: https://www.gov.br/cnpq/pt-br/assuntos/noticias
+    # url: https://www.gov.br/cnpq/pt-br/assuntos/noticias
+    url: https://www.gov.br/cnpq/pt-br/assuntos/defeso-eleitoral
     active: true
+    notes: "URL atualizada em 2026-07-16"
   coaf:
     url: https://www.gov.br/coaf/pt-br/assuntos/noticias/ultimas-noticias
     active: true
@@ -164,11 +180,15 @@ agencies:
     url: https://www.gov.br/ctir/pt-br/assuntos/noticias/2025
     active: true
   cultura:
-    url: https://www.gov.br/cultura/pt-br/assuntos/noticias
+    # url: https://www.gov.br/cultura/pt-br/assuntos/noticias
+    url: https://www.gov.br/cultura/pt-br/assuntos/noticias-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   culturaviva:
-    url: https://www.gov.br/culturaviva/pt-br/acesso-a-informacao/noticias
+    # url: https://www.gov.br/culturaviva/pt-br/acesso-a-informacao/noticias
+    url: https://www.gov.br/culturaviva/pt-br/acesso-a-informacao/noticias-2026
     active: true
+    notes: "URL atualizada em 2026-07-16"
   cvm:
     url: https://www.gov.br/cvm/pt-br/assuntos/noticias
     active: true
@@ -176,8 +196,10 @@ agencies:
     url: https://www.gov.br/defesa/pt-br/centrais-de-conteudo/noticias
     active: true
   dnit:
-    url: https://www.gov.br/dnit/pt-br/assuntos/noticias/
+    # url: https://www.gov.br/dnit/pt-br/assuntos/noticias/
+    url: https://www.gov.br/dnit/pt-br/assuntos/noticias-periodo-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   dnocs:
     url: https://www.gov.br/dnocs/pt-br/assuntos/noticias
     active: true
@@ -199,9 +221,11 @@ agencies:
     url: https://www.gov.br/esocial/pt-br/noticias
     active: true
   esporte:
-    url: https://www.gov.br/esporte/pt-br/noticias-e-conteudos/esporte
+    # url: https://www.gov.br/esporte/pt-br/noticias-e-conteudos/esporte
+    url: https://www.gov.br/esporte/pt-br/noticias
     active: true
     scraper_type: plone6_api
+    notes: "URL atualizada em 2026-07-16"
   fazenda:
     url: https://www.gov.br/fazenda/pt-br/assuntos/noticias
     active: true
@@ -210,8 +234,10 @@ agencies:
     active: true
     scraper_type: plone6_api
   fnde:
-    url: https://www.gov.br/fnde/pt-br/assuntos/noticias
+    # url: https://www.gov.br/fnde/pt-br/assuntos/noticias
+    url: https://www.gov.br/fnde/pt-br/assuntos/noticias-1/
     active: true
+    notes: "URL atualizada em 2026-07-16"
   funag:
     url: https://www.gov.br/funag/pt-br/centrais-de-conteudo/noticias
     active: true
@@ -236,15 +262,19 @@ agencies:
     url: https://www.gov.br/governodigital/pt-br/noticias
     active: true
   gsi:
-    url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2025
+    # url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2025
+    url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2026
     active: true
+    notes: "URL atualizada em 2026-07-16"
   hfa:
     url: https://www.gov.br/hfa/pt-br/noticias
     active: true
     scraper_type: plone6_api
   ibama:
-    url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
+    # url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2025
+    url: https://www.gov.br/ibama/pt-br/assuntos/noticias/2026
     active: true
+    notes: "URL atualizada em 2026-07-16"
   ibc:
     url: https://www.gov.br/ibc/pt-br/centrais-de-conteudos/noticias
     active: true
@@ -254,8 +284,10 @@ agencies:
     active: false
     disabled_date: "2025-01-15"
   ibict:
-    url: https://www.gov.br/ibict/pt-br/colecoes/colecao-de-todas-as-noticias-do-site
+    # url: https://www.gov.br/ibict/pt-br/colecoes/colecao-de-todas-as-noticias-do-site
+    url: https://www.gov.br/ibict/pt-br/fique-por-dentro/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16. Site em manutenção - API Plone6 indisponível."
   icmbio:
     url: https://www.gov.br/icmbio/pt-br/assuntos/noticias/ultimas-noticias
     active: true
@@ -272,8 +304,8 @@ agencies:
   imprensanacional:
     url: https://www.gov.br/imprensanacional/pt-br/assuntos/noticias
     active: false
-    disabled_date: "2026-03-04"
     disabled_reason: "URL retorna 404. Site não tem página de notícias padrão."
+    disabled_date: "2026-03-04"
   inca:
     url: https://www.gov.br/inca/pt-br/assuntos/noticias
     active: true
@@ -303,16 +335,20 @@ agencies:
     url: https://www.gov.br/inpi/pt-br/central-de-conteudo/noticias
     active: true
   inpp:
-    url: https://www.gov.br/inpp/pt-br/noticias
+    # url: https://www.gov.br/inpp/pt-br/noticias
+    url: https://www.gov.br/inpp/pt-br/noticias-1
     active: true
     scraper_type: plone6_api
+    notes: "URL atualizada em 2026-07-16"
   insa:
     url: https://www.gov.br/insa/pt-br/assuntos/noticias
     active: true
     scraper_type: plone6_api
   inss:
-    url: https://www.gov.br/inss/pt-br/noticias/ultimas-noticias
+    # url: https://www.gov.br/inss/pt-br/noticias/ultimas-noticias
+    url: https://www.gov.br/inss/pt-br/assuntos/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16"
   int:
     url: https://www.gov.br/int/pt-br/assuntos/noticias
     active: true
@@ -330,8 +366,10 @@ agencies:
     url: https://www.gov.br/ird/pt-br/assuntos/noticias
     active: true
   iti:
-    url: https://www.gov.br/iti/pt-br/assuntos/noticias/indice-de-noticias/
+    # url: https://www.gov.br/iti/pt-br/assuntos/noticias/indice-de-noticias/
+    url: https://www.gov.br/iti/pt-br/assuntos/noticias/periodo-de-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   jbrj:
     url: https://www.gov.br/jbrj/pt-br/assuntos/noticias
     active: true
@@ -355,8 +393,10 @@ agencies:
     url: https://www.gov.br/mcom/pt-br/noticias
     active: true
   mcti:
-    url: https://www.gov.br/mcti/pt-br/acompanhe-o-mcti/noticias/ultimas-noticias
+    # url: https://www.gov.br/mcti/pt-br/acompanhe-o-mcti/noticias/ultimas-noticias
+    url: https://www.gov.br/mcti/pt-br/acompanhe-o-mcti/noticias/noticias-julho-outubro-2026
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   mda:
     url: https://www.gov.br/mda/pt-br/noticias
     active: true
@@ -367,11 +407,15 @@ agencies:
     url: https://www.gov.br/mdic/pt-br/assuntos/noticias
     active: true
   mdr:
-    url: https://www.gov.br/mdr/pt-br/noticias
+    # url: https://www.gov.br/mdr/pt-br/noticias
+    url: https://www.gov.br/mdr/pt-br/noticias-midr
     active: true
+    notes: "URL atualizada em 2026-07-16"
   mds:
-    url: https://www.gov.br/mds/pt-br/noticias-e-conteudos/desenvolvimento-social/noticias-desenvolvimento-social
+    # url: https://www.gov.br/mds/pt-br/noticias-e-conteudos/desenvolvimento-social/noticias-desenvolvimento-social
+    url: https://www.gov.br/mds/pt-br/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16"
   mec:
     url: https://www.gov.br/mec/pt-br/assuntos/noticias
     active: true
@@ -384,11 +428,15 @@ agencies:
     active: true
     scraper_type: plone6_api
   mj:
-    url: https://www.gov.br/mj/pt-br/assuntos/noticias
+    # url: https://www.gov.br/mj/pt-br/assuntos/noticias
+    url: https://www.gov.br/mj/pt-br/assuntos/noticias-1
     active: true
+    notes: "URL atualizada em 2026-07-16"
   mma:
-    url: https://www.gov.br/mma/pt-br/assuntos/noticias/ultimas-noticias
+    # url: https://www.gov.br/mma/pt-br/assuntos/noticias/ultimas-noticias
+    url: https://www.gov.br/mma/pt-br/noticias-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   mme:
     url: https://www.gov.br/mme/pt-br/assuntos/noticias
     active: true
@@ -411,8 +459,10 @@ agencies:
     active: true
     scraper_type: plone6_api
   museus:
-    url: https://www.gov.br/museus/pt-br/assuntos/noticias
+    # url: https://www.gov.br/museus/pt-br/assuntos/noticias
+    url: https://www.gov.br/museus/pt-br/comunicados-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   nfse:
     url: https://www.gov.br/nfse/pt-br/noticias
     active: true
@@ -424,15 +474,19 @@ agencies:
     active: true
     scraper_type: plone6_api
   palmares:
-    url: https://www.gov.br/palmares/pt-br/assuntos/noticias
+    # url: https://www.gov.br/palmares/pt-br/assuntos/noticias
+    url: https://www.gov.br/palmares/pt-br/assuntos/noticias-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   patrimonio:
     url: https://www.gov.br/patrimonio/pt-br/central-de-conteudo/noticias
     active: true
     scraper_type: plone6_api
   pf:
-    url: https://www.gov.br/pf/pt-br/assuntos/noticias/noticias-destaque
+    # url: https://www.gov.br/pf/pt-br/assuntos/noticias/noticias-destaque
+    url: https://www.gov.br/pf/pt-br/assuntos/noticias
     active: true
+    notes: "URL atualizada em 2026-07-16"
   pgfn:
     url: https://www.gov.br/pgfn/pt-br/assuntos/noticias
     active: true
@@ -440,9 +494,11 @@ agencies:
     url: https://www.gov.br/planalto/pt-br/acompanhe-o-planalto/noticias
     active: true
   planejamento:
-    url: https://www.gov.br/planejamento/pt-br/assuntos/noticias
+    # url: https://www.gov.br/planejamento/pt-br/assuntos/noticias
+    url: https://www.gov.br/planejamento/pt-br/assuntos/noticias-defeso-eleitoral-2026
     active: true
     scraper_type: plone6_api
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   pncp:
     url: https://www.gov.br/pncp/pt-br/central-de-conteudo/noticias
     active: true
@@ -486,8 +542,10 @@ agencies:
     url: https://www.gov.br/saude/pt-br/assuntos/noticias
     active: true
   secom:
-    url: https://www.gov.br/secom/pt-br/assuntos/noticias
+    # url: https://www.gov.br/secom/pt-br/assuntos/noticias
+    url: https://www.gov.br/secom/pt-br/acompanhe-a-secom/noticias_alt
     active: true
+    notes: "URL atualizada em 2026-07-16"
   secretariageral:
     url: https://www.gov.br/secretariageral/pt-br/noticias
     active: true
@@ -501,8 +559,10 @@ agencies:
     url: https://www.gov.br/servicoscompartilhados/pt-br/acesso-a-informacao/noticias
     active: true
   servidor:
-    url: https://www.gov.br/servidor/pt-br/assuntos/noticias
+    # url: https://www.gov.br/servidor/pt-br/assuntos/noticias
+    url: https://www.gov.br/servidor/pt-br/assuntos/noticias-defeso-eleitoral
     active: true
+    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
   siscomex:
     url: https://www.gov.br/siscomex/pt-br/noticias
     active: false
@@ -514,12 +574,16 @@ agencies:
     url: https://www.gov.br/sudam/pt-br/noticias-1
     active: true
   sudeco:
-    url: https://www.gov.br/sudeco/pt-br/assuntos/noticias
+    # url: https://www.gov.br/sudeco/pt-br/assuntos/noticias
+    url: https://www.gov.br/sudeco/pt-br/assuntos/acontece-na-sudeco
     active: true
     scraper_type: plone6_api
+    notes: "URL atualizada em 2026-07-16"
   sudene:
-    url: https://www.gov.br/sudene/pt-br/assuntos/noticias
+    # url: https://www.gov.br/sudene/pt-br/assuntos/noticias
+    url: https://www.gov.br/sudene/pt-br/assuntos/imprensa
     active: true
+    notes: "URL atualizada em 2026-07-16"
   suframa:
     url: https://www.gov.br/suframa/pt-br/assuntos/noticias
     active: true
@@ -538,8 +602,10 @@ agencies:
     active: true
     scraper_type: plone6_api
   transportes:
-    url: https://www.gov.br/transportes/pt-br/assuntos/noticias
+    # url: https://www.gov.br/transportes/pt-br/assuntos/noticias
+    url: https://www.gov.br/transportes/pt-br/assuntos/noticias-
     active: true
+    notes: "URL atualizada em 2026-07-16"
   turismo:
     url: https://www.gov.br/turismo/pt-br/assuntos/noticias
     active: true
