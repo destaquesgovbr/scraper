@@ -85,7 +85,6 @@ agencies:
   cade:
     url: https://www.gov.br/cade/pt-br/assuntos/noticias
     active: true
-    scraper_type: plone6_api
   capes:
     # url: https://www.gov.br/capes/pt-br/assuntos/noticias
     url: https://www.gov.br/capes/pt-br/assuntos/noticias-defeso-eleitoral
@@ -96,8 +95,8 @@ agencies:
     url: https://www.gov.br/casacivil/pt-br/assuntos/noticias
     active: true
   casaruibarbosa:
-    # url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias/2025
-    url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias
+    # url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias
+    url: https://www.gov.br/casaruibarbosa/pt-br/centrais-de-conteudo/noticias/2026-defeso-eleitoral
     active: true
     notes: "URL atualizada em 2026-07-16. Site em manutenção - API Plone6 indisponível."
   caslode:
@@ -609,4 +608,3 @@ agencies:
   turismo:
     url: https://www.gov.br/turismo/pt-br/assuntos/noticias
     active: true
-    scraper_type: plone6_api
