@@ -1,7 +1,7 @@
 # Gerado automaticamente pelo template airflow-dgb.
 # NÃO editar manualmente. Para atualizar: copier update
 _src_path: /private/var/folders/h5/q3w1nyh93lgd82kcdjnnvqxc0000gn/T/copier._vcs.clone.c2mwhjtt
-_commit: 
+_commit:
 project_name: scraper
 astro_runtime_version: 3.0-14
 python_requirements: "httpx\u003e=0.27.0\npyyaml\u003e=6.0.2\ngoogle-auth\u003e=2.0.0"

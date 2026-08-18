@@ -4,18 +4,15 @@ Storage Adapter for DestaquesGovBr Scraper.
 Simplified postgres-only storage interface for the scraper service.
 """
 
-import os
 from collections import OrderedDict
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from govbr_scraper.storage.postgres_manager import PostgresManager
-from govbr_scraper.storage.event_publisher import EventPublisher
 from govbr_scraper.models.news import NewsInsert
-
-from typing import TYPE_CHECKING
+from govbr_scraper.storage.event_publisher import EventPublisher
+from govbr_scraper.storage.postgres_manager import PostgresManager
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult

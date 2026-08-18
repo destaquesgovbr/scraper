@@ -8,6 +8,7 @@ Cada DAG:
 - Retry: 2x com backoff de 5 min
 - Timeout: 10 min por execução
 """
+
 import json
 import logging
 import os
@@ -28,7 +29,10 @@ def _on_scrape_failure(context):
     try_number = ti.try_number if ti else 0
     logger.error(
         "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
-        dag_id, task_id, try_number, exception,
+        dag_id,
+        task_id,
+        try_number,
+        exception,
     )
 
 
@@ -80,7 +84,6 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
         },
     )
     def scraper_dag():
-
         @task
         def scrape(**context):
             """Chama Scraper API no Cloud Run para scraping da agência."""
@@ -100,6 +103,7 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
             logical_date = context.get("logical_date") or context.get("execution_date")
             if logical_date is None:
                 from datetime import datetime as dt
+
                 logical_date = dt.utcnow()
 
             min_date = (logical_date - timedelta(hours=1)).strftime("%Y-%m-%d")
@@ -121,15 +125,16 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
             )
             response.raise_for_status()
             result = response.json()
-            logger.info("Scraper API response:\n%s", json.dumps(result, indent=2, ensure_ascii=False))
+            logger.info(
+                "Scraper API response:\n%s", json.dumps(result, indent=2, ensure_ascii=False)
+            )
 
             # Verificar status da resposta (API pode retornar 200 com falha lógica)
             if result.get("status") in ("failed", "partial"):
                 from airflow.exceptions import AirflowException
+
                 errors = result.get("errors", [])
-                raise AirflowException(
-                    f"Scraping {result['status']} for {agency_key}: {errors}"
-                )
+                raise AirflowException(f"Scraping {result['status']} for {agency_key}: {errors}")
 
         scrape()
 

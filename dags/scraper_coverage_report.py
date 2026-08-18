@@ -32,13 +32,12 @@ logger = logging.getLogger(__name__)
     },
 )
 def scraper_coverage_report_dag():
-
     @task
     def generate_report() -> dict:
         """Gera relatorio de cobertura das ultimas 24h."""
         import psycopg2
-        from psycopg2.extras import RealDictCursor
         from airflow.models import Variable
+        from psycopg2.extras import RealDictCursor
 
         database_url = Variable.get("scraper_database_url", default_var="")
         if not database_url:
@@ -109,9 +108,7 @@ def scraper_coverage_report_dag():
         min_ratio = float(Variable.get("scraper_min_coverage_ratio", default_var=0.8))
 
         if report["coverage_ratio"] >= min_ratio:
-            logger.info(
-                f"Cobertura OK: {report['coverage_ratio']:.0%} >= {min_ratio:.0%}"
-            )
+            logger.info(f"Cobertura OK: {report['coverage_ratio']:.0%} >= {min_ratio:.0%}")
             return
 
         errors_text = ""

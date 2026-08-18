@@ -69,12 +69,12 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 ```sql
 -- Agências com fallback bem-sucedido nos últimos 7 dias
 -- (infere sucesso via status='success')
-SELECT 
+SELECT
     agency_key,
     COUNT(*) as fallback_count,
     MAX(scraped_at) as last_fallback
 FROM scrape_runs
-WHERE fallback_triggered = true 
+WHERE fallback_triggered = true
     AND status = 'success'
     AND scraped_at > NOW() - INTERVAL '7 days'
 GROUP BY agency_key
@@ -188,14 +188,14 @@ O fallback automático WebScraper → Plone6API é acionado quando agências mig
 ```sql
 -- Agências com fallback ativo nas últimas 24h
 -- (infere sucesso via status='success' + fallback_triggered)
-SELECT 
+SELECT
     agency_key,
     COUNT(*) as total_runs,
     COUNT(*) FILTER (WHERE fallback_triggered) as fallback_count,
     COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') as fallback_success_count,
     ROUND(
-        COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') * 100.0 
-        / NULLIF(COUNT(*) FILTER (WHERE fallback_triggered), 0), 
+        COUNT(*) FILTER (WHERE fallback_triggered AND status = 'success') * 100.0
+        / NULLIF(COUNT(*) FILTER (WHERE fallback_triggered), 0),
         2
     ) as taxa_sucesso_fallback_pct
 FROM scrape_runs

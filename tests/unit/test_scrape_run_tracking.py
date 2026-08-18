@@ -1,9 +1,7 @@
 """Tests for scrape run tracking — recording and querying scrape results."""
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
-
-import pytest
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 from govbr_scraper.models.monitoring import ErrorCategory, ScrapeRunResult
 
@@ -34,7 +32,7 @@ class TestRecordScrapeRun:
             "articles_scraped": 10,
             "articles_saved": 8,
             "execution_time_seconds": 2.5,
-            "scraped_at": datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc),
+            "scraped_at": datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
         }
         defaults.update(overrides)
         return ScrapeRunResult(**defaults)
@@ -104,7 +102,7 @@ class TestStorageAdapterDelegation:
         run = ScrapeRunResult(
             agency_key="mec",
             status="success",
-            scraped_at=datetime(2026, 4, 6, 12, 0, tzinfo=timezone.utc),
+            scraped_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC),
         )
         adapter.record_scrape_run(run)
 
@@ -143,7 +141,7 @@ class TestGetRecentRunsExtended:
         """Limit value is forwarded as a SQL parameter to the database query."""
         pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
         mock_cursor.fetchall.return_value = [
-            {"agency_key": "fazenda", "status": "success", "scraped_at": f"2026-04-06T{12+i}:00"}
+            {"agency_key": "fazenda", "status": "success", "scraped_at": f"2026-04-06T{12 + i}:00"}
             for i in range(10)
         ]
 

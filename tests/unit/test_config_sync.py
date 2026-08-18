@@ -1,6 +1,7 @@
 """
 Testes para validar sincronização de arquivos de configuração.
 """
+
 import filecmp
 from pathlib import Path
 

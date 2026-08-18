@@ -2,7 +2,7 @@
 
 import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urljoin
 
 import requests
@@ -28,7 +28,7 @@ def check_image(image_url: str, timeout: int = IMAGE_CHECK_TIMEOUT) -> dict:
     Returns:
         Dict com image_status, image_http_code, image_checked_at, image_content_type.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     if not image_url:
         return {
@@ -124,7 +124,7 @@ def check_content(
     Returns:
         Dict com content_status, content_hash, content_checked_at, source_etag, new_image_url.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     if not source_url:
         return {
@@ -186,9 +186,7 @@ def check_content(
         resp.close()
 
         if oversize:
-            logger.warning(
-                f"Conteúdo de {source_url} excedeu {MAX_CONTENT_SIZE} bytes — abortado"
-            )
+            logger.warning(f"Conteúdo de {source_url} excedeu {MAX_CONTENT_SIZE} bytes — abortado")
             return {
                 "content_status": "error",
                 "content_hash": stored_hash,
@@ -218,7 +216,9 @@ def check_content(
         first_img = article_body.find("img")
         if first_img and first_img.get("src"):
             img_src = first_img["src"]
-            new_image_url = urljoin(source_url, img_src) if not img_src.startswith("http") else img_src
+            new_image_url = (
+                urljoin(source_url, img_src) if not img_src.startswith("http") else img_src
+            )
 
         new_etag = resp.headers.get("etag")
 

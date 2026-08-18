@@ -21,7 +21,7 @@ def _sanitize(value) -> str:
     """Remove control characters from a value before using in logs/messages."""
     if not value:
         return ""
-    return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(value))
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", str(value))
 
 
 @dag(
@@ -40,13 +40,12 @@ def _sanitize(value) -> str:
     },
 )
 def monitor_scraping_health_dag():
-
     @task
     def check_consecutive_failures() -> list[dict]:
         """Verifica agencias com falhas consecutivas."""
         import psycopg2
-        from psycopg2.extras import RealDictCursor
         from airflow.models import Variable
+        from psycopg2.extras import RealDictCursor
 
         threshold = int(Variable.get("scraper_consecutive_failure_threshold", default_var=3))
         window_hours = int(Variable.get("scraper_failure_window_hours", default_var=2))
@@ -103,8 +102,8 @@ def monitor_scraping_health_dag():
     def check_stale_agencies() -> list[dict]:
         """Verifica agencias sem noticias em X horas."""
         import psycopg2
-        from psycopg2.extras import RealDictCursor
         from airflow.models import Variable
+        from psycopg2.extras import RealDictCursor
 
         stale_hours = int(Variable.get("scraper_stale_hours", default_var=24))
         database_url = Variable.get("scraper_database_url", default_var="")
@@ -141,7 +140,9 @@ def monitor_scraping_health_dag():
         if results:
             logger.warning(f"Agencias sem noticias em {stale_hours}h: {len(results)}")
             for r in results:
-                logger.warning(f"  {_sanitize(r['agency_key'])}: ultima noticia em {r['last_success_at']}")
+                logger.warning(
+                    f"  {_sanitize(r['agency_key'])}: ultima noticia em {r['last_success_at']}"
+                )
         else:
             logger.info("Todas as agencias com noticias recentes.")
 
@@ -164,16 +165,14 @@ def monitor_scraping_health_dag():
                 f"(ultima falha: {r['last_failure_at']})"
                 for r in failures
             ]
-            parts.append(
-                "<b>Alerta: Falhas Consecutivas no Scraper</b>\n\n" + "\n".join(lines)
-            )
+            parts.append("<b>Alerta: Falhas Consecutivas no Scraper</b>\n\n" + "\n".join(lines))
 
         if stale:
-            lines = [f"- <b>{_sanitize(r['agency_key'])}</b>: ultima noticia em {r['last_success_at']}"
-                     for r in stale]
-            parts.append(
-                "<b>Alerta: Agencias Sem Noticias</b>\n\n" + "\n".join(lines)
-            )
+            lines = [
+                f"- <b>{_sanitize(r['agency_key'])}</b>: ultima noticia em {r['last_success_at']}"
+                for r in stale
+            ]
+            parts.append("<b>Alerta: Agencias Sem Noticias</b>\n\n" + "\n".join(lines))
 
         message = "\n\n".join(parts)
 

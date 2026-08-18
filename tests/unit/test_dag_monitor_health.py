@@ -1,6 +1,5 @@
 """Tests for dags/monitor_scraping_health.py — sanitize and alert formatting."""
 
-import importlib
 import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -10,10 +9,12 @@ import pytest
 
 def _make_airflow_mocks():
     """Create Airflow module mocks that prevent real execution of tasks."""
+
     def fake_dag(**kwargs):
         def wrapper(fn):
             fn._dag_kwargs = kwargs
             return fn
+
         return wrapper
 
     def fake_task(fn):
@@ -65,11 +66,11 @@ def _load_module():
 
     with patch.dict(sys.modules, airflow_mocks):
         import dags.monitor_scraping_health as mod
+
         return mod
 
 
 class TestSanitize:
-
     def test_removes_null_bytes(self):
         mod = _load_module()
         assert mod._sanitize("\x00evil") == "evil"
@@ -168,8 +169,13 @@ class TestAlertMessageFormatting:
     def test_combined_message_has_both_sections(self):
         mod = _load_module()
 
-        failures = [{"agency_key": "mec", "last_error": "network_error",
-                     "last_failure_at": datetime(2026, 4, 30, 10, 0)}]
+        failures = [
+            {
+                "agency_key": "mec",
+                "last_error": "network_error",
+                "last_failure_at": datetime(2026, 4, 30, 10, 0),
+            }
+        ]
         stale = [{"agency_key": "funai", "last_success_at": datetime(2026, 4, 28, 8, 0)}]
 
         parts = []
@@ -206,6 +212,7 @@ class TestSendAlertsTask:
     def test_send_alerts_imports_from_scraper_notify(self):
         """send_alerts must import from scraper.notify, not bare notify."""
         import inspect
+
         mod = _load_module()
         # The fake_task decorator stores the original function
         # We need to find it among tasks created during module load
@@ -222,4 +229,5 @@ class TestSendAlertsTask:
 
         with patch.dict(sys.modules, airflow_mocks):
             import dags.monitor_scraping_health as mod
+
             assert mod.monitor_scraping_health_dag is not None

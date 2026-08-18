@@ -35,6 +35,83 @@ poetry run uvicorn govbr_scraper.api:app --reload
 
 Requer Python 3.12+.
 
+## Development Setup
+
+### Prerequisites
+
+- Python 3.12+
+- Poetry
+- Pre-commit
+
+### Setup
+
+```bash
+# Install dependencies
+poetry install
+
+# Install pre-commit hooks
+poetry run pre-commit install
+
+# Run all pre-commit checks manually
+poetry run pre-commit run --all-files
+```
+
+### Code Quality
+
+This project uses pre-commit hooks to maintain code quality and security:
+
+| Category | Hooks | Description |
+|----------|-------|-------------|
+| **Security** 🔒 | `detect-secrets`, `bandit` | Prevent credential leaks + SSRF protection |
+| **Python Quality** 🐍 | `ruff-check`, `ruff-format` | Linter + formatter (line-length 100) |
+| **Type Checking** 📝 | `mypy` | Type checking (enabled for `models/`, `config.py`) |
+| **File Hygiene** 📄 | `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending` | Normalize whitespace |
+| **Syntax Validation** ✅ | `check-yaml`, `check-json`, `check-toml` | Validate config files |
+| **Git Safety** 🚨 | `check-merge-conflict`, `check-added-large-files` | Detect markers + large files |
+| **Custom Validators** ⚙️ | `validate-site-urls`, `validate-ssrf-allowlist`, `test-config-sync` | Project-specific checks |
+
+#### Performance
+
+- **Typical commit**: ~7-9 seconds
+- **First commit**: ~30-60 seconds (installs hook environments)
+
+#### Emergency Bypass
+
+```bash
+# Only for emergencies (not recommended)
+git commit --no-verify
+```
+
+**Note**: CI always runs pre-commit, so issues will be caught even with `--no-verify`.
+
+### Code Standards
+
+- **Type hints**: Required for public functions
+- **Formatting**: Ruff formatter (max line 100)
+- **Linting**: Ruff (replaces Black, Flake8, isort, pyupgrade)
+- **Type checking**: Mypy enabled for core modules
+
+```bash
+# Run manually (outside pre-commit)
+poetry run ruff check .        # Linting
+poetry run ruff format .       # Formatting
+poetry run mypy src/           # Type checking
+```
+
+### site_urls.yaml Sync
+
+⚠️ **IMPORTANT**: The file `site_urls.yaml` exists in TWO locations that must stay synchronized:
+
+- **Always edit**: `src/govbr_scraper/scrapers/config/site_urls.yaml` (source)
+- **Then copy to**: `dags/config/site_urls.yaml` (used by Airflow DAGs)
+
+**Sync command**:
+```bash
+cp src/govbr_scraper/scrapers/config/site_urls.yaml dags/config/site_urls.yaml
+```
+
+Pre-commit will block commits if files are out of sync.
+
 ## Stack
 
 - **API:** FastAPI + Uvicorn (Cloud Run)

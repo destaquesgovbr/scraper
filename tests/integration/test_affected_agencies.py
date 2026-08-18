@@ -10,20 +10,23 @@ These tests:
 3. Validate extraction of title, url, date using production WebScraper code
 """
 
-import pytest
-import requests
 from datetime import date, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
+import requests
+
 from govbr_scraper.scrapers.webscraper import WebScraper
 from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
-
 
 # =============================================================================
 # Configuration
 # =============================================================================
 
-_CONFIG_DIR = str(Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config")
+_CONFIG_DIR = str(
+    Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config"
+)
 _ALL_URLS = load_urls_from_yaml(_CONFIG_DIR, "site_urls.yaml")
 
 # Opt-in: only agencies explicitly listed here are used in integration tests.
@@ -64,9 +67,7 @@ REQUEST_TIMEOUT = 30
 def working_agency_data():
     """Fetch and parse the working agency page."""
     try:
-        response = requests.get(
-            WORKING_AGENCY["url"], headers=HEADERS, timeout=REQUEST_TIMEOUT
-        )
+        response = requests.get(WORKING_AGENCY["url"], headers=HEADERS, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         return {
             "html": response.content,
@@ -128,7 +129,7 @@ class TestScraperFindsArticles:
         mock_response.content = page_data["html"]
         mock_response.url = page_data["url"]
 
-        with patch.object(scraper, 'fetch_page', return_value=mock_response):
+        with patch.object(scraper, "fetch_page", return_value=mock_response):
             # Use production scrape_page() which includes proper Fallback 3 filtering
             should_continue, items_count = scraper.scrape_page(page_data["url"])
 
@@ -147,7 +148,7 @@ class TestScraperFindsArticles:
         mock_response.content = working_agency_data["html"]
         mock_response.url = working_agency_data["url"]
 
-        with patch.object(scraper, 'fetch_page', return_value=mock_response):
+        with patch.object(scraper, "fetch_page", return_value=mock_response):
             should_continue, items_count = scraper.scrape_page(working_agency_data["url"])
 
         assert items_count > 0, "Working agency should find articles"
@@ -194,8 +195,8 @@ class TestScraperExtractsFields:
             # In production, this would fetch article content and check dates
             return True
 
-        with patch.object(scraper, 'fetch_page', return_value=mock_response):
-            with patch.object(scraper, 'extract_news_info', side_effect=mock_extract_news_info):
+        with patch.object(scraper, "fetch_page", return_value=mock_response):
+            with patch.object(scraper, "extract_news_info", side_effect=mock_extract_news_info):
                 scraper.scrape_page(page_data["url"])
 
         if not extracted_items:
@@ -231,8 +232,8 @@ class TestScraperExtractsFields:
             extracted_items.append(item)
             return True
 
-        with patch.object(scraper, 'fetch_page', return_value=mock_response):
-            with patch.object(scraper, 'extract_news_info', side_effect=mock_extract_news_info):
+        with patch.object(scraper, "fetch_page", return_value=mock_response):
+            with patch.object(scraper, "extract_news_info", side_effect=mock_extract_news_info):
                 scraper.scrape_page(page_data["url"])
 
         if not extracted_items:

@@ -7,7 +7,6 @@ from govbr_scraper.monitoring.structured_log import log_scrape_result, record_sc
 
 
 class TestLogScrapeResult:
-
     def test_returns_scrape_run_result_with_all_fields(self):
         result = log_scrape_result(
             agency_key="mec",
@@ -63,7 +62,6 @@ class TestLogScrapeResult:
 
 
 class TestRecordScrapeRunSafe:
-
     def test_delegates_to_storage(self):
         mock_storage = MagicMock()
         mock_run = MagicMock()

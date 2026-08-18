@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -15,13 +14,13 @@ def log_scrape_result(
     status: str,
     articles_scraped: int = 0,
     articles_saved: int = 0,
-    error_category: Optional[ErrorCategory] = None,
-    error_message: Optional[str] = None,
-    execution_time_seconds: Optional[float] = None,
-    primary_scraper: Optional[str] = None,
+    error_category: ErrorCategory | None = None,
+    error_message: str | None = None,
+    execution_time_seconds: float | None = None,
+    primary_scraper: str | None = None,
     fallback_triggered: bool = False,
-    fallback_scraper: Optional[str] = None,
-    fallback_success: Optional[bool] = None,
+    fallback_scraper: str | None = None,
+    fallback_success: bool | None = None,
 ) -> ScrapeRunResult:
     """Create a structured scrape result, log it via loguru, and return it.
 
@@ -45,7 +44,7 @@ def log_scrape_result(
         articles_scraped=articles_scraped,
         articles_saved=articles_saved,
         execution_time_seconds=execution_time_seconds,
-        scraped_at=datetime.now(timezone.utc),
+        scraped_at=datetime.now(UTC),
         primary_scraper=primary_scraper,
         fallback_triggered=fallback_triggered,
         fallback_scraper=fallback_scraper,
@@ -92,4 +91,6 @@ def record_scrape_run_safe(storage, run: ScrapeRunResult, agency_key: str) -> No
     try:
         storage.record_scrape_run(run)
     except Exception as err:
-        logger.warning("Failed to record scrape run for {agency}: {err}", agency=agency_key, err=err)
+        logger.warning(
+            "Failed to record scrape run for {agency}: {err}", agency=agency_key, err=err
+        )

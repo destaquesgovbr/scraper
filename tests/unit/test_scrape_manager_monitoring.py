@@ -1,8 +1,6 @@
 """Tests for monitoring integration in ScrapeManager."""
 
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from govbr_scraper.models.monitoring import ErrorCategory
 
@@ -20,7 +18,9 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_records_success_run(self, mock_load, mock_ws_cls):
-        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
             {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"}
@@ -29,7 +29,9 @@ class TestScrapeManagerMonitoring:
 
         manager, storage = self._make_manager()
         storage.insert.return_value = 1
-        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True)
+        manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
+        )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
@@ -43,15 +45,17 @@ class TestScrapeManagerMonitoring:
     def test_records_error_with_classification(self, mock_load, mock_ws_cls):
         from govbr_scraper.scrapers.webscraper import ScrapingError
 
-        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
         mock_scraper = MagicMock()
-        mock_scraper.scrape_news.side_effect = ScrapingError(
-            "Anti-bot protection detected for mec"
-        )
+        mock_scraper.scrape_news.side_effect = ScrapingError("Anti-bot protection detected for mec")
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True)
+        manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
+        )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
@@ -87,13 +91,17 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_measures_execution_time(self, mock_load, mock_ws_cls):
-        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = []
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True)
+        manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
+        )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
@@ -104,13 +112,17 @@ class TestScrapeManagerMonitoring:
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_records_empty_no_error(self, mock_load, mock_ws_cls):
         """0 articles without error = success with articles_scraped=0."""
-        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = []  # No articles
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True)
+        manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
+        )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
@@ -118,12 +130,13 @@ class TestScrapeManagerMonitoring:
         assert run.articles_scraped == 0
         assert run.error_category is None
 
-
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
     def test_non_sequential_logs_articles_scraped_as_saved(self, mock_load, mock_ws_cls):
         """Non-sequential mode must not log articles_saved=0 for successful scrapes."""
-        mock_load.return_value = {"mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}}
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
             {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"},
@@ -133,7 +146,9 @@ class TestScrapeManagerMonitoring:
 
         manager, storage = self._make_manager()
         storage.insert.return_value = 2
-        manager.run_scraper(agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=False)
+        manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=False
+        )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
@@ -206,7 +221,6 @@ class TestScrapeManagerPreprocessing:
 
     def test_generate_unique_id_delegates_to_module(self):
         """_generate_unique_id should delegate to unique_id module."""
-        from govbr_scraper.scrapers import unique_id
 
         manager, storage = self._make_manager()
 
@@ -214,7 +228,7 @@ class TestScrapeManagerPreprocessing:
         result = manager._generate_unique_id(
             agency="mec",
             published_at_value="2026-01-15T14:30:00Z",
-            title="Nova política educacional"
+            title="Nova política educacional",
         )
 
         # Should be in format: slug_suffix (e.g., "nova-politica-educacional_abc123")

@@ -1,7 +1,7 @@
 """DAG para scraping de notícias EBC (Agência Brasil, TV Brasil) via Cloud Run API."""
+
 import json
 import logging
-import os
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
@@ -18,7 +18,10 @@ def _on_scrape_failure(context):
     try_number = ti.try_number if ti else 0
     logger.error(
         "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
-        dag_id, task_id, try_number, exception,
+        dag_id,
+        task_id,
+        try_number,
+        exception,
     )
 
 
@@ -39,7 +42,6 @@ def _on_scrape_failure(context):
     },
 )
 def scrape_ebc_dag():
-
     @task
     def scrape_ebc(**context):
         """Chama Scraper API no Cloud Run para scraping EBC."""
@@ -58,6 +60,7 @@ def scrape_ebc_dag():
         logical_date = context.get("logical_date") or context.get("execution_date")
         if logical_date is None:
             from datetime import datetime as dt
+
             logical_date = dt.utcnow()
 
         min_date = (logical_date - timedelta(hours=1)).strftime("%Y-%m-%d")
@@ -83,10 +86,9 @@ def scrape_ebc_dag():
         # Verificar status da resposta (API pode retornar 200 com falha lógica)
         if result.get("status") in ("failed", "partial"):
             from airflow.exceptions import AirflowException
+
             errors = result.get("errors", [])
-            raise AirflowException(
-                f"EBC scraping {result['status']}: {errors}"
-            )
+            raise AirflowException(f"EBC scraping {result['status']}: {errors}")
 
     scrape_ebc()
 

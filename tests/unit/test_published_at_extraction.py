@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from bs4 import BeautifulSoup
+
 from govbr_scraper.scrapers.webscraper import WebScraper
 
 # scraper fixture provided by tests/unit/conftest.py

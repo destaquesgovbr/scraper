@@ -1,6 +1,6 @@
 """Tests for the readable unique_id generation module."""
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from govbr_scraper.scrapers.unique_id import (
     generate_readable_unique_id,
@@ -10,7 +10,6 @@ from govbr_scraper.scrapers.unique_id import (
 
 
 class TestSlugify:
-
     def test_basic_ascii(self):
         assert slugify("hello world") == "hello-world"
 
@@ -70,7 +69,6 @@ class TestSlugify:
 
 
 class TestGenerateSuffix:
-
     def test_deterministic(self):
         s1 = generate_suffix("mec", "2025-01-15", "Título da notícia")
         s2 = generate_suffix("mec", "2025-01-15", "Título da notícia")
@@ -114,7 +112,7 @@ class TestGenerateSuffix:
 
     def test_datetime_object_uses_full_isoformat(self):
         """datetime includes time component, producing different suffix than date-only."""
-        dt = datetime(2025, 1, 15, 12, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 15, 12, 0, tzinfo=UTC)
         d = date(2025, 1, 15)
         s_datetime = generate_suffix("mec", dt, "Título")
         s_date = generate_suffix("mec", d, "Título")
@@ -125,7 +123,6 @@ class TestGenerateSuffix:
 
 
 class TestGenerateReadableUniqueId:
-
     def test_basic_format(self):
         result = generate_readable_unique_id("mec", "2025-01-15", "Governo anuncia programa")
         assert "_" in result
@@ -194,9 +191,7 @@ class TestGenerateReadableUniqueId:
         assert suffix1 != suffix2
 
     def test_with_date_object(self):
-        result = generate_readable_unique_id(
-            "mec", date(2025, 1, 15), "Teste com date object"
-        )
+        result = generate_readable_unique_id("mec", date(2025, 1, 15), "Teste com date object")
         assert "_" in result
         assert len(result.rsplit("_", 1)[1]) == 6
 

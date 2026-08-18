@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
     },
 )
 def cleanup_old_scrape_runs_dag():
-
     @task
     def delete_old_runs() -> dict:
         """Deleta registros de scrape_runs mais antigos que retention_days."""

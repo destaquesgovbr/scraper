@@ -43,8 +43,8 @@ def generate_suffix(agency: str, published_at_value, title: str) -> str:
         if isinstance(published_at_value, date)
         else str(published_at_value)
     )
-    hash_input = f"{agency}_{date_str}_{title}".encode("utf-8")
-    return hashlib.md5(hash_input).hexdigest()[:6]
+    hash_input = f"{agency}_{date_str}_{title}".encode()
+    return hashlib.md5(hash_input, usedforsecurity=False).hexdigest()[:6]
 
 
 def generate_readable_unique_id(agency: str, published_at_value, title: str) -> str:

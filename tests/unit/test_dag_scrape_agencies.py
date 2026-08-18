@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 import yaml
 
-
 SAMPLE_YAML = {
     "agencies": {
         "mec": {"url": "https://www.gov.br/mec/pt-br/noticias", "active": True},
@@ -24,10 +23,12 @@ SAMPLE_YAML = {
 
 def _make_airflow_mocks():
     """Create Airflow module mocks that prevent real execution."""
+
     def fake_dag(**kwargs):
         def wrapper(fn):
             fn._dag_kwargs = kwargs
             return fn
+
         return wrapper
 
     def fake_task(fn):
@@ -87,7 +88,6 @@ def _cleanup(patchers):
 
 
 class TestLoadAgenciesConfig:
-
     def test_filters_inactive_agencies(self):
         mod, patchers = _load_module(SAMPLE_YAML)
         try:
@@ -156,7 +156,6 @@ class TestLoadAgenciesConfig:
 
 
 class TestDynamicDagGeneration:
-
     def test_minute_offset_distribution(self):
         agencies = {"a": "url_a", "b": "url_b", "c": "url_c"}
         sorted_keys = [k for k, _ in sorted(agencies.items())]
@@ -222,7 +221,6 @@ class TestDynamicDagGeneration:
 
 
 class TestOnScrapeFailure:
-
     def test_logs_failure_with_context(self, caplog):
         import logging
 

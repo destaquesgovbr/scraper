@@ -8,7 +8,7 @@ When known_urls is provided, the scraper should:
 """
 
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

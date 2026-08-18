@@ -44,6 +44,9 @@ pytest-cov = "^4.1.0"
 black = "^23.12.1"
 ruff = "^0.1.8"
 httpx = ">=0.24.0"
+pre-commit = "^3.6.0"
+mypy = "^1.7.1"
+bandit = "^1.7.5"
 
 [build-system]
 requires = ["poetry-core"]
@@ -73,6 +76,14 @@ ignore = [
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
+"dags/**/*.py" = ["E402"]      # Late imports in Airflow DAGs
+"tests/**/*.py" = ["S101", "B017", "F841", "B007"]     # Allow asserts, blind exceptions, unused vars in tests
+"src/govbr_scraper/storage/storage_adapter.py" = ["E722"]  # Bare except for defensive handling
+"src/govbr_scraper/scrapers/webscraper.py" = ["B023", "B007"]  # Lambda captures in scraping logic
+"src/govbr_scraper/scrapers/ebc_webscraper.py" = ["B023", "B904", "E722"]  # Lambda captures, exception handling, bare except
+"src/govbr_scraper/scrapers/plone6_api_scraper.py" = ["F841", "B007"]  # Unused vars in parsing logic
+"src/govbr_scraper/scrapers/yaml_config.py" = ["F841"]  # Unused vars in parsing
+"src/govbr_scraper/api.py" = ["B904"]  # Raise without from in FastAPI handlers
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -87,3 +98,27 @@ addopts = [
 markers = [
     "integration: tests that make real HTTP requests to external services",
 ]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = false
+no_implicit_optional = false
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+no_strict_optional = true
+
+# Core modules with type checking enabled (start small, expand later)
+[[tool.mypy.overrides]]
+module = [
+    "govbr_scraper.models.*",
+    "govbr_scraper.config",
+]
+files = "^src/govbr_scraper/(models|config)\\.py$"
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true

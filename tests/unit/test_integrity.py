@@ -199,7 +199,7 @@ class TestCheckContent:
         # Agências Volto/Plone 6 ou páginas com DOM inesperado: sem corpo
         # identificável, reportar error em vez de hashear a página inteira
         # (header/footer variáveis → falso positivo "changed" permanente).
-        html = b'<html><body><p>Sem divs reconhecidas</p></body></html>'
+        html = b"<html><body><p>Sem divs reconhecidas</p></body></html>"
         mock_get.return_value = _mock_get_response(html)
 
         result = check_content("https://www.gov.br/noticia", stored_hash="sha256:old")
@@ -210,8 +210,8 @@ class TestCheckContent:
     def test_content_volto_fallback(self, mock_get):
         html = (
             b'<html><body><main id="main-content">'
-            b'<article><p>Conteudo Volto</p></article>'
-            b'</main></body></html>'
+            b"<article><p>Conteudo Volto</p></article>"
+            b"</main></body></html>"
         )
         mock_get.return_value = _mock_get_response(html)
 
@@ -430,23 +430,19 @@ class TestVerifyIntegrityEndpoint:
     def test_endpoint_rejects_bad_url_with_422(self, caplog):
         """Validation errors must return 422 with JSON-serializable detail."""
         import logging
+
         caplog.set_level(logging.WARNING)
 
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/verify/integrity",
-            json={
-                "articles": [
-                    {"unique_id": "bad", "image_url": "http://169.254.169.254/"}
-                ]
-            },
+            json={"articles": [{"unique_id": "bad", "image_url": "http://169.254.169.254/"}]},
         )
 
         assert resp.status_code == 422
         body = resp.json()
         assert isinstance(body["detail"], list)
-        assert any("169.254.169.254" in record.message
-                   for record in caplog.records)
+        assert any("169.254.169.254" in record.message for record in caplog.records)
 
     def test_relative_url_returns_422_not_500(self):
         """Plone resolveuid relative URLs must return 422, not 500."""
@@ -454,9 +450,7 @@ class TestVerifyIntegrityEndpoint:
         resp = client.post(
             "/verify/integrity",
             json={
-                "articles": [
-                    {"unique_id": "x", "image_url": "resolveuid/abc123/@@images/image"}
-                ]
+                "articles": [{"unique_id": "x", "image_url": "resolveuid/abc123/@@images/image"}]
             },
         )
 

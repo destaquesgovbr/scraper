@@ -3,7 +3,6 @@
 import ast
 from pathlib import Path
 
-
 DAGS_DIR = Path(__file__).resolve().parent.parent.parent / "dags"
 
 SCRAPE_DAGS = [

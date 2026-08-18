@@ -1,20 +1,21 @@
 """Tests for health check functions — consecutive failures, stale agencies, coverage."""
 
-from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock, patch
+from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 
 from govbr_scraper.monitoring.health_checks import (
+    compute_coverage_report,
     find_consecutive_failures,
     find_stale_agencies,
-    compute_coverage_report,
 )
 
 
 @pytest.fixture
 def mock_cursor_with_rows():
     """Fixture factory for creating mock cursors with custom rows."""
+
     def _create(rows):
         mock_cursor = MagicMock()
         mock_cursor.fetchall.return_value = rows
@@ -22,16 +23,22 @@ def mock_cursor_with_rows():
         mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
         return mock_conn, mock_cursor
+
     return _create
 
 
 class TestFindConsecutiveFailures:
-
     def test_3_errors_returns_agency(self, mock_cursor_with_rows):
-        mock_conn, _ = mock_cursor_with_rows([
-            {"agency_key": "mec", "consecutive_failures": 3, "last_error": "network_error",
-             "last_failure_at": datetime(2026, 4, 6, 14, 30, tzinfo=timezone.utc)},
-        ])
+        mock_conn, _ = mock_cursor_with_rows(
+            [
+                {
+                    "agency_key": "mec",
+                    "consecutive_failures": 3,
+                    "last_error": "network_error",
+                    "last_failure_at": datetime(2026, 4, 6, 14, 30, tzinfo=UTC),
+                },
+            ]
+        )
         result = find_consecutive_failures(mock_conn, threshold=3)
         assert len(result) == 1
         assert result[0]["agency_key"] == "mec"
@@ -61,11 +68,12 @@ class TestFindConsecutiveFailures:
 
 
 class TestFindStaleAgencies:
-
     def test_no_articles_in_24h_returns_agency(self, mock_cursor_with_rows):
-        mock_conn, _ = mock_cursor_with_rows([
-            {"agency_key": "mds", "last_success_at": datetime(2026, 4, 4, 10, 0, tzinfo=timezone.utc)},
-        ])
+        mock_conn, _ = mock_cursor_with_rows(
+            [
+                {"agency_key": "mds", "last_success_at": datetime(2026, 4, 4, 10, 0, tzinfo=UTC)},
+            ]
+        )
         result = find_stale_agencies(mock_conn, stale_hours=24)
         assert len(result) == 1
         assert result[0]["agency_key"] == "mds"
@@ -77,12 +85,18 @@ class TestFindStaleAgencies:
 
 
 class TestComputeCoverageReport:
-
     def test_returns_correct_ratio(self, mock_cursor_with_rows):
-        mock_conn, _ = mock_cursor_with_rows([
-            {"total_active": 155, "agencies_scraped": 140, "agencies_with_errors": 15,
-             "total_articles": 500, "coverage_ratio": 0.90},
-        ])
+        mock_conn, _ = mock_cursor_with_rows(
+            [
+                {
+                    "total_active": 155,
+                    "agencies_scraped": 140,
+                    "agencies_with_errors": 15,
+                    "total_articles": 500,
+                    "coverage_ratio": 0.90,
+                },
+            ]
+        )
         result = compute_coverage_report(mock_conn, hours=24)
         assert result["total_active"] == 155
         assert result["agencies_scraped"] == 140

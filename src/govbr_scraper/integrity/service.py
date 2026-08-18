@@ -1,8 +1,9 @@
 """Orquestrador de verificação de integridade em batch."""
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+from datetime import UTC, datetime
 
 from govbr_scraper.integrity.checker import check_content, check_image
 
@@ -71,8 +72,7 @@ def verify_batch(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(_verify_article, article): article["unique_id"]
-            for article in articles
+            executor.submit(_verify_article, article): article["unique_id"] for article in articles
         }
 
         try:
@@ -99,7 +99,7 @@ def verify_batch(
             for future, uid in futures.items():
                 if uid in pending_ids and not future.done():
                     future.cancel()
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             for uid in pending_ids:
                 results.append(
                     {

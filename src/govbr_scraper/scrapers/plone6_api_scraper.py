@@ -4,13 +4,13 @@ Scraper para agências gov.br que usam Plone 6 com Volto (React SPA).
 Utiliza a REST API do Plone (++api++) em vez de parsing HTML, pois
 o conteúdo é renderizado client-side via JavaScript.
 """
+
 import json
 import logging
 import random
 import re
 import time
-from datetime import datetime, timezone, timedelta
-from typing import Dict, List, Optional
+from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -19,15 +19,13 @@ from retry import retry
 
 # Importar constantes e exceções do WebScraper
 from govbr_scraper.scrapers.webscraper import (
-    ScrapingError,
     DEFAULT_HEADERS,
     SLEEP_TIME_INTERVAL,
+    ScrapingError,
 )
 
 # Configurar logging (mesmo padrão do WebScraper)
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class Plone6APIScraper:
@@ -44,8 +42,8 @@ class Plone6APIScraper:
         self,
         min_date: str,
         base_url: str,
-        max_date: Optional[str] = None,
-        known_urls: Optional[set] = None
+        max_date: str | None = None,
+        known_urls: set | None = None,
     ):
         """
         Inicializar scraper (interface compatível com WebScraper).
@@ -57,10 +55,7 @@ class Plone6APIScraper:
         """
         self.base_url = base_url
         self.min_date = datetime.strptime(min_date, "%Y-%m-%d").date()
-        self.max_date = (
-            datetime.strptime(max_date, "%Y-%m-%d").date()
-            if max_date else None
-        )
+        self.max_date = datetime.strptime(max_date, "%Y-%m-%d").date() if max_date else None
         self.news_data = []
         self.agency = self.get_agency_name()
         self.known_urls = known_urls or set()
@@ -74,7 +69,7 @@ class Plone6APIScraper:
         """
         return self.base_url.split("/")[3]
 
-    def scrape_news(self) -> List[Dict[str, str]]:
+    def scrape_news(self) -> list[dict[str, str]]:
         """
         Scraper notícias via API REST do Plone 6.
 
@@ -104,14 +99,14 @@ class Plone6APIScraper:
                 break
 
             logging.info(
-                f"Processando {len(items)} notícias "
-                f"(offset {current_start}/{items_total})"
+                f"Processando {len(items)} notícias (offset {current_start}/{items_total})"
             )
 
             # Processar cada item
             for item in items:
                 # Sleep entre requests (mesmo padrão do WebScraper)
-                time.sleep(random.uniform(*SLEEP_TIME_INTERVAL))
+                # Random sleep is not security-critical, just for rate limiting
+                time.sleep(random.uniform(*SLEEP_TIME_INTERVAL))  # nosec B311
 
                 should_continue = self._process_news_item(item)
                 if not should_continue:
@@ -164,14 +159,16 @@ class Plone6APIScraper:
         query_string = "&".join(params)
 
         # Reconstruir URL
-        api_url = urlunparse((
-            parsed.scheme,
-            parsed.netloc,
-            api_path,
-            "",  # params
-            query_string,
-            ""   # fragment
-        ))
+        api_url = urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                api_path,
+                "",  # params
+                query_string,
+                "",  # fragment
+            )
+        )
 
         return api_url
 
@@ -242,14 +239,10 @@ class Plone6APIScraper:
         # 3. Filtro de data (mesma lógica do WebScraper.extract_news_info)
         if news_date:
             if news_date < self.min_date:
-                logging.info(
-                    f"Parando scrape. Notícia mais antiga que min_date: {news_date}"
-                )
+                logging.info(f"Parando scrape. Notícia mais antiga que min_date: {news_date}")
                 return False  # PARAR
             if self.max_date and news_date > self.max_date:
-                logging.info(
-                    f"Pulando notícia de {news_date} (mais nova que max_date)"
-                )
+                logging.info(f"Pulando notícia de {news_date} (mais nova que max_date)")
                 return True  # PULAR mas continuar
 
         # 4. Known URL fence (mesma lógica do WebScraper)
@@ -278,11 +271,7 @@ class Plone6APIScraper:
         self.news_data.append(news_item)
         return True  # CONTINUAR
 
-    def _transform_news_item(
-        self,
-        item: dict,
-        published_dt: Optional[datetime]
-    ) -> Dict[str, str]:
+    def _transform_news_item(self, item: dict, published_dt: datetime | None) -> dict[str, str]:
         """
         Transformar item da API do Plone para formato interno.
 
@@ -349,7 +338,7 @@ class Plone6APIScraper:
 
         # Limpeza básica
         if content_md:
-            content_md = re.sub(r'\n{3,}', '\n\n', content_md).strip()
+            content_md = re.sub(r"\n{3,}", "\n\n", content_md).strip()
 
         # 6. Imagem
         image_url = None
@@ -390,5 +379,5 @@ class Plone6APIScraper:
             "content": content_md,
             "image": image_url,
             "agency": self.agency,
-            "extracted_at": datetime.now(timezone.utc),
+            "extracted_at": datetime.now(UTC),
         }

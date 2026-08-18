@@ -1,13 +1,16 @@
 """
 Tests for yaml_config module - shared utilities for loading agency YAML configuration.
 """
+
 import os
+
 import pytest
+
 from govbr_scraper.scrapers.yaml_config import (
-    get_config_dir,
-    load_urls_from_yaml,
     extract_url,
+    get_config_dir,
     is_agency_inactive,
+    load_urls_from_yaml,
 )
 
 # Path to the scrapers module, used to resolve config dir in tests
@@ -86,10 +89,13 @@ class TestIsAgencyInactive:
 class TestLoadUrlsFromYaml:
     """Tests for load_urls_from_yaml function with both gov.br and EBC configs."""
 
-    @pytest.mark.parametrize("yaml_file,expected_agency,expected_url_pattern", [
-        ("site_urls.yaml", "mec", "gov.br/mec"),
-        ("ebc_urls.yaml", "agencia_brasil", "agenciabrasil.ebc.com.br"),
-    ])
+    @pytest.mark.parametrize(
+        "yaml_file,expected_agency,expected_url_pattern",
+        [
+            ("site_urls.yaml", "mec", "gov.br/mec"),
+            ("ebc_urls.yaml", "agencia_brasil", "agenciabrasil.ebc.com.br"),
+        ],
+    )
     def test_load_urls_returns_dict(self, yaml_file, expected_agency, expected_url_pattern):
         """load_urls_from_yaml should return a dict mapping agency names to URLs."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
@@ -97,10 +103,13 @@ class TestLoadUrlsFromYaml:
         assert isinstance(agency_urls, dict)
         assert len(agency_urls) > 0
 
-    @pytest.mark.parametrize("yaml_file,inactive_url_pattern", [
-        ("site_urls.yaml", "https://www.gov.br/pt-br/noticias"),  # cisc is inactive
-        ("ebc_urls.yaml", "memoria.ebc.com.br"),  # memoria-ebc is inactive
-    ])
+    @pytest.mark.parametrize(
+        "yaml_file,inactive_url_pattern",
+        [
+            ("site_urls.yaml", "https://www.gov.br/pt-br/noticias"),  # cisc is inactive
+            ("ebc_urls.yaml", "memoria.ebc.com.br"),  # memoria-ebc is inactive
+        ],
+    )
     def test_load_urls_filters_inactive(self, yaml_file, inactive_url_pattern):
         """Inactive agencies should not be in the returned dict."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
@@ -116,10 +125,13 @@ class TestLoadUrlsFromYaml:
         # agencia_brasil and tvbrasil are active
         assert "agenciabrasil.ebc.com.br" in urls_str or "tvbrasil.ebc.com.br" in urls_str
 
-    @pytest.mark.parametrize("yaml_file,agency,expected_url_pattern", [
-        ("site_urls.yaml", "mec", "mec"),
-        ("ebc_urls.yaml", "agencia_brasil", "agenciabrasil.ebc.com.br"),
-    ])
+    @pytest.mark.parametrize(
+        "yaml_file,agency,expected_url_pattern",
+        [
+            ("site_urls.yaml", "mec", "mec"),
+            ("ebc_urls.yaml", "agencia_brasil", "agenciabrasil.ebc.com.br"),
+        ],
+    )
     def test_load_specific_active_agency(self, yaml_file, agency, expected_url_pattern):
         """Loading a specific active agency should work."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
@@ -128,10 +140,13 @@ class TestLoadUrlsFromYaml:
         assert agency in agency_urls
         assert expected_url_pattern in agency_urls[agency]["url"]
 
-    @pytest.mark.parametrize("yaml_file,inactive_agency", [
-        ("site_urls.yaml", "cisc"),
-        ("ebc_urls.yaml", "memoria-ebc"),
-    ])
+    @pytest.mark.parametrize(
+        "yaml_file,inactive_agency",
+        [
+            ("site_urls.yaml", "cisc"),
+            ("ebc_urls.yaml", "memoria-ebc"),
+        ],
+    )
     def test_load_specific_inactive_agency_raises(self, yaml_file, inactive_agency):
         """Loading a specific inactive agency should raise ValueError."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
@@ -182,8 +197,9 @@ class TestLoadUrlsReturnsConfigDict:
         config_dir = get_config_dir(_SCRAPERS_MODULE)
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
         for agency_name, config in agency_urls.items():
-            assert config["scraper_type"] in valid_types, \
+            assert config["scraper_type"] in valid_types, (
                 f"{agency_name}: unknown scraper_type '{config['scraper_type']}'"
+            )
 
     def test_config_dict_has_active_field(self):
         """Each config dict must contain an 'active' key set to True (inactive filtered out)."""
@@ -191,4 +207,6 @@ class TestLoadUrlsReturnsConfigDict:
         agency_urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
         for agency_name, config in agency_urls.items():
             assert "active" in config, f"{agency_name} missing active field"
-            assert config["active"] is True, f"{agency_name}: active should be True (inactive are filtered)"
+            assert config["active"] is True, (
+                f"{agency_name}: active should be True (inactive are filtered)"
+            )

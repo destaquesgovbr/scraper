@@ -1,0 +1,20 @@
+# Bandit security scanner configuration for scraper
+exclude_dirs:
+  - /tests/
+  - /.pytest_cache/
+  - /htmlcov/
+
+# Rules to skip (with justification)
+skips:
+  # B101: assert_used - asserts are OK in tests
+  - B101
+  # B404: subprocess import - needed for gcloud CLI in postgres_manager.py
+  - B404
+  # B603: subprocess without shell - hardcoded gcloud/pgrep commands (not user input)
+  - B603
+  # B607: partial executable path - gcloud/pgrep are in PATH
+  - B607
+  # B105: hardcoded password - local dev fallback only
+  - B105
+  # B608: SQL injection - false positives (SQLAlchemy uses parameterized queries)
+  - B608

@@ -4,8 +4,9 @@ Unit tests for Plone6APIScraper.
 Tests cover: URL building, item transformation, date filtering,
 known URL fence, fetch error handling.
 """
+
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,9 +28,14 @@ def _make_scraper(min_date="2026-01-01", max_date=None, known_urls=None):
     )
 
 
-def _api_item(url=None, title="Título Teste", effective="2026-03-15T10:00:00-03:00",
-              modified="2026-03-15T10:05:00-03:00", description="Resumo",
-              content="<p>Conteúdo completo</p>"):
+def _api_item(
+    url=None,
+    title="Título Teste",
+    effective="2026-03-15T10:00:00-03:00",
+    modified="2026-03-15T10:05:00-03:00",
+    description="Resumo",
+    content="<p>Conteúdo completo</p>",
+):
     return {
         "@id": url or f"https://www.gov.br/susep/pt-br/noticias/{title.lower().replace(' ', '-')}",
         "title": title,
@@ -182,7 +188,9 @@ class TestTransformNewsItem:
         item["image"] = {"download": "@@images/image/large"}
         published_dt = datetime(2026, 3, 15, tzinfo=TZ_BR)
         result = scraper._transform_news_item(item, published_dt)
-        assert result["image"] == "https://www.gov.br/susep/pt-br/noticias/test/@@images/image/large"
+        assert (
+            result["image"] == "https://www.gov.br/susep/pt-br/noticias/test/@@images/image/large"
+        )
 
     def test_extracts_image_url_from_absolute_url(self):
         scraper = _make_scraper()
@@ -245,9 +253,18 @@ class TestTransformNewsItem:
         item = _api_item()
         result = scraper._transform_news_item(item, datetime(2026, 3, 15, tzinfo=TZ_BR))
         expected_fields = {
-            "title", "url", "published_at", "updated_datetime",
-            "category", "tags", "editorial_lead", "subtitle",
-            "content", "image", "agency", "extracted_at",
+            "title",
+            "url",
+            "published_at",
+            "updated_datetime",
+            "category",
+            "tags",
+            "editorial_lead",
+            "subtitle",
+            "content",
+            "image",
+            "agency",
+            "extracted_at",
         }
         assert expected_fields.issubset(result.keys())
 
@@ -301,8 +318,10 @@ class TestKnownUrlFence:
     def test_known_url_is_skipped(self):
         known = {"https://www.gov.br/susep/pt-br/noticias/artigo-1"}
         scraper = _make_scraper(known_urls=known)
-        item = _api_item(url="https://www.gov.br/susep/pt-br/noticias/artigo-1",
-                         effective="2026-03-15T10:00:00-03:00")
+        item = _api_item(
+            url="https://www.gov.br/susep/pt-br/noticias/artigo-1",
+            effective="2026-03-15T10:00:00-03:00",
+        )
         result = scraper._process_news_item(item)
         assert result is True  # Continua (não parou ainda)
         assert len(scraper.news_data) == 0
@@ -333,14 +352,14 @@ class TestKnownUrlFence:
         scraper = _make_scraper(known_urls=known)
         # 2 known
         for url in list(known):
-            scraper._process_news_item(
-                _api_item(url=url, effective="2026-03-15T10:00:00-03:00")
-            )
+            scraper._process_news_item(_api_item(url=url, effective="2026-03-15T10:00:00-03:00"))
         assert scraper._consecutive_known == 2
         # Novo artigo → reseta contador
         scraper._process_news_item(
-            _api_item(url="https://www.gov.br/susep/pt-br/noticias/novo",
-                      effective="2026-03-15T10:00:00-03:00")
+            _api_item(
+                url="https://www.gov.br/susep/pt-br/noticias/novo",
+                effective="2026-03-15T10:00:00-03:00",
+            )
         )
         assert scraper._consecutive_known == 0
 
@@ -356,10 +375,13 @@ class TestScrapeNewsLoop:
 
     def test_processes_single_page(self):
         scraper = _make_scraper(min_date="2026-03-01", max_date="2026-04-01")
-        items = [_api_item(title=f"Notícia {i}", effective="2026-03-15T10:00:00-03:00")
-                 for i in range(3)]
-        with patch.object(scraper, "_fetch_api_page", return_value=_api_response(items)), \
-             patch("time.sleep"):
+        items = [
+            _api_item(title=f"Notícia {i}", effective="2026-03-15T10:00:00-03:00") for i in range(3)
+        ]
+        with (
+            patch.object(scraper, "_fetch_api_page", return_value=_api_response(items)),
+            patch("time.sleep"),
+        ):
             result = scraper.scrape_news()
         assert len(result) == 3
 
@@ -367,47 +389,51 @@ class TestScrapeNewsLoop:
         scraper = _make_scraper(min_date="2026-03-01")
         items = [_api_item(effective="2026-03-15T10:00:00-03:00")]
         mock_fetch = MagicMock(return_value=_api_response(items, total=1))
-        with patch.object(scraper, "_fetch_api_page", mock_fetch), \
-             patch("time.sleep"):
+        with patch.object(scraper, "_fetch_api_page", mock_fetch), patch("time.sleep"):
             scraper.scrape_news()
         assert mock_fetch.call_count == 1  # Só 1 página
 
     def test_stops_early_when_item_before_min_date(self):
         scraper = _make_scraper(min_date="2026-03-10")
         items = [_api_item(effective="2026-03-05T10:00:00-03:00")]  # before min_date
-        with patch.object(scraper, "_fetch_api_page",
-                          return_value=_api_response(items, total=100)), \
-             patch("time.sleep"):
+        with (
+            patch.object(scraper, "_fetch_api_page", return_value=_api_response(items, total=100)),
+            patch("time.sleep"),
+        ):
             result = scraper.scrape_news()
         assert result == []
 
     def test_paginates_across_multiple_pages(self):
         scraper = _make_scraper(min_date="2026-03-01", max_date="2026-04-01")
-        page1 = [_api_item(title=f"Notícia {i}", effective="2026-03-15T10:00:00-03:00")
-                 for i in range(3)]
-        page2 = [_api_item(title=f"Notícia {i+3}", effective="2026-03-15T10:00:00-03:00")
-                 for i in range(2)]
-        mock_fetch = MagicMock(side_effect=[
-            _api_response(page1, total=5),
-            _api_response(page2, total=5),
-        ])
-        with patch.object(scraper, "_fetch_api_page", mock_fetch), \
-             patch("time.sleep"):
+        page1 = [
+            _api_item(title=f"Notícia {i}", effective="2026-03-15T10:00:00-03:00") for i in range(3)
+        ]
+        page2 = [
+            _api_item(title=f"Notícia {i + 3}", effective="2026-03-15T10:00:00-03:00")
+            for i in range(2)
+        ]
+        mock_fetch = MagicMock(
+            side_effect=[
+                _api_response(page1, total=5),
+                _api_response(page2, total=5),
+            ]
+        )
+        with patch.object(scraper, "_fetch_api_page", mock_fetch), patch("time.sleep"):
             result = scraper.scrape_news()
         assert mock_fetch.call_count == 2
         assert len(result) == 5
 
     def test_propagates_scraping_error(self):
         scraper = _make_scraper()
-        with patch.object(scraper, "_fetch_api_page",
-                          side_effect=ScrapingError("Falha na API")):
+        with patch.object(scraper, "_fetch_api_page", side_effect=ScrapingError("Falha na API")):
             with pytest.raises(ScrapingError, match="Falha na API"):
                 scraper.scrape_news()
 
     def test_wraps_request_exception_as_scraping_error(self):
         scraper = _make_scraper()
-        with patch.object(scraper, "_fetch_api_page",
-                          side_effect=requests.exceptions.ConnectionError("timeout")):
+        with patch.object(
+            scraper, "_fetch_api_page", side_effect=requests.exceptions.ConnectionError("timeout")
+        ):
             with pytest.raises(ScrapingError, match="Erro de rede"):
                 scraper.scrape_news()
 

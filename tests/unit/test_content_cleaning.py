@@ -12,7 +12,6 @@ Tests cover:
 import pytest
 from bs4 import BeautifulSoup
 
-
 # scraper fixture provided by tests/unit/conftest.py
 
 
@@ -170,7 +169,7 @@ class TestIsJunkLineLegitimateContent:
         assert scraper._is_junk_line(line) is False
 
     def test_line_about_press_secretary_is_not_junk(self, scraper):
-        line = 'disse o secretário de imprensa do governo durante o evento'
+        line = "disse o secretário de imprensa do governo durante o evento"
         assert scraper._is_junk_line(line) is False
 
     def test_line_about_public_communication_is_not_junk(self, scraper):
@@ -322,8 +321,7 @@ class TestCleanMarkdownContent:
 
     def test_removes_standalone_attribution_line(self, scraper):
         markdown = (
-            "O programa foi lançado nesta terça-feira.\n\n"
-            "**Assessoria de Comunicação - MDS**\n"
+            "O programa foi lançado nesta terça-feira.\n\n**Assessoria de Comunicação - MDS**\n"
         )
         result = scraper._clean_markdown_content(markdown)
         assert "Assessoria de Comunicação - MDS" not in result
@@ -341,10 +339,7 @@ class TestCleanMarkdownContent:
         assert "programa foi lançado" in result
 
     def test_removes_publicado_em_line(self, scraper):
-        markdown = (
-            "Publicado em 04/03/2026 14h00\n\n"
-            "O Brasil registrou recorde de exportações.\n"
-        )
+        markdown = "Publicado em 04/03/2026 14h00\n\nO Brasil registrou recorde de exportações.\n"
         result = scraper._clean_markdown_content(markdown)
         assert "Publicado em" not in result
         assert "recorde de exportações" in result
@@ -471,7 +466,8 @@ class TestCleanHtmlWithValidation:
         text = cleaned.get_text()
         # At least some of the content paragraphs should be preserved
         paragraphs_preserved = sum(
-            1 for phrase in [
+            1
+            for phrase in [
                 "assessoria de comunicação",
                 "secretário de imprensa",
                 "comunicação com o cidadão",
@@ -494,12 +490,15 @@ class TestCleanHtmlWithValidation:
 class TestEndToEndCleaning:
     """Test the full cleaning pipeline from HTML to validated markdown."""
 
-    def test_article_with_comunicacao_preserves_content(self, scraper, html_article_with_comunicacao):
+    def test_article_with_comunicacao_preserves_content(
+        self, scraper, html_article_with_comunicacao
+    ):
         soup = BeautifulSoup(html_article_with_comunicacao, "html.parser")
         article_body = soup.find("div", id="content")
         cleaned_html = scraper._clean_html_with_validation(article_body, "https://test.gov.br")
 
         from markdownify import markdownify as md
+
         content = md(str(cleaned_html))
         result = scraper._clean_markdown_content(content)
 
@@ -510,12 +509,15 @@ class TestEndToEndCleaning:
         # Attribution line at the end should be removed
         assert "Assessoria de Comunicação - MCom" not in result
 
-    def test_article_with_phone_service_preserves_phones(self, scraper, html_article_with_phone_service):
+    def test_article_with_phone_service_preserves_phones(
+        self, scraper, html_article_with_phone_service
+    ):
         soup = BeautifulSoup(html_article_with_phone_service, "html.parser")
         article_body = soup.find("div", id="content")
         cleaned_html = scraper._clean_html_with_validation(article_body, "https://test.gov.br")
 
         from markdownify import markdownify as md
+
         content = md(str(cleaned_html))
         result = scraper._clean_markdown_content(content)
 
@@ -531,6 +533,7 @@ class TestEndToEndCleaning:
         cleaned_html = scraper._clean_html_with_validation(article_body, "https://test.gov.br")
 
         from markdownify import markdownify as md
+
         content = md(str(cleaned_html))
         result = scraper._clean_markdown_content(content)
 
@@ -546,6 +549,7 @@ class TestEndToEndCleaning:
         cleaned_html = scraper._clean_html_with_validation(article_body, "https://test.gov.br")
 
         from markdownify import markdownify as md
+
         content = md(str(cleaned_html))
         result = scraper._clean_markdown_content(content)
 
@@ -564,6 +568,7 @@ class TestEndToEndCleaning:
         cleaned_html = scraper._clean_html_with_validation(article_body, "https://test.gov.br")
 
         from markdownify import markdownify as md
+
         content = md(str(cleaned_html))
         result = scraper._clean_markdown_content(content)
 

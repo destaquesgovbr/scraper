@@ -4,11 +4,9 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import httpx
-import pytest
 
 
 class TestSendTelegramAlert:
-
     @patch("dags.notify.httpx")
     def test_posts_to_telegram_api(self, mock_httpx):
         # Import inside method so @patch("dags.notify.httpx") is active before import
@@ -103,7 +101,6 @@ class TestSendTelegramAlert:
 
 
 class TestSendAlert:
-
     @patch("dags.notify.send_telegram_alert")
     def test_logs_when_telegram_not_configured(self, mock_tg, caplog):
         from dags.notify import send_alert
@@ -151,7 +148,7 @@ class TestSendAlert:
             "Alert",
             telegram_token="123:ABC",
             telegram_chat_id="-100",
-            webhook_url="https://hooks.example.com/alert"
+            webhook_url="https://hooks.example.com/alert",
         )
 
         assert result is True
@@ -174,7 +171,7 @@ class TestSendAlert:
                 "Alert",
                 telegram_token="123:ABC",
                 telegram_chat_id="-100",
-                webhook_url="https://hooks.example.com/alert"
+                webhook_url="https://hooks.example.com/alert",
             )
 
         assert result is False
@@ -196,7 +193,7 @@ class TestSendAlert:
             "Alert",
             telegram_token="123:ABC",
             telegram_chat_id="-100",
-            webhook_url="https://hooks.example.com/alert"
+            webhook_url="https://hooks.example.com/alert",
         )
 
         # Should fall through to log-only
