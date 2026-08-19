@@ -25,6 +25,9 @@ def validate_agency(key: str, agency: dict[str, Any]) -> list[str]:
         url = agency["url"]
         if not url.startswith("https://"):
             errors.append(f"Agency '{key}' URL must start with https://: {url}")
+        # Currently all 162 agencies use www.gov.br subdomain.
+        # If future agencies use other subdomains (dados.gov.br, api.gov.br),
+        # relax this check to pattern: https://[subdomain].gov.br/
         if not url.startswith("https://www.gov.br/"):
             errors.append(f"Agency '{key}' URL must be a gov.br domain: {url}")
 

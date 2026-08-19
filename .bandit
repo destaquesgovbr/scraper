@@ -14,7 +14,5 @@ skips:
   - B603
   # B607: partial executable path - gcloud/pgrep are in PATH
   - B607
-  # B105: hardcoded password - local dev fallback only
-  - B105
-  # B608: SQL injection - false positives (SQLAlchemy uses parameterized queries)
+  # B608: SQL injection - false positives (all SQL uses SQLAlchemy parameterized queries with %s placeholders, no .format() or % string interpolation)
   - B608

@@ -19,8 +19,10 @@ def extract_allowed_prefixes() -> set[str]:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "_ALLOWED_URL_PREFIXES":
-                    if isinstance(node.value, ast.Tuple):
-                        return {elt.s for elt in node.value.elts if isinstance(elt, ast.Constant)}
+                    if isinstance(node.value, (ast.Tuple, ast.List, ast.Set)):
+                        return {
+                            elt.value for elt in node.value.elts if isinstance(elt, ast.Constant)
+                        }
     return set()
 
 
@@ -72,6 +74,11 @@ def main() -> int:
     }
 
     # Check if mandatory domains are covered (allowing more specific prefixes)
+    # Note: Logic is inverted - we check if ANY allowlist prefix STARTS WITH the mandatory domain,
+    # not if the domain starts with a prefix. This allows:
+    #   - mandatory: "https://storage.googleapis.com/"
+    #   - allowlist: "https://storage.googleapis.com/destaquesgovbr-thumbnails/" ✅ valid
+    # This validates that the BROADER domain is represented, even if allowlist is more specific.
     missing_mandatory = set()
     for domain in mandatory:
         # Check if domain or any more specific prefix is in allowlist

@@ -40,21 +40,25 @@ Requer Python 3.12+.
 ### Prerequisites
 
 - Python 3.12+
-- Poetry
+- Poetry 1.8+
 - Pre-commit
+
+⚠️ **Important:** Run `poetry install` BEFORE `pre-commit install`. Some hooks depend on Poetry being available in PATH.
 
 ### Setup
 
 ```bash
-# Install dependencies
+# 1. Install dependencies (REQUIRED FIRST)
 poetry install
 
-# Install pre-commit hooks
+# 2. Install pre-commit hooks (AFTER poetry install)
 poetry run pre-commit install
 
-# Run all pre-commit checks manually
+# 3. Run all pre-commit checks manually (first-time setup)
 poetry run pre-commit run --all-files
 ```
+
+**Note:** If you install pre-commit before running `poetry install`, some hooks (like `test-config-sync`) will fail with "poetry: command not found".
 
 ### Code Quality
 

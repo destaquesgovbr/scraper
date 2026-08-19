@@ -97,13 +97,13 @@ class PostgresManager:
                 if ":" in user_pass:
                     _, password = user_pass.split(":", 1)
                 else:
-                    password = "password"
+                    password = "password"  # nosec B105 - local dev fallback only (not used in production)
             else:
-                password = "password"
+                password = "password"  # nosec B105 - local dev fallback only (not used in production)
 
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch connection string from Secret Manager")
-            password = "password"
+            password = "password"  # nosec B105 - local dev fallback only (not used in production)
 
         # Check if Cloud SQL Proxy is running
         proxy_check = subprocess.run(
