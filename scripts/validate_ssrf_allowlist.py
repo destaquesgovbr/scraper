@@ -16,7 +16,7 @@ SITE_URLS_PATH = REPO_ROOT / "src/govbr_scraper/scrapers/config/site_urls.yaml"
 EBC_URLS_PATH = REPO_ROOT / "src/govbr_scraper/scrapers/config/ebc_urls.yaml"
 
 # These asset locations are valid API inputs but are not agency base URLs.
-REQUIRED_ASSET_PREFIXES = {
+APPROVED_ASSET_PREFIXES = {
     "https://imagens.ebc.com.br/",
     "https://live.staticflickr.com/",
     "https://storage.googleapis.com/destaquesgovbr-thumbnails/",
@@ -105,18 +105,22 @@ def extract_domains_from_yaml(yaml_path: Path) -> set[str]:
 
 
 def validate_coverage(allowed: set[str], domains: set[str]) -> list[str]:
-    """Validate prefix safety and coverage of configured domains and asset URLs."""
+    """Validate prefix safety and enforce the complete approved allowlist policy."""
     errors = [error for prefix in sorted(allowed) if (error := validate_prefix(prefix))]
 
-    uncovered = {
-        domain for domain in domains if not any(domain.startswith(prefix) for prefix in allowed)
-    }
-    errors.extend(f"Configured domain is not covered: {domain}" for domain in sorted(uncovered))
-
-    missing_assets = REQUIRED_ASSET_PREFIXES - allowed
+    missing_domains = domains - allowed
     errors.extend(
-        f"Required asset prefix is missing: {prefix}" for prefix in sorted(missing_assets)
+        f"Configured domain is not covered: {domain}" for domain in sorted(missing_domains)
     )
+
+    missing_assets = APPROVED_ASSET_PREFIXES - allowed
+    errors.extend(
+        f"Approved asset prefix is missing: {prefix}" for prefix in sorted(missing_assets)
+    )
+
+    approved = domains | APPROVED_ASSET_PREFIXES
+    unexpected = allowed - approved
+    errors.extend(f"Allowlist prefix is not approved: {prefix}" for prefix in sorted(unexpected))
     return errors
 
 

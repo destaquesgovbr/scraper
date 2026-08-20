@@ -68,8 +68,10 @@ repos:
     hooks:
       - id: bandit
         name: Security scan with Bandit
-        args: [-c, .bandit, -r, src/]
+        args: [-c, .bandit, -r, src/, dags/]
         pass_filenames: false
+        types: [file]
+        files: ^(\.bandit|\.pre-commit-config\.yaml|src/.*\.py|dags/.*\.py)$
 
   # ============================================================================
   # PHASE 3: PYTHON CODE QUALITY (5-8s)

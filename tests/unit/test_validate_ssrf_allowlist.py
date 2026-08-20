@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts.validate_ssrf_allowlist import (
-    REQUIRED_ASSET_PREFIXES,
+    APPROVED_ASSET_PREFIXES,
     extract_allowed_prefixes,
     extract_domains_from_yaml,
     validate_coverage,
@@ -96,13 +96,28 @@ def test_validate_prefix_rejects_unsafe_or_noncanonical_prefix(prefix: str) -> N
 
 
 def test_validate_coverage_accepts_configured_domains_and_assets() -> None:
-    allowed = REQUIRED_ASSET_PREFIXES | {"https://www.gov.br/"}
+    allowed = APPROVED_ASSET_PREFIXES | {"https://www.gov.br/"}
 
     assert validate_coverage(allowed, {"https://www.gov.br/"}) == []
+
+
+@pytest.mark.parametrize(
+    "unexpected",
+    [
+        "https://169.254.169.254/",
+        "https://example.com/",
+    ],
+)
+def test_validate_coverage_rejects_unapproved_prefix(unexpected: str) -> None:
+    allowed = APPROVED_ASSET_PREFIXES | {"https://www.gov.br/", unexpected}
+
+    errors = validate_coverage(allowed, {"https://www.gov.br/"})
+
+    assert f"Allowlist prefix is not approved: {unexpected}" in errors
 
 
 def test_validate_coverage_reports_uncovered_domain_and_missing_assets() -> None:
     errors = validate_coverage({"https://www.gov.br/"}, {"https://example.gov.br/"})
 
     assert any("Configured domain is not covered" in error for error in errors)
-    assert sum("Required asset prefix is missing" in error for error in errors) == 3
+    assert sum("Approved asset prefix is missing" in error for error in errors) == 3
