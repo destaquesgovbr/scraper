@@ -81,11 +81,10 @@ def _try_scrape_with_fallback(
                 data = fallback_scraper.scrape_news()
                 metadata["fallback_success"] = True
 
-                # nosec B608: This is logging output, not SQL query
                 logging.info(
                     f"{agency_name}: Plone6 API fallback SUCCEEDED. "
                     f"Found {len(data)} articles. "
-                    f"RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api"
+                    "RECOMMENDATION: Set scraper_type to plone6_api in site_urls.yaml"
                 )
 
                 return data, metadata

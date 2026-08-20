@@ -41,25 +41,21 @@ loguru = "^0.7.2"
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
 pytest-cov = "^4.1.0"
-black = "^23.12.1"
-ruff = "^0.1.8"
+ruff = "0.14.10"
 httpx = ">=0.24.0"
-pre-commit = "^3.6.0"
-mypy = "^1.7.1"
-bandit = "^1.7.5"
+pre-commit = "^4.5.1"
+mypy = "1.19.1"
+bandit = "1.9.4"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.black]
-line-length = 100
-target-version = ['py312']
-include = '\.pyi?$'
-
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -70,11 +66,11 @@ select = [
     "UP", # pyupgrade
 ]
 ignore = [
-    "E501",  # line too long (handled by black)
+    "E501",  # line too long (handled by Ruff formatter)
     "B008",  # do not perform function calls in argument defaults
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "dags/**/*.py" = ["E402"]      # Late imports in Airflow DAGs
 "tests/**/*.py" = ["S101", "B017", "F841", "B007"]     # Allow asserts, blind exceptions, unused vars in tests
@@ -115,10 +111,9 @@ no_strict_optional = true
 # Core modules with type checking enabled (start small, expand later)
 [[tool.mypy.overrides]]
 module = [
+    "govbr_scraper.models",
     "govbr_scraper.models.*",
-    "govbr_scraper.config",
 ]
-files = "^src/govbr_scraper/(models|config)\\.py$"
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true

@@ -1,6 +1,6 @@
 # Pre-commit hooks for scraper repository
-# Installation: pre-commit install
-# Manual run: pre-commit run --all-files
+# Installation: poetry run pre-commit install
+# Manual run: poetry run pre-commit run --all-files
 
 default_language_version:
   python: python3.12
@@ -64,7 +64,7 @@ repos:
         exclude: ^(.*\.example)$
 
   - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.10
+    rev: 1.9.4
     hooks:
       - id: bandit
         name: Security scan with Bandit
@@ -73,7 +73,7 @@ repos:
 
   # ============================================================================
   # PHASE 3: PYTHON CODE QUALITY (5-8s)
-  # Maintain existing black + ruff configuration
+  # Ruff provides both linting and formatting
   # ============================================================================
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.10
@@ -83,7 +83,6 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
         name: Format Python with Ruff
-        args: [--line-length, "100"]
 
   # ============================================================================
   # PHASE 4: TYPE CHECKING (2-4s)
@@ -100,13 +99,10 @@ repos:
       - id: mypy
         name: Type check with mypy (core modules only)
         args: [--ignore-missing-imports, --no-strict-optional]
-        # Only core modules that pass mypy without errors
-        files: ^src/govbr_scraper/(models|config)\.py$
+        # Keep the initial scope intentionally narrow and useful.
+        files: ^src/govbr_scraper/models/.*\.py$
         additional_dependencies:
-          - types-requests
-          - types-PyYAML
           - pydantic
-          - pydantic-settings
 
   # ============================================================================
   # PHASE 5: CUSTOM VALIDATORS (< 2s)
@@ -115,10 +111,10 @@ repos:
   - repo: local
     hooks:
       - id: validate-site-urls
-        name: Validate site_urls.yaml schema
+        name: Validate site_urls.yaml schema and Airflow sync
         entry: python scripts/validate_site_urls.py
         language: python
-        files: ^src/govbr_scraper/scrapers/config/site_urls\.yaml$
+        files: ^(scripts/validate_site_urls\.py|src/govbr_scraper/scrapers/config/site_urls\.yaml|dags/config/site_urls\.yaml)$
         pass_filenames: false
         additional_dependencies:
           - PyYAML
@@ -127,14 +123,7 @@ repos:
         name: Validate SSRF allowlist coverage
         entry: python scripts/validate_ssrf_allowlist.py
         language: python
-        files: ^(src/govbr_scraper/api\.py|src/govbr_scraper/scrapers/config/(site_urls|ebc_urls)\.yaml)$
+        files: ^(scripts/validate_ssrf_allowlist\.py|src/govbr_scraper/api\.py|src/govbr_scraper/scrapers/config/(site_urls|ebc_urls)\.yaml)$
         pass_filenames: false
         additional_dependencies:
           - PyYAML
-
-      - id: test-config-sync
-        name: Validate site_urls.yaml sync between src/ and dags/
-        entry: poetry run pytest tests/unit/test_config_sync.py -v
-        language: system
-        files: ^(src/govbr_scraper/scrapers/config/site_urls\.yaml|dags/config/site_urls\.yaml)$
-        pass_filenames: false

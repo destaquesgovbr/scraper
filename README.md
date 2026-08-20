@@ -41,24 +41,19 @@ Requer Python 3.12+.
 
 - Python 3.12+
 - Poetry 1.8+
-- Pre-commit
-
-⚠️ **Important:** Run `poetry install` BEFORE `pre-commit install`. Some hooks depend on Poetry being available in PATH.
 
 ### Setup
 
 ```bash
-# 1. Install dependencies (REQUIRED FIRST)
+# 1. Install dependencies
 poetry install
 
-# 2. Install pre-commit hooks (AFTER poetry install)
+# 2. Install pre-commit hooks
 poetry run pre-commit install
 
 # 3. Run all pre-commit checks manually (first-time setup)
 poetry run pre-commit run --all-files
 ```
-
-**Note:** If you install pre-commit before running `poetry install`, some hooks (like `test-config-sync`) will fail with "poetry: command not found".
 
 ### Code Quality
 
@@ -68,11 +63,11 @@ This project uses pre-commit hooks to maintain code quality and security:
 |----------|-------|-------------|
 | **Security** 🔒 | `detect-secrets`, `bandit` | Prevent credential leaks + SSRF protection |
 | **Python Quality** 🐍 | `ruff-check`, `ruff-format` | Linter + formatter (line-length 100) |
-| **Type Checking** 📝 | `mypy` | Type checking (enabled for `models/`, `config.py`) |
+| **Type Checking** 📝 | `mypy` | Type checking for the central `models/` package |
 | **File Hygiene** 📄 | `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending` | Normalize whitespace |
 | **Syntax Validation** ✅ | `check-yaml`, `check-json`, `check-toml` | Validate config files |
 | **Git Safety** 🚨 | `check-merge-conflict`, `check-added-large-files` | Detect markers + large files |
-| **Custom Validators** ⚙️ | `validate-site-urls`, `validate-ssrf-allowlist`, `test-config-sync` | Project-specific checks |
+| **Custom Validators** ⚙️ | `validate-site-urls`, `validate-ssrf-allowlist` | Schema, Airflow sync, and SSRF allowlist checks |
 
 #### Performance
 
@@ -86,20 +81,20 @@ This project uses pre-commit hooks to maintain code quality and security:
 git commit --no-verify
 ```
 
-**Note**: CI always runs pre-commit, so issues will be caught even with `--no-verify`.
+This bypass skips all local checks. Run the complete pre-commit suite manually before opening a PR.
 
 ### Code Standards
 
 - **Type hints**: Required for public functions
 - **Formatting**: Ruff formatter (max line 100)
 - **Linting**: Ruff (replaces Black, Flake8, isort, pyupgrade)
-- **Type checking**: Mypy enabled for core modules
+- **Type checking**: Mypy enabled for `src/govbr_scraper/models/`
 
 ```bash
 # Run manually (outside pre-commit)
 poetry run ruff check .        # Linting
 poetry run ruff format .       # Formatting
-poetry run mypy src/           # Type checking
+poetry run mypy src/govbr_scraper/models/  # Type checking for the enabled scope
 ```
 
 ### site_urls.yaml Sync

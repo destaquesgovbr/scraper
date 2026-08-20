@@ -5,7 +5,7 @@ Manages news storage in PostgreSQL with connection pooling, caching, and error h
 """
 
 import os
-import subprocess
+import subprocess  # nosec B404
 
 # Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
 from typing import TYPE_CHECKING, Any, cast
@@ -75,7 +75,8 @@ class PostgresManager:
 
         try:
             # Try Secret Manager for Cloud deployment
-            result = subprocess.run(
+            # Arguments are fixed and shell execution is disabled.
+            result = subprocess.run(  # nosec B603 B607
                 [
                     "gcloud",
                     "secrets",
@@ -97,16 +98,20 @@ class PostgresManager:
                 if ":" in user_pass:
                     _, password = user_pass.split(":", 1)
                 else:
-                    password = "password"  # nosec B105 - local dev fallback only (not used in production)
+                    # Local development fallback; production uses Secret Manager.
+                    password = "password"  # nosec B105
             else:
-                password = "password"  # nosec B105 - local dev fallback only (not used in production)
+                # Local development fallback; production uses Secret Manager.
+                password = "password"  # nosec B105
 
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch connection string from Secret Manager")
-            password = "password"  # nosec B105 - local dev fallback only (not used in production)
+            # Local development fallback; production uses Secret Manager.
+            password = "password"  # nosec B105
 
         # Check if Cloud SQL Proxy is running
-        proxy_check = subprocess.run(
+        # Arguments are fixed and shell execution is disabled.
+        proxy_check = subprocess.run(  # nosec B603 B607
             ["pgrep", "-f", "cloud-sql-proxy"],
             capture_output=True,
         )
@@ -366,10 +371,9 @@ class PostgresManager:
             for n in to_insert
         ]
 
-        insert_query = f"""
-            INSERT INTO news ({", ".join(self._INSERT_COLUMNS)})
-            VALUES %s
-        """
+        # Column names come exclusively from the class-level _INSERT_COLUMNS constant.
+        column_names = ", ".join(self._INSERT_COLUMNS)
+        insert_query = f"INSERT INTO news ({column_names}) VALUES %s"  # nosec B608
 
         if allow_update:
             update_cols = [
@@ -378,10 +382,11 @@ class PostgresManager:
                 if c not in ["unique_id", "agency_id", "published_at"]
             ]
             update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-            insert_query += f"""
-                ON CONFLICT (unique_id)
-                DO UPDATE SET {update_set}, updated_at = NOW()
-            """
+            # update_cols is derived exclusively from _INSERT_COLUMNS.
+            conflict_clause = (
+                f" ON CONFLICT (unique_id) DO UPDATE SET {update_set}, updated_at = NOW()"  # nosec B608
+            )
+            insert_query += conflict_clause
         else:
             insert_query += " ON CONFLICT (unique_id) DO NOTHING"
 

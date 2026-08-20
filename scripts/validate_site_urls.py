@@ -1,76 +1,112 @@
 #!/usr/bin/env python3
-"""Validate site_urls.yaml schema and URL format."""
+"""Validate the site URL configuration and its Airflow copy."""
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SOURCE_PATH = REPO_ROOT / "src/govbr_scraper/scrapers/config/site_urls.yaml"
+DAGS_PATH = REPO_ROOT / "dags/config/site_urls.yaml"
 REQUIRED_FIELDS = {"url", "active"}
 VALID_SCRAPER_TYPES = {"html", "plone6_api"}
 
 
-def validate_agency(key: str, agency: dict[str, Any]) -> list[str]:
+def validate_agency(key: str, agency: object) -> list[str]:
     """Validate a single agency definition."""
+    if not isinstance(agency, Mapping):
+        return [f"Agency '{key}' must be a mapping"]
+
     errors = []
-
-    # Check required fields
-    missing = REQUIRED_FIELDS - set(agency.keys())
+    missing = REQUIRED_FIELDS - set(agency)
     if missing:
-        errors.append(f"Agency '{key}' missing fields: {missing}")
+        errors.append(f"Agency '{key}' missing fields: {sorted(missing)}")
 
-    # Validate URL format
     if "url" in agency:
         url = agency["url"]
-        if not url.startswith("https://"):
-            errors.append(f"Agency '{key}' URL must start with https://: {url}")
-        # Currently all 162 agencies use www.gov.br subdomain.
-        # If future agencies use other subdomains (dados.gov.br, api.gov.br),
-        # relax this check to pattern: https://[subdomain].gov.br/
-        if not url.startswith("https://www.gov.br/"):
-            errors.append(f"Agency '{key}' URL must be a gov.br domain: {url}")
+        if not isinstance(url, str):
+            errors.append(f"Agency '{key}' URL must be a string")
+        else:
+            try:
+                parsed = urlsplit(url)
+                port = parsed.port
+            except ValueError:
+                errors.append(f"Agency '{key}' has a malformed URL: {url}")
+            else:
+                if parsed.scheme != "https":
+                    errors.append(f"Agency '{key}' URL must use https: {url}")
+                if parsed.hostname != "www.gov.br":
+                    errors.append(f"Agency '{key}' URL must use www.gov.br: {url}")
+                if parsed.username or parsed.password:
+                    errors.append(f"Agency '{key}' URL must not contain credentials: {url}")
+                if port not in (None, 443):
+                    errors.append(f"Agency '{key}' URL must not use a non-HTTPS port: {url}")
 
-    # Validate scraper_type if present
-    if "scraper_type" in agency:
-        if agency["scraper_type"] not in VALID_SCRAPER_TYPES:
-            errors.append(f"Agency '{key}' has invalid scraper_type: {agency['scraper_type']}")
+    if "scraper_type" in agency and agency["scraper_type"] not in VALID_SCRAPER_TYPES:
+        errors.append(f"Agency '{key}' has invalid scraper_type: {agency['scraper_type']}")
 
-    # Validate active field type
     if "active" in agency and not isinstance(agency["active"], bool):
-        errors.append(f"Agency '{key}' 'active' must be boolean, got: {type(agency['active'])}")
+        value_type = type(agency["active"]).__name__
+        errors.append(f"Agency '{key}' 'active' must be boolean, got: {value_type}")
 
     return errors
 
 
-def main() -> int:
-    """Validate site_urls.yaml in src/."""
-    file_path = Path("src/govbr_scraper/scrapers/config/site_urls.yaml")
+def validate_document(data: Any) -> tuple[list[str], int]:
+    """Validate the top-level configuration and all agencies."""
+    if not isinstance(data, Mapping):
+        return ["Configuration must be a mapping"], 0
 
-    if not file_path.exists():
-        print(f"ERROR: {file_path} not found")
-        return 1
-
-    try:
-        with open(file_path) as f:
-            data = yaml.safe_load(f)
-    except yaml.YAMLError as e:
-        print(f"ERROR: Invalid YAML syntax: {e}")
-        return 1
-
-    if data is None or "agencies" not in data:
-        print("ERROR: Missing 'agencies' key")
-        return 1
+    agencies = data.get("agencies")
+    if not isinstance(agencies, Mapping) or not agencies:
+        return ["'agencies' must be a non-empty mapping"], 0
 
     errors = []
-    for key, agency in data["agencies"].items():
+    for key, agency in agencies.items():
+        if not isinstance(key, str) or not key:
+            errors.append(f"Agency key must be a non-empty string: {key!r}")
+            continue
         errors.extend(validate_agency(key, agency))
 
+    return errors, len(agencies)
+
+
+def validate_sync(source_path: Path, copy_path: Path) -> list[str]:
+    """Ensure the source configuration and Airflow copy are byte-identical."""
+    missing = [str(path) for path in (source_path, copy_path) if not path.is_file()]
+    if missing:
+        return [f"Configuration file not found: {path}" for path in missing]
+
+    if source_path.read_bytes() != copy_path.read_bytes():
+        return [f"site_urls.yaml files are out of sync; copy {source_path} to {copy_path}"]
+    return []
+
+
+def main() -> int:
+    """Validate the source configuration and its Airflow copy."""
+    errors = validate_sync(SOURCE_PATH, DAGS_PATH)
+
+    try:
+        data = yaml.safe_load(SOURCE_PATH.read_text(encoding="utf-8"))
+    except OSError as exc:
+        errors.append(f"Could not read {SOURCE_PATH}: {exc}")
+        data = None
+    except yaml.YAMLError as exc:
+        errors.append(f"Invalid YAML syntax in {SOURCE_PATH}: {exc}")
+        data = None
+
+    document_errors, agency_count = validate_document(data)
+    errors.extend(document_errors)
+
     if errors:
-        print("\n".join(errors))
+        print("\n".join(f"ERROR: {error}" for error in errors))
         return 1
 
-    print(f"✓ Validated {len(data['agencies'])} agencies")
+    print(f"Validated {agency_count} agencies and synchronized Airflow configuration")
     return 0
 
 

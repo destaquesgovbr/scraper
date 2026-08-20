@@ -4,15 +4,4 @@ exclude_dirs:
   - /.pytest_cache/
   - /htmlcov/
 
-# Rules to skip (with justification)
-skips:
-  # B101: assert_used - asserts are OK in tests
-  - B101
-  # B404: subprocess import - needed for gcloud CLI in postgres_manager.py
-  - B404
-  # B603: subprocess without shell - hardcoded gcloud/pgrep commands (not user input)
-  - B603
-  # B607: partial executable path - gcloud/pgrep are in PATH
-  - B607
-  # B608: SQL injection - false positives (all SQL uses SQLAlchemy parameterized queries with %s placeholders, no .format() or % string interpolation)
-  - B608
+# Findings are suppressed at the audited call site instead of globally.
