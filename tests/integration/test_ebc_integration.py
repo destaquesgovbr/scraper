@@ -7,10 +7,12 @@ Tests the EBCWebScraper with real HTTP requests to validate that:
 - Different parsing strategies (_scrape_agencia_brasil_content vs _scrape_tvbrasil_content) work
 """
 
-import pytest
-import requests
 from datetime import datetime
 from pathlib import Path
+
+import pytest
+import requests
+
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
 from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
 
@@ -18,7 +20,9 @@ from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
 @pytest.fixture(scope="module")
 def ebc_urls():
     """Load EBC URLs from YAML configuration."""
-    config_dir = str(Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config")
+    config_dir = str(
+        Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config"
+    )
 
     try:
         urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
@@ -63,7 +67,9 @@ class TestEBCWebScraper:
 
         # Validate URL structure
         first_url = article_urls[0]
-        assert first_url.startswith("https://"), f"Article URL should be absolute HTTPS, got {first_url}"
+        assert first_url.startswith("https://"), (
+            f"Article URL should be absolute HTTPS, got {first_url}"
+        )
         assert "agenciabrasil.ebc.com.br" in first_url, (
             f"Article URL should be from agenciabrasil.ebc.com.br domain, got {first_url}"
         )
@@ -83,7 +89,9 @@ class TestEBCWebScraper:
         # Validate required fields for Agencia Brasil
         assert "title" in article_data, "title field is missing"
         assert article_data["title"], "title is empty"
-        assert isinstance(article_data["title"], str), f"title should be str, got {type(article_data['title'])}"
+        assert isinstance(article_data["title"], str), (
+            f"title should be str, got {type(article_data['title'])}"
+        )
 
         assert "content" in article_data, "content field is missing"
         assert article_data["content"], "content is empty"
@@ -109,7 +117,9 @@ class TestEBCWebScraper:
         )
 
         # Agencia Brasil specific field: source (author)
-        assert "source" in article_data, "source field is missing (Agencia Brasil should extract author)"
+        assert "source" in article_data, (
+            "source field is missing (Agencia Brasil should extract author)"
+        )
         # Note: source may be empty for some articles, so we just check it exists
 
         assert "agency" in article_data, "agency field is missing"
@@ -147,7 +157,9 @@ class TestEBCWebScraper:
 
         # Validate URL structure
         first_url = article_urls[0]
-        assert first_url.startswith("https://"), f"Article URL should be absolute HTTPS, got {first_url}"
+        assert first_url.startswith("https://"), (
+            f"Article URL should be absolute HTTPS, got {first_url}"
+        )
         assert "tvbrasil.ebc.com.br" in first_url, (
             f"Article URL should be from tvbrasil.ebc.com.br domain, got {first_url}"
         )

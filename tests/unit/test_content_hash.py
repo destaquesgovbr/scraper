@@ -83,4 +83,7 @@ class TestComputeContentHash:
         assert normalize_text("Educação Pública") == "educacao publica"
         assert normalize_text("R$ 1 bilhão em 2025") == "r 1 bilhao em 2025"
         assert compute_content_hash("Lula", "conteudo") == "7af6a8c98b1e027b"
-        assert compute_content_hash("Governo anuncia programa", "Texto da notícia") == "ca58538e360baaf4"
+        assert (
+            compute_content_hash("Governo anuncia programa", "Texto da notícia")
+            == "ca58538e360baaf4"
+        )

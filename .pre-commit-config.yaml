@@ -1,0 +1,131 @@
+# Pre-commit hooks for scraper repository
+# Installation: poetry run pre-commit install
+# Manual run: poetry run pre-commit run --all-files
+
+default_language_version:
+  python: python3.12
+
+repos:
+  # ============================================================================
+  # PHASE 1: FILE HYGIENE (< 1s)
+  # Fast feedback on basic issues
+  # ============================================================================
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # File hygiene (prevent Windows/Mac issues in Linux CI)
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+        name: Ensure files end with newline
+      - id: mixed-line-ending
+        name: Normalize line endings to LF
+        args: [--fix=lf]
+
+      # Syntax validation (fast, catches parse errors)
+      - id: check-yaml
+        name: Validate YAML syntax
+      - id: check-json
+        name: Validate JSON syntax
+      - id: check-toml
+        name: Validate TOML syntax
+
+      # Git hygiene
+      - id: check-merge-conflict
+        name: Check for merge conflict markers
+      - id: check-case-conflict
+        name: Check for case-insensitive filename conflicts
+
+      # File size protection (prevent accidental large file commits)
+      - id: check-added-large-files
+        name: Check for files > 1MB
+        args: [--maxkb=1024]
+        exclude: ^(poetry\.lock|\.coverage)$
+
+  # ============================================================================
+  # PHASE 2: SECURITY CHECKS (1-3s)
+  # CRITICAL: Prevent credential leaks before reaching remote
+  # ============================================================================
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets and credentials
+        args:
+          - --baseline
+          - .secrets.baseline
+          - --exclude-files
+          - 'poetry\.lock'
+          - --exclude-files
+          - '\.coverage'
+          - --exclude-files
+          - 'htmlcov/.*'
+        exclude: ^(.*\.example)$
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        name: Security scan with Bandit
+        args: [-c, .bandit, -r, src/, dags/]
+        pass_filenames: false
+        types: [file]
+        files: ^(\.bandit|\.pre-commit-config\.yaml|src/.*\.py|dags/.*\.py)$
+
+  # ============================================================================
+  # PHASE 3: PYTHON CODE QUALITY (5-8s)
+  # Ruff provides both linting and formatting
+  # ============================================================================
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff-check
+        name: Lint Python with Ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+        name: Format Python with Ruff
+
+  # ============================================================================
+  # PHASE 4: TYPE CHECKING (2-4s)
+  # Enabled only for core modules without type errors
+  # TODO: To add a new module to mypy:
+  #   1. Run `mypy --ignore-missing-imports src/govbr_scraper/<module>.py`
+  #   2. Fix all type errors
+  #   3. Add the module path to the regex `files` below
+  #   4. Mention in PR that the module now has type checking enabled
+  # ============================================================================
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.19.1
+    hooks:
+      - id: mypy
+        name: Type check with mypy (core modules only)
+        args: [--ignore-missing-imports, --no-strict-optional]
+        # Keep the initial scope intentionally narrow and useful.
+        files: ^src/govbr_scraper/models/.*\.py$
+        additional_dependencies:
+          - pydantic
+
+  # ============================================================================
+  # PHASE 5: CUSTOM VALIDATORS (< 2s)
+  # Project-specific validation
+  # ============================================================================
+  - repo: local
+    hooks:
+      - id: validate-site-urls
+        name: Validate site_urls.yaml schema and Airflow sync
+        entry: python scripts/validate_site_urls.py
+        language: python
+        files: ^(scripts/validate_site_urls\.py|src/govbr_scraper/scrapers/config/site_urls\.yaml|dags/config/site_urls\.yaml)$
+        pass_filenames: false
+        additional_dependencies:
+          - PyYAML
+
+      - id: validate-ssrf-allowlist
+        name: Validate SSRF allowlist coverage
+        entry: python scripts/validate_ssrf_allowlist.py
+        language: python
+        files: ^(scripts/validate_ssrf_allowlist\.py|src/govbr_scraper/api\.py|src/govbr_scraper/scrapers/config/(site_urls|ebc_urls)\.yaml)$
+        pass_filenames: false
+        additional_dependencies:
+          - PyYAML

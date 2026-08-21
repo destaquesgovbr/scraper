@@ -487,11 +487,11 @@ poetry run uvicorn govbr_scraper.api:app --reload
 
 ### Code Style
 
-- **Formatter:** Black (line-length 100, target Python 3.12)
+- **Formatter:** Ruff (line-length 100, target Python 3.12)
 - **Linter:** Ruff (E, W, F, I, B, C4, UP — config em `pyproject.toml`)
 
 ```bash
-poetry run black .
+poetry run ruff format .
 poetry run ruff check . --fix
 ```
 

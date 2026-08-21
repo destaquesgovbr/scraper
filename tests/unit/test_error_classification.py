@@ -1,7 +1,5 @@
 """Tests for error classification — maps scraping errors to categories."""
 
-import pytest
-
 from govbr_scraper.models.monitoring import ErrorCategory, classify_error
 
 
@@ -12,10 +10,16 @@ class TestClassifyError:
         assert classify_error("Connection timed out") == ErrorCategory.NETWORK_ERROR
 
     def test_classify_connection_refused_returns_network_error(self):
-        assert classify_error("Network error scraping mec: ConnectionError") == ErrorCategory.NETWORK_ERROR
+        assert (
+            classify_error("Network error scraping mec: ConnectionError")
+            == ErrorCategory.NETWORK_ERROR
+        )
 
     def test_classify_request_exception_returns_network_error(self):
-        assert classify_error("Failed to fetch page after retries for mec: ReadTimeout") == ErrorCategory.NETWORK_ERROR
+        assert (
+            classify_error("Failed to fetch page after retries for mec: ReadTimeout")
+            == ErrorCategory.NETWORK_ERROR
+        )
 
     def test_classify_anti_bot_returns_anti_bot(self):
         msg = (

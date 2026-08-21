@@ -5,8 +5,10 @@ Manages news storage in PostgreSQL with connection pooling, caching, and error h
 """
 
 import os
-import subprocess
-from typing import Any, cast
+import subprocess  # nosec B404
+
+# Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote_plus
 
 from loguru import logger
@@ -14,9 +16,6 @@ from psycopg2 import errors, extensions, pool
 from psycopg2.extras import RealDictCursor, execute_values
 
 from govbr_scraper.models.news import Agency, NewsInsert, Theme
-
-# Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
@@ -76,7 +75,8 @@ class PostgresManager:
 
         try:
             # Try Secret Manager for Cloud deployment
-            result = subprocess.run(
+            # Arguments are fixed and shell execution is disabled.
+            result = subprocess.run(  # nosec B603 B607
                 [
                     "gcloud",
                     "secrets",
@@ -98,16 +98,20 @@ class PostgresManager:
                 if ":" in user_pass:
                     _, password = user_pass.split(":", 1)
                 else:
-                    password = "password"
+                    # Local development fallback; production uses Secret Manager.
+                    password = "password"  # nosec B105
             else:
-                password = "password"
+                # Local development fallback; production uses Secret Manager.
+                password = "password"  # nosec B105
 
         except subprocess.CalledProcessError:
             logger.warning("Failed to fetch connection string from Secret Manager")
-            password = "password"
+            # Local development fallback; production uses Secret Manager.
+            password = "password"  # nosec B105
 
         # Check if Cloud SQL Proxy is running
-        proxy_check = subprocess.run(
+        # Arguments are fixed and shell execution is disabled.
+        proxy_check = subprocess.run(  # nosec B603 B607
             ["pgrep", "-f", "cloud-sql-proxy"],
             capture_output=True,
         )
@@ -198,9 +202,7 @@ class PostgresManager:
             cursor.close()
             self.put_connection(conn)
 
-    def insert(
-        self, news: list[NewsInsert], allow_update: bool = False
-    ) -> tuple[int, list[dict]]:
+    def insert(self, news: list[NewsInsert], allow_update: bool = False) -> tuple[int, list[dict]]:
         """
         Insert news records (batch operation).
 
@@ -283,7 +285,10 @@ class PostgresManager:
             # Phase 2: INSERT new articles
             if to_insert:
                 new_inserted, new_articles = self._insert_new_articles(
-                    to_insert, allow_update, cursor, news_by_uid,
+                    to_insert,
+                    allow_update,
+                    cursor,
+                    news_by_uid,
                 )
                 inserted = new_inserted
                 inserted_articles.extend(new_articles)
@@ -306,12 +311,28 @@ class PostgresManager:
             self.put_connection(conn)
 
     _INSERT_COLUMNS = [
-        "unique_id", "agency_id", "theme_l1_id", "theme_l2_id",
-        "theme_l3_id", "most_specific_theme_id", "title", "url",
-        "image_url", "video_url", "category", "tags", "content",
-        "editorial_lead", "subtitle", "summary", "content_hash",
-        "published_at", "updated_datetime", "extracted_at",
-        "agency_key", "agency_name",
+        "unique_id",
+        "agency_id",
+        "theme_l1_id",
+        "theme_l2_id",
+        "theme_l3_id",
+        "most_specific_theme_id",
+        "title",
+        "url",
+        "image_url",
+        "video_url",
+        "category",
+        "tags",
+        "content",
+        "editorial_lead",
+        "subtitle",
+        "summary",
+        "content_hash",
+        "published_at",
+        "updated_datetime",
+        "extracted_at",
+        "agency_key",
+        "agency_name",
     ]
 
     def _insert_new_articles(
@@ -324,31 +345,48 @@ class PostgresManager:
         """INSERT new articles with SAVEPOINT to handle (agency_key, url) race conditions."""
         values = [
             (
-                n.unique_id, n.agency_id, n.theme_l1_id, n.theme_l2_id,
-                n.theme_l3_id, n.most_specific_theme_id, n.title, n.url,
-                n.image_url, n.video_url, n.category, n.tags, n.content,
-                n.editorial_lead, n.subtitle, n.summary, n.content_hash,
-                n.published_at, n.updated_datetime, n.extracted_at,
-                n.agency_key, n.agency_name,
+                n.unique_id,
+                n.agency_id,
+                n.theme_l1_id,
+                n.theme_l2_id,
+                n.theme_l3_id,
+                n.most_specific_theme_id,
+                n.title,
+                n.url,
+                n.image_url,
+                n.video_url,
+                n.category,
+                n.tags,
+                n.content,
+                n.editorial_lead,
+                n.subtitle,
+                n.summary,
+                n.content_hash,
+                n.published_at,
+                n.updated_datetime,
+                n.extracted_at,
+                n.agency_key,
+                n.agency_name,
             )
             for n in to_insert
         ]
 
-        insert_query = f"""
-            INSERT INTO news ({", ".join(self._INSERT_COLUMNS)})
-            VALUES %s
-        """
+        # Column names come exclusively from the class-level _INSERT_COLUMNS constant.
+        column_names = ", ".join(self._INSERT_COLUMNS)
+        insert_query = f"INSERT INTO news ({column_names}) VALUES %s"  # nosec B608
 
         if allow_update:
             update_cols = [
-                c for c in self._INSERT_COLUMNS
+                c
+                for c in self._INSERT_COLUMNS
                 if c not in ["unique_id", "agency_id", "published_at"]
             ]
             update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
-            insert_query += f"""
-                ON CONFLICT (unique_id)
-                DO UPDATE SET {update_set}, updated_at = NOW()
-            """
+            # update_cols is derived exclusively from _INSERT_COLUMNS.
+            conflict_clause = (
+                f" ON CONFLICT (unique_id) DO UPDATE SET {update_set}, updated_at = NOW()"  # nosec B608
+            )
+            insert_query += conflict_clause
         else:
             insert_query += " ON CONFLICT (unique_id) DO NOTHING"
 
@@ -378,12 +416,28 @@ class PostgresManager:
             if retry_insert:
                 retry_values = [
                     (
-                        n.unique_id, n.agency_id, n.theme_l1_id, n.theme_l2_id,
-                        n.theme_l3_id, n.most_specific_theme_id, n.title, n.url,
-                        n.image_url, n.video_url, n.category, n.tags, n.content,
-                        n.editorial_lead, n.subtitle, n.summary, n.content_hash,
-                        n.published_at, n.updated_datetime, n.extracted_at,
-                        n.agency_key, n.agency_name,
+                        n.unique_id,
+                        n.agency_id,
+                        n.theme_l1_id,
+                        n.theme_l2_id,
+                        n.theme_l3_id,
+                        n.most_specific_theme_id,
+                        n.title,
+                        n.url,
+                        n.image_url,
+                        n.video_url,
+                        n.category,
+                        n.tags,
+                        n.content,
+                        n.editorial_lead,
+                        n.subtitle,
+                        n.summary,
+                        n.content_hash,
+                        n.published_at,
+                        n.updated_datetime,
+                        n.extracted_at,
+                        n.agency_key,
+                        n.agency_name,
                     )
                     for n in retry_insert
                 ]
@@ -395,11 +449,13 @@ class PostgresManager:
             for uid in returned_ids:
                 n = news_by_uid.get(uid)
                 if n:
-                    inserted_articles.append({
-                        "unique_id": uid,
-                        "agency_key": n.agency_key or "",
-                        "published_at": n.published_at,
-                    })
+                    inserted_articles.append(
+                        {
+                            "unique_id": uid,
+                            "agency_key": n.agency_key or "",
+                            "published_at": n.published_at,
+                        }
+                    )
             return len(returned_ids) + len(updated_articles), inserted_articles
 
         returned_ids = [row[0] for row in result]
@@ -407,11 +463,13 @@ class PostgresManager:
         for uid in returned_ids:
             n = news_by_uid.get(uid)
             if n:
-                inserted_articles.append({
-                    "unique_id": uid,
-                    "agency_key": n.agency_key or "",
-                    "published_at": n.published_at,
-                })
+                inserted_articles.append(
+                    {
+                        "unique_id": uid,
+                        "agency_key": n.agency_key or "",
+                        "published_at": n.published_at,
+                    }
+                )
         return len(returned_ids), inserted_articles
 
     def _find_existing_by_url(
@@ -511,17 +569,20 @@ class PostgresManager:
         conn = self.pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(query, (
-                    run.agency_key,
-                    run.status,
-                    str(run.error_category) if run.error_category else None,
-                    str(run.error_message)[:500] if run.error_message else None,
-                    run.articles_scraped,
-                    run.articles_saved,
-                    run.execution_time_seconds,
-                    run.scraped_at,
-                    run.fallback_triggered,
-                ))
+                cur.execute(
+                    query,
+                    (
+                        run.agency_key,
+                        run.status,
+                        str(run.error_category) if run.error_category else None,
+                        str(run.error_message)[:500] if run.error_message else None,
+                        run.articles_scraped,
+                        run.articles_saved,
+                        run.execution_time_seconds,
+                        run.scraped_at,
+                        run.fallback_triggered,
+                    ),
+                )
             conn.commit()
         except Exception as e:
             conn.rollback()

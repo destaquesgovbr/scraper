@@ -6,13 +6,12 @@ trace_id consistency, and partial failure handling.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from govbr_scraper.storage.event_publisher import EventPublisher
-
 
 # =============================================================================
 # Fixtures
@@ -26,12 +25,12 @@ def sample_articles():
         {
             "unique_id": "mec-2026-01-01-noticia-1",
             "agency_key": "mec",
-            "published_at": datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            "published_at": datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         },
         {
             "unique_id": "mds-2026-01-02-noticia-2",
             "agency_key": "mds",
-            "published_at": datetime(2026, 1, 2, 15, 30, tzinfo=timezone.utc),
+            "published_at": datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
         },
     ]
 
@@ -140,9 +139,7 @@ class TestEventPublisherPublish:
         """All messages in a batch share the same trace_id."""
         self.publisher.publish_scraped(sample_articles)
 
-        trace_ids = [
-            call[1]["trace_id"] for call in self.client.publish.call_args_list
-        ]
+        trace_ids = [call[1]["trace_id"] for call in self.client.publish.call_args_list]
         assert len(set(trace_ids)) == 1  # all the same
 
     def test_trace_id_differs_between_batches(self, sample_articles):
@@ -160,9 +157,7 @@ class TestEventPublisherPublish:
         """datetime objects in published_at are serialized to ISO format."""
         self.publisher.publish_scraped(sample_articles)
 
-        data = json.loads(
-            self.client.publish.call_args_list[0][0][1].decode("utf-8")
-        )
+        data = json.loads(self.client.publish.call_args_list[0][0][1].decode("utf-8"))
         # Should be ISO string, not a raw datetime repr
         assert "2026-01-01T12:00:00" in data["published_at"]
 
@@ -177,33 +172,23 @@ class TestEventPublisherPublish:
         ]
         self.publisher.publish_scraped(articles)
 
-        data = json.loads(
-            self.client.publish.call_args_list[0][0][1].decode("utf-8")
-        )
+        data = json.loads(self.client.publish.call_args_list[0][0][1].decode("utf-8"))
         assert data["published_at"] == "2026-03-15T10:00:00+00:00"
 
     def test_none_published_at_becomes_empty_string(self):
         """None published_at becomes empty string in message."""
-        articles = [
-            {"unique_id": "test-1", "agency_key": "mec", "published_at": None}
-        ]
+        articles = [{"unique_id": "test-1", "agency_key": "mec", "published_at": None}]
         self.publisher.publish_scraped(articles)
 
-        data = json.loads(
-            self.client.publish.call_args_list[0][0][1].decode("utf-8")
-        )
+        data = json.loads(self.client.publish.call_args_list[0][0][1].decode("utf-8"))
         assert data["published_at"] == ""
 
     def test_missing_agency_key_defaults_to_empty(self):
         """Missing agency_key defaults to empty string."""
-        articles = [
-            {"unique_id": "test-1", "published_at": "2026-01-01"}
-        ]
+        articles = [{"unique_id": "test-1", "published_at": "2026-01-01"}]
         self.publisher.publish_scraped(articles)
 
-        data = json.loads(
-            self.client.publish.call_args_list[0][0][1].decode("utf-8")
-        )
+        data = json.loads(self.client.publish.call_args_list[0][0][1].decode("utf-8"))
         assert data["agency_key"] == ""
 
 

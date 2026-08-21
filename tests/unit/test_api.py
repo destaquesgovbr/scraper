@@ -2,7 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from govbr_scraper.api import app
@@ -29,7 +28,9 @@ def test_health():
 AGENCIES_PAYLOAD = {"start_date": "2025-01-01", "agencies": ["mec"], "sequential": True}
 
 
-def _mock_run_scraper(*, articles_scraped=0, articles_saved=0, agencies_processed=None, errors=None):
+def _mock_run_scraper(
+    *, articles_scraped=0, articles_saved=0, agencies_processed=None, errors=None
+):
     """Helper to create a mock ScrapeManager.run_scraper return value."""
     return {
         "articles_scraped": articles_scraped,
@@ -242,10 +243,9 @@ class TestPayloadValidation:
         mock_manager.run_scraper.side_effect = ValueError("invalid date format: not-a-date")
         mock_manager_cls.return_value = mock_manager
 
-        response = client.post("/scrape/agencies", json={
-            "start_date": "not-a-date",
-            "agencies": ["mec"]
-        })
+        response = client.post(
+            "/scrape/agencies", json={"start_date": "not-a-date", "agencies": ["mec"]}
+        )
 
         assert response.status_code == 500
 
@@ -254,7 +254,7 @@ class TestPayloadValidation:
         response = client.post(
             "/scrape/agencies",
             data="this is not json",
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
 
         assert response.status_code == 422
@@ -267,29 +267,32 @@ class TestPayloadValidation:
 
     def test_null_start_date_returns_422(self):
         """Null start_date should return HTTP 422."""
-        response = client.post("/scrape/agencies", json={
-            "start_date": None,
-            "agencies": ["mec"]
-        })
+        response = client.post("/scrape/agencies", json={"start_date": None, "agencies": ["mec"]})
 
         assert response.status_code == 422
 
     def test_agencies_as_string_instead_of_list_returns_422(self):
         """agencies as string instead of list should return HTTP 422."""
-        response = client.post("/scrape/agencies", json={
-            "start_date": "2025-01-01",
-            "agencies": "mec"  # Should be ["mec"]
-        })
+        response = client.post(
+            "/scrape/agencies",
+            json={
+                "start_date": "2025-01-01",
+                "agencies": "mec",  # Should be ["mec"]
+            },
+        )
 
         assert response.status_code == 422
 
     def test_invalid_field_type_returns_422(self):
         """Invalid field type that cannot be coerced should return HTTP 422."""
-        response = client.post("/scrape/agencies", json={
-            "start_date": "2025-01-01",
-            "agencies": ["mec"],
-            "sequential": {"invalid": "object"}  # Invalid type that cannot be coerced to bool
-        })
+        response = client.post(
+            "/scrape/agencies",
+            json={
+                "start_date": "2025-01-01",
+                "agencies": ["mec"],
+                "sequential": {"invalid": "object"},  # Invalid type that cannot be coerced to bool
+            },
+        )
 
         assert response.status_code == 422
 
@@ -298,17 +301,18 @@ class TestPayloadValidation:
     def test_extra_fields_are_ignored(self, mock_storage_cls, mock_manager_cls):
         """Extra fields in payload should be ignored gracefully."""
         mock_manager = MagicMock()
-        mock_manager.run_scraper.return_value = _mock_run_scraper(
-            agencies_processed=["mec"]
-        )
+        mock_manager.run_scraper.return_value = _mock_run_scraper(agencies_processed=["mec"])
         mock_manager_cls.return_value = mock_manager
 
-        response = client.post("/scrape/agencies", json={
-            "start_date": "2025-01-01",
-            "agencies": ["mec"],
-            "extra_field": "should_be_ignored",
-            "another_extra": 12345
-        })
+        response = client.post(
+            "/scrape/agencies",
+            json={
+                "start_date": "2025-01-01",
+                "agencies": ["mec"],
+                "extra_field": "should_be_ignored",
+                "another_extra": 12345,
+            },
+        )
 
         # Should succeed despite extra fields
         assert response.status_code == 200
@@ -323,17 +327,18 @@ class TestPayloadValidation:
         )
         mock_manager_cls.return_value = mock_manager
 
-        response = client.post("/scrape/agencies", json={
-            "start_date": "2099-12-31",
-            "agencies": ["mec"]
-        })
+        response = client.post(
+            "/scrape/agencies", json={"start_date": "2099-12-31", "agencies": ["mec"]}
+        )
 
         # Should not fail at validation layer
         assert response.status_code == 200
 
     @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
     @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
-    def test_end_date_before_start_date_accepted_at_api_layer(self, mock_storage_cls, mock_manager_cls):
+    def test_end_date_before_start_date_accepted_at_api_layer(
+        self, mock_storage_cls, mock_manager_cls
+    ):
         """end_date before start_date accepted at API layer (logic validation elsewhere)."""
         mock_manager = MagicMock()
         mock_manager.run_scraper.return_value = _mock_run_scraper(
@@ -341,11 +346,14 @@ class TestPayloadValidation:
         )
         mock_manager_cls.return_value = mock_manager
 
-        response = client.post("/scrape/agencies", json={
-            "start_date": "2025-12-31",
-            "end_date": "2025-01-01",  # Before start_date
-            "agencies": ["mec"]
-        })
+        response = client.post(
+            "/scrape/agencies",
+            json={
+                "start_date": "2025-12-31",
+                "end_date": "2025-01-01",  # Before start_date
+                "agencies": ["mec"],
+            },
+        )
 
         # API layer doesn't validate date logic, only types
         assert response.status_code == 200

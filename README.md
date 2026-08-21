@@ -35,6 +35,82 @@ poetry run uvicorn govbr_scraper.api:app --reload
 
 Requer Python 3.12+.
 
+## Development Setup
+
+### Prerequisites
+
+- Python 3.12+
+- Poetry 1.8+
+
+### Setup
+
+```bash
+# 1. Install dependencies
+poetry install
+
+# 2. Install pre-commit hooks
+poetry run pre-commit install
+
+# 3. Run all pre-commit checks manually (first-time setup)
+poetry run pre-commit run --all-files
+```
+
+### Code Quality
+
+This project uses pre-commit hooks to maintain code quality and security:
+
+| Category | Hooks | Description |
+|----------|-------|-------------|
+| **Security** 🔒 | `detect-secrets`, `bandit` | Prevent credential leaks + SSRF protection |
+| **Python Quality** 🐍 | `ruff-check`, `ruff-format` | Linter + formatter (line-length 100) |
+| **Type Checking** 📝 | `mypy` | Type checking for the central `models/` package |
+| **File Hygiene** 📄 | `trailing-whitespace`, `end-of-file-fixer`, `mixed-line-ending` | Normalize whitespace |
+| **Syntax Validation** ✅ | `check-yaml`, `check-json`, `check-toml` | Validate config files |
+| **Git Safety** 🚨 | `check-merge-conflict`, `check-added-large-files` | Detect markers + large files |
+| **Custom Validators** ⚙️ | `validate-site-urls`, `validate-ssrf-allowlist` | Schema, Airflow sync, and SSRF allowlist checks |
+
+#### Performance
+
+- **Typical commit**: ~7-9 seconds
+- **First commit**: ~30-60 seconds (installs hook environments)
+
+#### Emergency Bypass
+
+```bash
+# Only for emergencies (not recommended)
+git commit --no-verify
+```
+
+This bypass skips all local checks. Run the complete pre-commit suite manually before opening a PR.
+
+### Code Standards
+
+- **Type hints**: Required for public functions
+- **Formatting**: Ruff formatter (max line 100)
+- **Linting**: Ruff (replaces Black, Flake8, isort, pyupgrade)
+- **Type checking**: Mypy enabled for `src/govbr_scraper/models/`
+
+```bash
+# Run manually (outside pre-commit)
+poetry run ruff check .        # Linting
+poetry run ruff format .       # Formatting
+poetry run mypy src/govbr_scraper/models/  # Type checking for the enabled scope
+```
+
+### site_urls.yaml Sync
+
+⚠️ **IMPORTANT**: The file `site_urls.yaml` exists in TWO locations that must stay synchronized:
+
+- **Always edit**: `src/govbr_scraper/scrapers/config/site_urls.yaml` (source)
+- **Then copy to**: `dags/config/site_urls.yaml` (used by Airflow DAGs)
+
+**Sync command**:
+```bash
+cp src/govbr_scraper/scrapers/config/site_urls.yaml dags/config/site_urls.yaml
+```
+
+Pre-commit will block commits if files are out of sync.
+
 ## Stack
 
 - **API:** FastAPI + Uvicorn (Cloud Run)

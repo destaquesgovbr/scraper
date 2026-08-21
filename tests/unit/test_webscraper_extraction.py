@@ -9,9 +9,9 @@ Tests cover date, title, URL, and link extraction strategies:
 """
 
 from datetime import datetime
-from bs4 import BeautifulSoup
-import pytest
 
+import pytest
+from bs4 import BeautifulSoup
 
 # scraper fixture provided by tests/unit/conftest.py
 
@@ -167,12 +167,26 @@ class TestExtractDate3Improved:
         assert result.month == 2
         assert result.day == 10
 
-    @pytest.mark.parametrize("element,date_text,expected_datetime", [
-        ('<span class="date">15/03/2026 10h30</span>', "15/03/2026 10h30", datetime(2026, 3, 15, 10, 30)),
-        ('<span class="data">20/03/2026</span>', "20/03/2026", datetime(2026, 3, 20)),
-        ('<div class="published-date">12/02/2026 14h20</div>', "12/02/2026 14h20", datetime(2026, 2, 12, 14, 20)),
-    ], ids=["date-class", "data-class-portuguese", "published-class"])
-    def test_extract_from_date_related_classes(self, scraper, element, date_text, expected_datetime):
+    @pytest.mark.parametrize(
+        "element,date_text,expected_datetime",
+        [
+            (
+                '<span class="date">15/03/2026 10h30</span>',
+                "15/03/2026 10h30",
+                datetime(2026, 3, 15, 10, 30),
+            ),
+            ('<span class="data">20/03/2026</span>', "20/03/2026", datetime(2026, 3, 20)),
+            (
+                '<div class="published-date">12/02/2026 14h20</div>',
+                "12/02/2026 14h20",
+                datetime(2026, 2, 12, 14, 20),
+            ),
+        ],
+        ids=["date-class", "data-class-portuguese", "published-class"],
+    )
+    def test_extract_from_date_related_classes(
+        self, scraper, element, date_text, expected_datetime
+    ):
         """Test extraction from elements with date/data/published classes (Strategy 2)."""
         html = f"""
         <div class="item">
@@ -226,11 +240,15 @@ class TestExtractDate3Improved:
 class TestExtractCategory:
     """Tests for category extraction from listing pages."""
 
-    @pytest.mark.parametrize("element,expected_category", [
-        ('<span class="subtitle">Educação Básica</span>', "Educação Básica"),
-        ('<div class="subtitulo-noticia">Ensino Superior</div>', "Ensino Superior"),
-        ('<div class="categoria-noticia">Pesquisa Científica</div>', "Pesquisa Científica"),
-    ], ids=["subtitle-span", "subtitulo-noticia-div", "categoria-noticia-div"])
+    @pytest.mark.parametrize(
+        "element,expected_category",
+        [
+            ('<span class="subtitle">Educação Básica</span>', "Educação Básica"),
+            ('<div class="subtitulo-noticia">Ensino Superior</div>', "Ensino Superior"),
+            ('<div class="categoria-noticia">Pesquisa Científica</div>', "Pesquisa Científica"),
+        ],
+        ids=["subtitle-span", "subtitulo-noticia-div", "categoria-noticia-div"],
+    )
     def test_extract_category_from_various_elements(self, scraper, element, expected_category):
         """Test extraction from different HTML elements (3 strategies)."""
         html = f"""
@@ -276,13 +294,25 @@ class TestExtractCategory:
 class TestStrategy4Validation:
     """Tests for validation in extract_title_and_url Strategy 4."""
 
-    @pytest.mark.parametrize("excluded_link,valid_link,valid_title", [
-        ('<a class="share-button" href="/share">Compartilhar</a>', "/noticia", "Título da Notícia"),
-        ('<a class="social-icon" href="https://facebook.com">Facebook</a>', "/noticia", "Notícia"),
-        ('<a class="nav-link" href="/menu">Menu</a>', "/noticia", "Notícia Principal"),
-        ('<a href="/icon"></a>', "/noticia", "Texto da Notícia"),
-        ('<a class="button" href="/action">Clique Aqui</a>', "/noticia", "Artigo"),
-    ], ids=["share", "social", "nav", "empty", "button"])
+    @pytest.mark.parametrize(
+        "excluded_link,valid_link,valid_title",
+        [
+            (
+                '<a class="share-button" href="/share">Compartilhar</a>',
+                "/noticia",
+                "Título da Notícia",
+            ),
+            (
+                '<a class="social-icon" href="https://facebook.com">Facebook</a>',
+                "/noticia",
+                "Notícia",
+            ),
+            ('<a class="nav-link" href="/menu">Menu</a>', "/noticia", "Notícia Principal"),
+            ('<a href="/icon"></a>', "/noticia", "Texto da Notícia"),
+            ('<a class="button" href="/action">Clique Aqui</a>', "/noticia", "Artigo"),
+        ],
+        ids=["share", "social", "nav", "empty", "button"],
+    )
     def test_excludes_non_article_links(self, scraper, excluded_link, valid_link, valid_title):
         """Test that various non-article link types are excluded."""
         html = f"""
@@ -505,7 +535,7 @@ class TestExtractImageUrl:
         assert result == "https://www.gov.br/mec/images/foto.jpg"
 
     def test_no_img_returns_none(self, scraper):
-        html = '<div><p>No image here</p></div>'
+        html = "<div><p>No image here</p></div>"
         body = BeautifulSoup(html, "html.parser").div
         result = scraper._extract_image_url(body, article_url="https://www.gov.br/mec/noticia")
         assert result is None

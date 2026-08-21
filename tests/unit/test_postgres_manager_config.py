@@ -11,9 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from govbr_scraper.models.news import Agency, Theme
 from govbr_scraper.storage.postgres_manager import PostgresManager
-
 
 # =============================================================================
 # Tests for _get_connection_string()
@@ -42,7 +40,9 @@ class TestGetConnectionString:
 
         # Mock Secret Manager response and proxy check
         secret_result = MagicMock()
-        secret_result.stdout = "postgresql://destaquesgovbr_app:mypassword@cloudsql-host/destaquesgovbr\n"
+        secret_result.stdout = (
+            "postgresql://destaquesgovbr_app:mypassword@cloudsql-host/destaquesgovbr\n"
+        )
         secret_result.returncode = 0
 
         proxy_result = MagicMock()
@@ -346,7 +346,10 @@ class TestLoadCache:
 
         # Create large dataset
         agencies = [{"id": i, "key": f"agency_{i}", "name": f"Agency {i}"} for i in range(1, 201)]
-        themes = [{"id": i, "code": f"THEME_{i}", "label": f"Theme {i}", "level": 1} for i in range(1, 101)]
+        themes = [
+            {"id": i, "code": f"THEME_{i}", "label": f"Theme {i}", "level": 1}
+            for i in range(1, 101)
+        ]
 
         mock_cursor.fetchall.side_effect = [agencies, themes]
         mock_conn.cursor.return_value = mock_cursor

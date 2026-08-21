@@ -1,9 +1,10 @@
 """
 Shared utilities for loading and processing agency YAML configuration files.
 """
+
 import logging
 import os
-from typing import Any, Dict
+from typing import Any
 
 import yaml
 
@@ -18,9 +19,7 @@ def get_config_dir(module_file: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(module_file)), "config")
 
 
-def load_urls_from_yaml(
-    config_dir: str, file_name: str, agency: str = None
-) -> Dict[str, dict]:
+def load_urls_from_yaml(config_dir: str, file_name: str, agency: str = None) -> dict[str, dict]:
     """
     Load URLs from a YAML file.
 
@@ -41,7 +40,7 @@ def load_urls_from_yaml(
     """
     file_path = os.path.join(config_dir, file_name)
 
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         agencies = yaml.safe_load(f)["agencies"]
 
     if agency:
@@ -50,11 +49,13 @@ def load_urls_from_yaml(
         agency_data = agencies[agency]
         if is_agency_inactive(agency, agency_data):
             raise ValueError(f"Agency '{agency}' is inactive.")
-        return {agency: {
-            "url": extract_url(agency_data),
-            "scraper_type": agency_data.get("scraper_type", "html"),
-            "active": agency_data.get("active", True),
-        }}
+        return {
+            agency: {
+                "url": extract_url(agency_data),
+                "scraper_type": agency_data.get("scraper_type", "html"),
+                "active": agency_data.get("active", True),
+            }
+        }
 
     # Load all active agencies
     agency_urls = {}
@@ -79,7 +80,7 @@ def load_urls_from_yaml(
     return agency_urls
 
 
-def extract_url(agency_data: Dict[str, Any]) -> str:
+def extract_url(agency_data: dict[str, Any]) -> str:
     """
     Extract URL from agency data.
 
@@ -89,7 +90,7 @@ def extract_url(agency_data: Dict[str, Any]) -> str:
     return str(agency_data["url"])
 
 
-def is_agency_inactive(agency_key: str, agency_data: Dict[str, Any]) -> bool:
+def is_agency_inactive(agency_key: str, agency_data: dict[str, Any]) -> bool:
     """
     Check if agency is inactive.
 

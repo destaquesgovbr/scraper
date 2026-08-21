@@ -11,10 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
-from bs4 import BeautifulSoup
 
-from govbr_scraper.scrapers.webscraper import WebScraper, ScrapingError
-
+from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
 
 # =============================================================================
 # Fixtures
@@ -69,7 +67,9 @@ class TestDetectAntiBot:
     def test_detect_anti_bot_returns_true_for_jschl_challenge(self, scraper):
         """Response with jschl_vc (JS challenge) should be detected."""
         mock_response = MagicMock()
-        mock_response.text = '<form id="challenge-form" action="/cdn-cgi/l/chk_jschl"><input name="jschl_vc" />'
+        mock_response.text = (
+            '<form id="challenge-form" action="/cdn-cgi/l/chk_jschl"><input name="jschl_vc" />'
+        )
 
         result = scraper._detect_anti_bot(mock_response)
 
@@ -114,10 +114,10 @@ class TestScrapePageAntiBot:
 
     def test_scrape_page_raises_on_anti_bot_detection(self, scraper):
         """scrape_page() should raise ScrapingError when anti-bot is detected."""
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = '<div class="cf-browser-verification">Checking your browser</div>'
-            mock_response.content = b'<html>...</html>'
+            mock_response.content = b"<html>...</html>"
             mock_fetch.return_value = mock_response
 
             with pytest.raises(ScrapingError, match="Anti-bot protection detected"):
@@ -134,12 +134,12 @@ class TestScrapePageEmpty:
 
     def test_scrape_page_raises_on_empty_first_page_large_response(self, scraper):
         """Large response with no articles on first page should raise ScrapingError."""
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             # Large HTML response (> 5000 bytes) but no articles
-            large_html = '<html><body>' + '<p>Padding content</p>' * 500 + '</body></html>'
+            large_html = "<html><body>" + "<p>Padding content</p>" * 500 + "</body></html>"
             mock_response = MagicMock()
             mock_response.text = large_html
-            mock_response.content = large_html.encode('utf-8')
+            mock_response.content = large_html.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             with pytest.raises(ScrapingError, match="No articles found on first page"):
@@ -147,12 +147,12 @@ class TestScrapePageEmpty:
 
     def test_scrape_page_returns_false_on_empty_page(self, scraper):
         """Empty page (small response, no articles) should return (False, 0)."""
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             # Small HTML response with no articles
-            small_html = '<html><body><p>Nenhuma notícia encontrada</p></body></html>'
+            small_html = "<html><body><p>Nenhuma notícia encontrada</p></body></html>"
             mock_response = MagicMock()
             mock_response.text = small_html
-            mock_response.content = small_html.encode('utf-8')
+            mock_response.content = small_html.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             should_continue, items_per_page = scraper.scrape_page(
@@ -164,12 +164,12 @@ class TestScrapePageEmpty:
 
     def test_scrape_page_does_not_raise_on_empty_subsequent_page(self, scraper):
         """Empty subsequent page (not first) should not raise, just return (False, 0)."""
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             # Large response but no articles on page 2
-            large_html = '<html><body>' + '<div>Content</div>' * 300 + '</body></html>'
+            large_html = "<html><body>" + "<div>Content</div>" * 300 + "</body></html>"
             mock_response = MagicMock()
             mock_response.text = large_html
-            mock_response.content = large_html.encode('utf-8')
+            mock_response.content = large_html.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             should_continue, items_per_page = scraper.scrape_page(
@@ -203,14 +203,14 @@ class TestScrapePageMaxDate:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             # Last item is 12/03/2026, which is > max_date (10/03/2026)
-            with patch.object(scraper, 'extract_date') as mock_extract_date:
+            with patch.object(scraper, "extract_date") as mock_extract_date:
                 mock_extract_date.return_value = date(2026, 3, 12)
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -231,16 +231,16 @@ class TestScrapePageMaxDate:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_date') as mock_extract_date:
+            with patch.object(scraper, "extract_date") as mock_extract_date:
                 mock_extract_date.return_value = date(2026, 3, 5)
 
-                with patch.object(scraper, 'extract_news_info') as mock_extract_info:
+                with patch.object(scraper, "extract_news_info") as mock_extract_info:
                     mock_extract_info.return_value = True  # Continue processing
 
                     should_continue, items_per_page = scraper.scrape_page(
@@ -273,13 +273,13 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = False  # Stop after first item
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -299,13 +299,13 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = False
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -329,13 +329,13 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = False
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -362,13 +362,13 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = False
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -390,13 +390,13 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = False
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -420,15 +420,15 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_content
-            mock_response.content = html_content.encode('utf-8')
+            mock_response.content = html_content.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             # extract_news_info will be called but should return True (stop scraping)
             # because date > max_date
-            with patch.object(scraper, 'extract_news_info') as mock_extract:
+            with patch.object(scraper, "extract_news_info") as mock_extract:
                 mock_extract.return_value = True  # Date too recent, continue to next page
 
                 should_continue, items_per_page = scraper.scrape_page(
@@ -454,10 +454,10 @@ class TestScrapePageFallbacks:
         </html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_with_both
-            mock_response.content = html_with_both.encode('utf-8')
+            mock_response.content = html_with_both.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             with pytest.raises(ScrapingError, match="Anti-bot protection detected"):
@@ -472,10 +472,10 @@ class TestScrapePageFallbacks:
         </body></html>
         """
 
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_response = MagicMock()
             mock_response.text = html_empty
-            mock_response.content = html_empty.encode('utf-8')
+            mock_response.content = html_empty.encode("utf-8")
             mock_fetch.return_value = mock_response
 
             should_continue, items_per_page = scraper.scrape_page(
@@ -497,7 +497,7 @@ class TestScrapePageRequestFailure:
 
     def test_scrape_page_raises_on_request_exception(self, scraper):
         """Request exception should be wrapped in ScrapingError."""
-        with patch.object(scraper, 'fetch_page') as mock_fetch:
+        with patch.object(scraper, "fetch_page") as mock_fetch:
             mock_fetch.side_effect = requests.exceptions.ConnectionError("Connection refused")
 
             with pytest.raises(ScrapingError, match="Failed to fetch page after retries"):

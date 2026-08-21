@@ -9,7 +9,7 @@ fail the scrape — articles are already persisted in PostgreSQL.
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -74,7 +74,7 @@ class EventPublisher:
                     "unique_id": article["unique_id"],
                     "agency_key": article.get("agency_key", ""),
                     "published_at": published_at or "",
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "scraped_at": datetime.now(UTC).isoformat(),
                 }
 
                 self._client.publish(
@@ -86,9 +86,7 @@ class EventPublisher:
                 published += 1
 
             except Exception as e:
-                logger.warning(
-                    f"Failed to publish event for {article.get('unique_id')}: {e}"
-                )
+                logger.warning(f"Failed to publish event for {article.get('unique_id')}: {e}")
 
         if published:
             logger.info(f"Published {published}/{len(inserted_ids)} events to {self._topic}")

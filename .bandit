@@ -1,0 +1,7 @@
+# Bandit security scanner configuration for scraper
+exclude_dirs:
+  - /tests/
+  - /.pytest_cache/
+  - /htmlcov/
+
+# Findings are suppressed at the audited call site instead of globally.

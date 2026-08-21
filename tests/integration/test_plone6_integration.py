@@ -7,10 +7,12 @@ Tests the Plone6APIScraper with real HTTP requests to validate that:
 - Recently migrated agency URLs resolve to articles via the full scraper pipeline
 """
 
-import pytest
-import requests
 from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
+import requests
+
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.yaml_config import load_urls_from_yaml
 
@@ -21,19 +23,21 @@ PLONE6_AGENCY = "esporte"
 # Agencies recently migrated to plone6_api or with corrected URLs.
 # These tests validate the configured URL is correct, not scraper behavior.
 RECENTLY_MIGRATED_AGENCIES = {
-    "abc":               "https://www.gov.br/abc/pt-br/assuntos/noticias",
-    "anatel":            "https://www.gov.br/anatel/pt-br/assuntos/noticias",
-    "ansn":              "https://www.gov.br/ansn/pt-br/assuntos/noticias",
-    "ibc":               "https://www.gov.br/ibc/pt-br/centrais-de-conteudos/noticias",
+    "abc": "https://www.gov.br/abc/pt-br/assuntos/noticias",
+    "anatel": "https://www.gov.br/anatel/pt-br/assuntos/noticias",
+    "ansn": "https://www.gov.br/ansn/pt-br/assuntos/noticias",
+    "ibc": "https://www.gov.br/ibc/pt-br/centrais-de-conteudos/noticias",
     "memoriasreveladas": "https://www.gov.br/memoriasreveladas/pt-br/centrais-de-conteudo/destaques",
-    "planejamento":      "https://www.gov.br/planejamento/pt-br/assuntos/noticias",
+    "planejamento": "https://www.gov.br/planejamento/pt-br/assuntos/noticias",
 }
 
 
 @pytest.fixture(scope="module")
 def plone6_agency_url():
     """Load Plone6 agency URL from YAML configuration."""
-    config_dir = str(Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config")
+    config_dir = str(
+        Path(__file__).parent.parent.parent / "src" / "govbr_scraper" / "scrapers" / "config"
+    )
 
     try:
         urls = load_urls_from_yaml(config_dir, "site_urls.yaml")
@@ -47,8 +51,7 @@ def plone6_agency_url():
 
     if agency_data.get("scraper_type") != "plone6_api":
         pytest.skip(
-            f"{PLONE6_AGENCY} is not a plone6_api agency "
-            f"(type: {agency_data.get('scraper_type')})"
+            f"{PLONE6_AGENCY} is not a plone6_api agency (type: {agency_data.get('scraper_type')})"
         )
 
     return agency_data["url"]
@@ -92,11 +95,15 @@ class TestPlone6APIScraper:
 
         assert "url" in first, "url field is missing"
         assert first["url"], "url is empty"
-        assert first["url"].startswith("https://"), f"url should be absolute HTTPS, got {first['url']}"
+        assert first["url"].startswith("https://"), (
+            f"url should be absolute HTTPS, got {first['url']}"
+        )
 
         assert "content" in first, "content field is missing"
         assert first["content"], "content is empty"
-        assert isinstance(first["content"], str), f"content should be str, got {type(first['content'])}"
+        assert isinstance(first["content"], str), (
+            f"content should be str, got {type(first['content'])}"
+        )
 
         assert "published_at" in first, "published_at field is missing"
         assert first["published_at"], "published_at is missing"

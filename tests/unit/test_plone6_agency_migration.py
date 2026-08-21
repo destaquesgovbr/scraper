@@ -2,6 +2,7 @@
 Testes validando que agencias migradas para Plone6APIScraper estao
 configuradas corretamente (17 agencias: 12 em data-platform#147 + 5 em scraper#53).
 """
+
 import os
 
 import pytest
@@ -104,5 +105,3 @@ class TestMigratedAgenciesConfig:
         assert "/2026" not in url, (
             f"URL da funai nao deve conter /2026 (ano especifico). Got: {url}"
         )
-
-

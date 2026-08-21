@@ -6,7 +6,6 @@ Designed to run on Cloud Run, called by Airflow DAGs.
 """
 
 import logging
-import os
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -77,8 +76,8 @@ def health():
 
 @app.post("/scrape/agencies", response_model=ScrapeResponse)
 def scrape_agencies(req: ScrapeAgenciesRequest):
-    from govbr_scraper.storage import StorageAdapter
     from govbr_scraper.scrapers.scrape_manager import ScrapeManager
+    from govbr_scraper.storage import StorageAdapter
 
     end = req.end_date or req.start_date
     logger.info(f"Scraping agencies: {req.agencies or 'ALL'} from {req.start_date} to {end}")
@@ -184,8 +183,8 @@ def verify_integrity(req: VerifyRequest):
 
 @app.post("/scrape/ebc", response_model=ScrapeResponse)
 def scrape_ebc(req: ScrapeEBCRequest):
-    from govbr_scraper.storage import StorageAdapter
     from govbr_scraper.scrapers.ebc_scrape_manager import EBCScrapeManager
+    from govbr_scraper.storage import StorageAdapter
 
     end = req.end_date or req.start_date
     logger.info(f"Scraping EBC agencies: {req.agencies or 'ALL'} from {req.start_date} to {end}")

@@ -5,12 +5,13 @@ Verifies that ScrapeManager automatically attempts Plone6APIScraper
 when WebScraper fails with HTML_CHANGED error, and tracks fallback
 metadata in structured logs.
 """
+
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from govbr_scraper.scrapers.scrape_manager import ScrapeManager
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
+from govbr_scraper.scrapers.scrape_manager import ScrapeManager
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
 
 
@@ -29,10 +30,12 @@ def _make_manager():
 @pytest.fixture
 def mock_scrapers():
     """Fixture that patches both WebScraper and Plone6APIScraper."""
-    with patch.object(WebScraper, "__init__", return_value=None) as mock_ws_init, \
-         patch.object(WebScraper, "scrape_news") as mock_ws_scrape, \
-         patch.object(Plone6APIScraper, "__init__", return_value=None) as mock_p6_init, \
-         patch.object(Plone6APIScraper, "scrape_news") as mock_p6_scrape:
+    with (
+        patch.object(WebScraper, "__init__", return_value=None) as mock_ws_init,
+        patch.object(WebScraper, "scrape_news") as mock_ws_scrape,
+        patch.object(Plone6APIScraper, "__init__", return_value=None) as mock_p6_init,
+        patch.object(Plone6APIScraper, "scrape_news") as mock_p6_scrape,
+    ):
         yield {
             "ws_init": mock_ws_init,
             "ws_scrape": mock_ws_scrape,
@@ -114,9 +117,7 @@ class TestFallbackWebScraperToPlone6:
         mock_scrapers["ws_scrape"].side_effect = ScrapingError(
             "No articles found on first page of coaf but response was 280000 bytes"
         )
-        mock_scrapers["p6_scrape"].side_effect = ScrapingError(
-            "API request failed with status 500"
-        )
+        mock_scrapers["p6_scrape"].side_effect = ScrapingError("API request failed with status 500")
 
         manager, storage = _make_manager()
         result = manager.run_scraper(
@@ -170,9 +171,7 @@ class TestFallbackWebScraperToPlone6:
         assert call_kwargs["fallback_success"] is None
 
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
-    def test_no_fallback_for_plone6_primary(
-        self, mock_load, mock_scrapers, mock_log_scrape_result
-    ):
+    def test_no_fallback_for_plone6_primary(self, mock_load, mock_scrapers, mock_log_scrape_result):
         """Plone6 configured as primary, WebScraper is not called on failure."""
         mock_load.return_value = {
             "susep": _config("https://www.gov.br/susep/noticias", "plone6_api")
@@ -207,9 +206,7 @@ class TestFallbackOnlyForHTMLChanged:
     """Fallback should only trigger for HTML_CHANGED errors, not other error types."""
 
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
-    def test_no_fallback_for_network_error(
-        self, mock_load, mock_scrapers, mock_log_scrape_result
-    ):
+    def test_no_fallback_for_network_error(self, mock_load, mock_scrapers, mock_log_scrape_result):
         """Network errors should not trigger fallback."""
         mock_load.return_value = {"mec": _config("https://www.gov.br/mec/noticias", "html")}
 
@@ -231,9 +228,7 @@ class TestFallbackOnlyForHTMLChanged:
         assert len(result["errors"]) == 1
 
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
-    def test_no_fallback_for_anti_bot(
-        self, mock_load, mock_scrapers, mock_log_scrape_result
-    ):
+    def test_no_fallback_for_anti_bot(self, mock_load, mock_scrapers, mock_log_scrape_result):
         """Anti-bot errors should not trigger fallback."""
         mock_load.return_value = {"mec": _config("https://www.gov.br/mec/noticias", "html")}
 
@@ -259,9 +254,7 @@ class TestFallbackBulkMode:
     """Test fallback behavior in bulk mode (sequential=False)."""
 
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
-    def test_fallback_works_in_bulk_mode(
-        self, mock_load, mock_scrapers, mock_log_scrape_result
-    ):
+    def test_fallback_works_in_bulk_mode(self, mock_load, mock_scrapers, mock_log_scrape_result):
         """Fallback should work in bulk mode too."""
         mock_load.return_value = {"coaf": _config("https://www.gov.br/coaf/noticias", "html")}
 

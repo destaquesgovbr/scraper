@@ -1,27 +1,25 @@
 import logging
 import time
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-from govbr_scraper.models.monitoring import classify_error, ErrorCategory
+from govbr_scraper.models.monitoring import ErrorCategory, classify_error
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
-from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
+from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
 # Set up logging configuration
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def _try_scrape_with_fallback(
     primary_scraper: Any,
-    fallback_config: Optional[Dict[str, Any]],
+    fallback_config: dict[str, Any] | None,
     agency_name: str,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     Tenta scraper primário, com fallback automático em caso de HTML_CHANGED.
 
@@ -78,7 +76,7 @@ def _try_scrape_with_fallback(
                     fallback_config["min_date"],
                     fallback_config["url"],
                     max_date=fallback_config["max_date"],
-                    known_urls=set()
+                    known_urls=set(),
                 )
                 data = fallback_scraper.scrape_news()
                 metadata["fallback_success"] = True
@@ -86,15 +84,14 @@ def _try_scrape_with_fallback(
                 logging.info(
                     f"{agency_name}: Plone6 API fallback SUCCEEDED. "
                     f"Found {len(data)} articles. "
-                    f"RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api"
+                    "RECOMMENDATION: Set scraper_type to plone6_api in site_urls.yaml"
                 )
 
                 return data, metadata
             except ScrapingError as e2:
                 metadata["fallback_success"] = False
                 logging.error(
-                    f"{agency_name}: Both scrapers failed. "
-                    f"WebScraper: {str(e)}. Plone6: {str(e2)}"
+                    f"{agency_name}: Both scrapers failed. WebScraper: {str(e)}. Plone6: {str(e2)}"
                 )
                 raise ScrapingError(
                     f"Both scrapers failed. Primary: {str(e)}. Fallback: {str(e2)}"
@@ -130,7 +127,7 @@ class ScrapeManager:
 
     def run_scraper(
         self,
-        agencies: List[str],
+        agencies: list[str],
         min_date: str,
         max_date: str,
         sequential: bool,
@@ -181,7 +178,9 @@ class ScrapeManager:
                 # Strategy Pattern: select scraper based on config
                 # For html scrapers, store config for lazy fallback instantiation
                 if scraper_type == "plone6_api":
-                    primary = Plone6APIScraper(min_date, url, max_date=max_date, known_urls=known_urls)
+                    primary = Plone6APIScraper(
+                        min_date, url, max_date=max_date, known_urls=known_urls
+                    )
                     fallback_config = None
                     logging.info(f"Using Plone6APIScraper for {agency_name}")
                 else:
@@ -203,9 +202,7 @@ class ScrapeManager:
                         )
                         elapsed = time.monotonic() - start_time
                         if scraped_data:
-                            logging.info(
-                                f"Appending news for {agency_name} to storage backend."
-                            )
+                            logging.info(f"Appending news for {agency_name} to storage backend.")
                             articles_scraped += len(scraped_data)
                             saved = self._process_and_upload_data(scraped_data, allow_update) or 0
                             articles_saved += saved
@@ -324,7 +321,7 @@ class ScrapeManager:
         new_data = self._preprocess_data(new_data)
         return self.dataset_manager.insert(new_data, allow_update=allow_update)
 
-    def _preprocess_data(self, data: List[Dict[str, str]]) -> OrderedDict:
+    def _preprocess_data(self, data: list[dict[str, str]]) -> OrderedDict:
         """
         Preprocess data by:
         - Adding the unique_id column.
@@ -346,9 +343,7 @@ class ScrapeManager:
             )
 
         # Convert to columnar format
-        column_data = {
-            key: [item.get(key, None) for item in data] for key in data[0].keys()
-        }
+        column_data = {key: [item.get(key, None) for item in data] for key in data[0].keys()}
 
         # Reorder columns
         ordered_column_data = OrderedDict()
@@ -370,9 +365,7 @@ class ScrapeManager:
 
         return ordered_column_data
 
-    def _generate_unique_id(
-        self, agency: str, published_at_value: str, title: str
-    ) -> str:
+    def _generate_unique_id(self, agency: str, published_at_value: str, title: str) -> str:
         """
         Generate a unique identifier based on the agency, published_at, and title.
 

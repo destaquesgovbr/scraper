@@ -1,16 +1,20 @@
-from datetime import datetime, timezone
-from unittest.mock import call, patch
+from datetime import UTC, datetime
+from unittest.mock import patch
 
-import pytest
 from psycopg2 import errors
 
 from govbr_scraper.models.news import NewsInsert
 
-
 # mock_pool and pg_manager fixtures provided by tests/unit/conftest.py
 
 
-def _make_news(unique_id, agency_key="ebc", url="https://example.com/article", title="Titulo", content="Conteudo"):
+def _make_news(
+    unique_id,
+    agency_key="ebc",
+    url="https://example.com/article",
+    title="Titulo",
+    content="Conteudo",
+):
     return NewsInsert(
         unique_id=unique_id,
         agency_id=1,
@@ -19,12 +23,11 @@ def _make_news(unique_id, agency_key="ebc", url="https://example.com/article", t
         title=title,
         url=url,
         content=content,
-        published_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+        published_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
     )
 
 
 class TestUrlBasedDedup:
-
     def test_same_url_same_agency_updates_existing(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
@@ -105,11 +108,13 @@ class TestUrlBasedDedup:
             ("existing-uid", "ebc", "https://example.com/article"),
         ]
 
-        news = [_make_news(
-            "new-uid",
-            title="Novo titulo",
-            content="Novo conteudo",
-        )]
+        news = [
+            _make_news(
+                "new-uid",
+                title="Novo titulo",
+                content="Novo conteudo",
+            )
+        ]
         news[0].content_hash = "abc123def456789a"
 
         with patch(
@@ -129,8 +134,8 @@ class TestUrlBasedDedup:
             ("existing-uid", "ebc", "https://example.com/article"),
         ]
 
-        updated_dt = datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc)
-        extracted_dt = datetime(2026, 1, 2, 12, 0, tzinfo=timezone.utc)
+        updated_dt = datetime(2026, 1, 2, 10, 0, tzinfo=UTC)
+        extracted_dt = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
         news = [_make_news("new-uid")]
         news[0].updated_datetime = updated_dt
         news[0].extracted_at = extracted_dt
@@ -206,7 +211,7 @@ class TestUrlBasedDedup:
         assert len(articles) == 1
         assert articles[0]["unique_id"] == "existing-uid"
         assert articles[0]["agency_key"] == "ebc"
-        assert articles[0]["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        assert articles[0]["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     def test_in_memory_url_dedup_keeps_last(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
@@ -244,7 +249,8 @@ class TestUrlBasedDedup:
             count, articles = pg_manager.insert(news)
 
         savepoint_calls = [
-            c for c in mock_cursor.execute.call_args_list
+            c
+            for c in mock_cursor.execute.call_args_list
             if isinstance(c[0][0], str) and "SAVEPOINT" in c[0][0]
         ]
         assert any("ROLLBACK TO SAVEPOINT" in c[0][0] for c in savepoint_calls)

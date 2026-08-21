@@ -5,13 +5,12 @@ Tests the tuple return (count, inserted_articles), RETURNING clause,
 metadata correctness, deduplication, and ON CONFLICT modes.
 """
 
-from datetime import datetime, timezone
-from unittest.mock import patch, call
+from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
 from govbr_scraper.models.news import NewsInsert
-
 
 # mock_pool and pg_manager fixtures provided by tests/unit/conftest.py
 
@@ -26,7 +25,7 @@ def sample_news():
             agency_key="mec",
             agency_name="Ministério da Educação",
             title="Notícia 1",
-            published_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            published_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         ),
         NewsInsert(
             unique_id="mds-2026-01-02-noticia-2",
@@ -34,7 +33,7 @@ def sample_news():
             agency_key="mds",
             agency_name="Ministério do Desenvolvimento Social",
             title="Notícia 2",
-            published_at=datetime(2026, 1, 2, 15, 30, tzinfo=timezone.utc),
+            published_at=datetime(2026, 1, 2, 15, 30, tzinfo=UTC),
         ),
     ]
 
@@ -47,12 +46,18 @@ def sample_news():
 class TestInsertReturnType:
     """Tests for insert() return type."""
 
-    @pytest.mark.parametrize("returned_ids,expected_count", [
-        ([("mec-2026-01-01-noticia-1",), ("mds-2026-01-02-noticia-2",)], 2),
-        ([("mec-2026-01-01-noticia-1",)], 1),
-        ([], 0),
-    ], ids=["two-inserts", "one-insert", "all-conflicts"])
-    def test_return_value_structure_and_count(self, pg_manager, mock_pool, sample_news, returned_ids, expected_count):
+    @pytest.mark.parametrize(
+        "returned_ids,expected_count",
+        [
+            ([("mec-2026-01-01-noticia-1",), ("mds-2026-01-02-noticia-2",)], 2),
+            ([("mec-2026-01-01-noticia-1",)], 1),
+            ([], 0),
+        ],
+        ids=["two-inserts", "one-insert", "all-conflicts"],
+    )
+    def test_return_value_structure_and_count(
+        self, pg_manager, mock_pool, sample_news, returned_ids, expected_count
+    ):
         """insert() returns (int, list[dict]) with count matching RETURNING rows."""
         _, _, mock_cursor = mock_pool
 
@@ -163,7 +168,7 @@ class TestInsertedArticlesMetadata:
         # Values match input
         assert article["unique_id"] == "mec-2026-01-01-noticia-1"
         assert article["agency_key"] == "mec"
-        assert article["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+        assert article["published_at"] == datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
     def test_only_returned_ids_in_articles(self, pg_manager, mock_pool, sample_news):
         """Only IDs returned by RETURNING appear in inserted_articles."""
@@ -198,13 +203,13 @@ class TestInsertDeduplication:
                 unique_id="dup-1",
                 agency_id=1,
                 title="First",
-                published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                published_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
             NewsInsert(
                 unique_id="dup-1",
                 agency_id=1,
                 title="Duplicate",
-                published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                published_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
         ]
 

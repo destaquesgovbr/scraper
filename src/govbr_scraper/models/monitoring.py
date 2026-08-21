@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -42,9 +41,7 @@ _ERROR_PATTERNS: list[tuple[str, ErrorCategory]] = [
 ]
 
 
-def classify_error(
-    error_message: str, http_status: int | None = None
-) -> ErrorCategory:
+def classify_error(error_message: str, http_status: int | None = None) -> ErrorCategory:
     """Classify a scraping error by its message and optional HTTP status code.
 
     Pure function — no IO, deterministic. HTTP status takes priority over message.
@@ -72,13 +69,13 @@ class ScrapeRunResult(BaseModel):
 
     agency_key: str
     status: str  # "success", "error"
-    error_category: Optional[ErrorCategory] = None
-    error_message: Optional[str] = None
+    error_category: ErrorCategory | None = None
+    error_message: str | None = None
     articles_scraped: int = 0
     articles_saved: int = 0
-    execution_time_seconds: Optional[float] = None
+    execution_time_seconds: float | None = None
     scraped_at: datetime
-    primary_scraper: Optional[str] = None
+    primary_scraper: str | None = None
     fallback_triggered: bool = False
-    fallback_scraper: Optional[str] = None
-    fallback_success: Optional[bool] = None
+    fallback_scraper: str | None = None
+    fallback_success: bool | None = None

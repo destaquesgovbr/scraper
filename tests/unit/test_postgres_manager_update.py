@@ -2,9 +2,10 @@
 Unit tests for PostgresManager._update_existing_articles()
 """
 
-import pytest
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
+
+import pytest
 
 from govbr_scraper.models.news import NewsInsert
 
@@ -25,9 +26,9 @@ def sample_update():
                 content="Test content",
                 content_hash="abc123",
                 tags=["tag1", "tag2"],
-                updated_datetime=datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc),
-                extracted_at=datetime(2026, 6, 2, 12, 5, tzinfo=timezone.utc),
-                published_at=datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
+                updated_datetime=datetime(2026, 6, 2, 12, 0, tzinfo=UTC),
+                extracted_at=datetime(2026, 6, 2, 12, 5, tzinfo=UTC),
+                published_at=datetime(2026, 6, 1, 10, 0, tzinfo=UTC),
                 category="Notícias",
             ),
         )
