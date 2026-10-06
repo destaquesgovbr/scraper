@@ -104,3 +104,19 @@ def test_update_does_not_touch_theme_columns(pg_manager, mock_pool, sample_updat
     sql = _normalized_sql(mock_exec)
     for col in ("theme_l1_id", "theme_l2_id", "theme_l3_id", "most_specific_theme_id"):
         assert f"{col} =" not in sql
+
+
+def test_update_preserves_image_url_when_rescrape_has_none_or_empty(
+    pg_manager, mock_pool, sample_update
+):
+    """O thumbnail-worker grava image_url em artigos com vídeo e sem imagem (TV Brasil).
+    O re-scrape traz '' ou NULL nesses casos e não pode apagar o thumbnail; uma
+    imagem não vazia vinda da fonte continua prevalecendo."""
+    _, _, mock_cursor = mock_pool
+
+    with patch("govbr_scraper.storage.postgres_manager.execute_values") as mock_exec:
+        pg_manager._update_existing_articles(sample_update, mock_cursor)
+
+    sql = _normalized_sql(mock_exec)
+    assert "image_url = COALESCE(NULLIF(v.image_url, ''), news.image_url)" in sql
+    assert "image_url = v.image_url" not in sql

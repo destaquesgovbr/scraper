@@ -148,6 +148,23 @@ class TestInsertQuery:
         assert f"{column} = EXCLUDED.{column}" not in query
         assert f"{column} = COALESCE(EXCLUDED.{column}, news.{column})" in query
 
+    def test_allow_update_does_not_erase_image_url_with_empty_value(
+        self, pg_manager, mock_pool, sample_news
+    ):
+        """allow_update=True: image_url vazio/NULL do scraper não apaga o thumbnail
+        gravado pelo thumbnail-worker; uma imagem não vazia prevalece."""
+        _, _, mock_cursor = mock_pool
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[("mec-2026-01-01-noticia-1",)],
+        ) as mock_exec:
+            pg_manager.insert(sample_news, allow_update=True)
+
+        query = " ".join(mock_exec.call_args[0][1].split())
+        assert "image_url = EXCLUDED.image_url" not in query
+        assert "image_url = COALESCE(NULLIF(EXCLUDED.image_url, ''), news.image_url)" in query
+
     def test_allow_update_still_overwrites_scraped_columns(
         self, pg_manager, mock_pool, sample_news
     ):

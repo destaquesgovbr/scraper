@@ -2,9 +2,10 @@
 Testes de integração do PostgresManager contra um Postgres descartável.
 
 Provam que o re-scrape (Phase 1: artigo existente casado por (agency_key, url))
-preserva o que o enriquecimento gravou (summary, temas, embedding) e só
-republica dgb.news.scraped quando o conteúdo mudou ou quando o artigo ainda não
-tem tema (a republicação é o retry de um enriquecimento que falhou).
+preserva o que os workers downstream gravaram (summary, temas, embedding e a
+miniatura do thumbnail-worker em image_url) e só republica dgb.news.scraped
+quando o conteúdo mudou ou quando o artigo ainda não tem tema (a republicação é
+o retry de um enriquecimento que falhou).
 
 Requer SCRAPER_TEST_POSTGRES_URL apontando para um Postgres LOCAL e descartável,
 com pgvector. Sem a variável, os testes são pulados. Exemplo:
@@ -115,6 +116,8 @@ RESCRAPE_EXTRACTED_AT = datetime(2026, 10, 5, 22, 40, tzinfo=UTC)
 SUMMARY = "Resumo gerado pelo enriquecimento."
 EMBEDDED_AT = datetime(2026, 10, 5, 13, 0, tzinfo=UTC)
 EMBEDDING_LITERAL = "[" + ",".join(["0.125"] * _EMBEDDING_DIM) + "]"
+VIDEO_URL = "https://tvbrasil.ebc.com.br/video/governo-anuncia-programa.mp4"
+THUMBNAIL_URL = "https://storage.googleapis.com/destaquesgovbr-thumbnails/" + UID + ".jpg"
 
 
 # =============================================================================
@@ -199,6 +202,8 @@ def _scraped(
     title: str = TITLE,
     content: str = CONTENT,
     summary: str | None = None,
+    image_url: str | None = "",
+    video_url: str | None = None,
     extracted_at: datetime = FIRST_EXTRACTED_AT,
 ) -> NewsInsert:
     """Artigo como o scraper entrega: sem summary/tema, com content_hash calculado."""
@@ -212,6 +217,8 @@ def _scraped(
         url=url,
         content=content,
         summary=summary,
+        image_url=image_url,
+        video_url=video_url,
         content_hash=compute_content_hash(title, content),
         tags=["governo"],
         category="Geral",
@@ -250,7 +257,7 @@ def _row(db, unique_id: str = UID) -> dict:
     with db.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT unique_id, url, title, content, content_hash, summary,
+            SELECT unique_id, url, title, content, content_hash, summary, image_url,
                    theme_l1_id, theme_l2_id, theme_l3_id, most_specific_theme_id,
                    content_embedding IS NOT NULL AS has_embedding,
                    embedding_generated_at, extracted_at
@@ -261,6 +268,16 @@ def _row(db, unique_id: str = UID) -> dict:
         row = cur.fetchone()
     assert row is not None, f"artigo {unique_id} não encontrado"
     return dict(row)
+
+
+def _set_thumbnail(db, unique_id: str = UID) -> None:
+    """Simula o thumbnail-worker: grava image_url num artigo com vídeo e sem imagem."""
+    with db.cursor() as cur:
+        cur.execute(
+            "UPDATE news SET image_url = %s WHERE unique_id = %s",
+            (THUMBNAIL_URL, unique_id),
+        )
+        assert cur.rowcount == 1
 
 
 def _count_news(db) -> int:
@@ -338,6 +355,38 @@ class TestRescrapePreservesEnrichment:
         assert row["summary"] == SUMMARY
         _assert_themes(row, theme_ids)
 
+    @pytest.mark.parametrize("rescrape_image", ["", None], ids=["vazia", "nula"])
+    def test_rescrape_without_image_preserves_thumbnail(self, pg, db, rescrape_image):
+        """TV Brasil: o scraper entrega image '' para vídeo sem imagem e o
+        thumbnail-worker grava a miniatura; o re-scrape não pode apagá-la."""
+        pg.insert([_scraped(pg, video_url=VIDEO_URL)])
+        _set_thumbnail(db)
+
+        pg.insert(
+            [
+                _scraped(
+                    pg,
+                    image_url=rescrape_image,
+                    video_url=VIDEO_URL,
+                    extracted_at=RESCRAPE_EXTRACTED_AT,
+                )
+            ]
+        )
+
+        row = _row(db)
+        assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        assert row["image_url"] == THUMBNAIL_URL
+
+    def test_rescrape_with_image_overwrites_image_url(self, pg, db):
+        """Uma imagem não vazia vinda da fonte continua prevalecendo."""
+        pg.insert([_scraped(pg, video_url=VIDEO_URL)])
+        _set_thumbnail(db)
+
+        source_image = "https://imagens.ebc.com.br/governo-anuncia-programa.jpg"
+        pg.insert([_scraped(pg, image_url=source_image, extracted_at=RESCRAPE_EXTRACTED_AT)])
+
+        assert _row(db)["image_url"] == source_image
+
     def test_summary_provided_by_rescrape_wins(self, pg, db, theme_ids):
         """COALESCE só protege contra NULL: um summary vindo do re-scrape prevalece."""
         pg.insert([_scraped(pg)])
@@ -377,6 +426,26 @@ class TestAllowUpdatePreservesEnrichment:
         assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT
         assert row["summary"] == SUMMARY
         _assert_themes(row, theme_ids)
+
+    def test_on_conflict_does_not_erase_thumbnail(self, pg, db):
+        pg.insert([_scraped(pg, video_url=VIDEO_URL)])
+        _set_thumbnail(db)
+
+        pg.insert(
+            [
+                _scraped(
+                    pg,
+                    url=f"{URL}?origem=defeso",
+                    video_url=VIDEO_URL,
+                    extracted_at=RESCRAPE_EXTRACTED_AT,
+                )
+            ],
+            allow_update=True,
+        )
+
+        row = _row(db)
+        assert row["url"] == f"{URL}?origem=defeso"
+        assert row["image_url"] == THUMBNAIL_URL
 
 
 # =============================================================================
