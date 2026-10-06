@@ -36,7 +36,7 @@ from govbr_scraper.models.news import NewsInsert
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.storage.postgres_manager import PostgresManager
 from govbr_scraper.storage.storage_adapter import StorageAdapter
-from tests.integration.postgres_guard import unsafe_dsn_reason
+from tests.integration import postgres_guard
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -130,7 +130,7 @@ def base_dsn() -> str:
     dsn = os.getenv(ENV_VAR, "").strip()
     if not dsn:
         pytest.skip(f"{ENV_VAR} não definido: requer um Postgres local descartável")
-    reason = unsafe_dsn_reason(dsn)
+    reason = postgres_guard.unsafe_dsn_reason(dsn)
     if reason:
         pytest.fail(f"{ENV_VAR} deve apontar para um Postgres LOCAL descartável: {reason}")
     return dsn
@@ -187,6 +187,25 @@ def theme_ids(db) -> dict[str, int]:
     with db.cursor() as cur:
         cur.execute("SELECT code, id FROM themes")
         return dict(cur.fetchall())
+
+
+class TestDisposableDatabaseGuard:
+    """A guarda pós-conexão contra um Postgres real (ver tests/unit/test_postgres_test_guard.py)."""
+
+    def test_accepts_disposable_database_with_test_schema(self, db):
+        with db.cursor() as cur:
+            assert postgres_guard.unsafe_database_reason(cur) is None
+
+    def test_refuses_database_with_news_table_outside_test_schema(self, base_dsn, schema_dsn):
+        conn = psycopg2.connect(base_dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("CREATE TABLE public.news (id integer)")  # desfeito no rollback
+                reason = postgres_guard.unsafe_database_reason(cur)
+        finally:
+            conn.rollback()
+            conn.close()
+        assert "news" in reason
 
 
 # =============================================================================
