@@ -25,7 +25,9 @@ def pytest_sessionfinish(session, exitstatus):
     integration_total = 0
 
     for item in session.items:
-        if item.get_closest_marker("integration"):
+        # Testes `postgres` pulam por falta de um Postgres local descartável
+        # (SCRAPER_TEST_POSTGRES_URL), não por falta de rede: ficam fora da contagem.
+        if item.get_closest_marker("integration") and not item.get_closest_marker("postgres"):
             integration_total += 1
 
             # Skips can occur in setup phase (fixture calls pytest.skip) or call phase

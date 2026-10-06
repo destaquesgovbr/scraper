@@ -93,6 +93,7 @@ addopts = [
 ]
 markers = [
     "integration: tests that make real HTTP requests to external services",
+    "postgres: integration tests against a disposable local Postgres (SCRAPER_TEST_POSTGRES_URL)",
 ]
 
 [tool.mypy]

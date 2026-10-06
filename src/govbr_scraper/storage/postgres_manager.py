@@ -8,7 +8,7 @@ import os
 import subprocess  # nosec B404
 
 # Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from urllib.parse import quote_plus
 
 from loguru import logger
@@ -19,6 +19,14 @@ from govbr_scraper.models.news import Agency, NewsInsert, Theme
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
+
+
+class _ExistingArticle(NamedTuple):
+    """Artigo já gravado, casado por (agency_key, url) no pré-check da Phase 1."""
+
+    unique_id: str
+    content_hash: str | None
+    most_specific_theme_id: int | None
 
 
 class PostgresManager:
@@ -211,8 +219,13 @@ class PostgresManager:
             allow_update: If True, update existing records (ON CONFLICT UPDATE)
 
         Returns:
-            Tuple of (count, inserted_articles) where inserted_articles is a list
-            of dicts with unique_id, agency_key, published_at for each inserted row.
+            Tuple of (count, inserted_articles). count includes every row written
+            (inserted or updated). inserted_articles is a list of dicts with
+            unique_id, agency_key, published_at for each row to publish as
+            dgb.news.scraped: new rows, plus existing rows (matched by URL)
+            whose content_hash changed or that are not enriched yet (no theme:
+            the republication is the enrichment retry). Re-scrapes of enriched
+            articles without content change are updated but not returned.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -263,24 +276,21 @@ class PostgresManager:
             cursor = conn.cursor()
 
             # Two-phase insert: pre-check URLs against existing records
-            url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
-            existing_by_url = self._find_existing_by_url(url_pairs, cursor)
-
-            to_update: list[tuple[str, NewsInsert]] = []
-            to_insert: list[NewsInsert] = []
-            for n in news:
-                key = (n.agency_key, n.url) if n.url and n.agency_key else None
-                if key and key in existing_by_url:
-                    to_update.append((existing_by_url[key], n))
-                else:
-                    to_insert.append(n)
+            to_update, to_insert, skip_publish_uids = self._match_existing_by_url(news, cursor)
 
             if to_update:
-                logger.info(f"Updating {len(to_update)} existing articles by URL match")
+                logger.info(
+                    f"Updating {len(to_update)} existing articles by URL match "
+                    f"({len(skip_publish_uids)} enriched with unchanged content, not republished)"
+                )
 
-            # Phase 1: UPDATE existing articles matched by URL
+            # Phase 1: UPDATE existing articles matched by URL. Go back for
+            # publication (dgb.news.scraped) only the ones whose content changed or
+            # that have no theme yet (retry of a failed enrichment).
             updated_articles = self._update_existing_articles(to_update, cursor)
-            inserted_articles.extend(updated_articles)
+            inserted_articles.extend(
+                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
+            )
 
             # Phase 2: INSERT new articles
             if to_insert:
@@ -335,6 +345,25 @@ class PostgresManager:
         "agency_name",
     ]
 
+    # Colunas gravadas pelo enriquecimento (enrichment-worker), não pelo scraper.
+    # No ON CONFLICT do allow_update=True usam COALESCE: o NULL do scraper não
+    # apaga o valor gravado; um valor não nulo enviado explicitamente prevalece.
+    _ENRICHED_COLUMNS = frozenset(
+        {
+            "summary",
+            "theme_l1_id",
+            "theme_l2_id",
+            "theme_l3_id",
+            "most_specific_theme_id",
+        }
+    )
+
+    # Colunas que o scraper às vezes entrega vazias ('' ou NULL) e que um worker
+    # downstream preenche: image_url recebe a miniatura do thumbnail-worker em
+    # artigos com vídeo e sem imagem (TV Brasil). '' ou NULL não apaga o valor
+    # gravado; uma imagem não vazia vinda da fonte prevalece.
+    _DOWNSTREAM_FILLED_COLUMNS = frozenset({"image_url"})
+
     def _insert_new_articles(
         self,
         to_insert: list[NewsInsert],
@@ -381,7 +410,7 @@ class PostgresManager:
                 for c in self._INSERT_COLUMNS
                 if c not in ["unique_id", "agency_id", "published_at"]
             ]
-            update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            update_set = ", ".join(self._on_conflict_assignment(c) for c in update_cols)
             # update_cols is derived exclusively from _INSERT_COLUMNS.
             conflict_clause = (
                 f" ON CONFLICT (unique_id) DO UPDATE SET {update_set}, updated_at = NOW()"  # nosec B608
@@ -402,16 +431,9 @@ class PostgresManager:
                 "UniqueViolation on INSERT (race condition with concurrent worker). "
                 "Re-checking URLs and retrying."
             )
-            url_pairs = [(n.agency_key, n.url) for n in to_insert if n.url and n.agency_key]
-            now_existing = self._find_existing_by_url(url_pairs, cursor)
-            retry_update: list[tuple[str, NewsInsert]] = []
-            retry_insert: list[NewsInsert] = []
-            for n in to_insert:
-                key = (n.agency_key, n.url) if n.url and n.agency_key else None
-                if key and key in now_existing:
-                    retry_update.append((now_existing[key], n))
-                else:
-                    retry_insert.append(n)
+            retry_update, retry_insert, skip_publish_uids = self._match_existing_by_url(
+                to_insert, cursor
+            )
             updated_articles = self._update_existing_articles(retry_update, cursor)
             if retry_insert:
                 retry_values = [
@@ -445,7 +467,9 @@ class PostgresManager:
             else:
                 result = []
             returned_ids = [row[0] for row in result]
-            inserted_articles = list(updated_articles)
+            inserted_articles = [
+                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
+            ]
             for uid in returned_ids:
                 n = news_by_uid.get(uid)
                 if n:
@@ -472,22 +496,68 @@ class PostgresManager:
                 )
         return len(returned_ids), inserted_articles
 
+    def _on_conflict_assignment(self, column: str) -> str:
+        """SET de uma coluna no ON CONFLICT (unique_id) DO UPDATE do allow_update=True."""
+        if column in self._ENRICHED_COLUMNS:
+            return f"{column} = COALESCE(EXCLUDED.{column}, news.{column})"
+        if column in self._DOWNSTREAM_FILLED_COLUMNS:
+            return f"{column} = COALESCE(NULLIF(EXCLUDED.{column}, ''), news.{column})"
+        return f"{column} = EXCLUDED.{column}"
+
+    def _match_existing_by_url(
+        self,
+        news: list[NewsInsert],
+        cursor,
+    ) -> tuple[list[tuple[str, NewsInsert]], list[NewsInsert], set[str]]:
+        """Separa os artigos que já existem (casados por (agency_key, url)) dos novos.
+
+        Returns:
+            (to_update, to_insert, skip_publish_uids). to_update tem pares
+            (unique_id existente, dados do re-scrape). skip_publish_uids são os
+            unique_ids existentes que a Phase 1 atualiza mas não republica em
+            dgb.news.scraped: content_hash gravado igual ao do re-scrape E artigo
+            já enriquecido (most_specific_theme_id gravado, o mesmo critério do
+            is_already_enriched do enrichment-worker). Sem tema, a republicação
+            é a única nova tentativa de um enriquecimento que falhou: o worker
+            faz ACK mesmo em erro e não há reconciliação agendada.
+        """
+        url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
+        existing_by_url = self._find_existing_by_url(url_pairs, cursor)
+
+        to_update: list[tuple[str, NewsInsert]] = []
+        to_insert: list[NewsInsert] = []
+        skip_publish_uids: set[str] = set()
+        for n in news:
+            key = (n.agency_key, n.url) if n.url and n.agency_key else None
+            if key and key in existing_by_url:
+                existing = existing_by_url[key]
+                to_update.append((existing.unique_id, n))
+                if (
+                    existing.content_hash == n.content_hash
+                    and existing.most_specific_theme_id is not None
+                ):
+                    skip_publish_uids.add(existing.unique_id)
+            else:
+                to_insert.append(n)
+        return to_update, to_insert, skip_publish_uids
+
     def _find_existing_by_url(
         self,
         url_pairs: list[tuple[str, str]],
         cursor,
-    ) -> dict[tuple[str, str], str]:
+    ) -> dict[tuple[str, str], _ExistingArticle]:
+        """Mapeia (agency_key, url) -> (unique_id, content_hash, most_specific_theme_id)."""
         if not url_pairs:
             return {}
 
         query = """
-            SELECT unique_id, agency_key, url FROM news
+            SELECT unique_id, agency_key, url, content_hash, most_specific_theme_id FROM news
             WHERE (agency_key, url) IN %s
         """
         cursor.execute(query, (tuple(url_pairs),))
-        result: dict[tuple[str, str], str] = {}
+        result: dict[tuple[str, str], _ExistingArticle] = {}
         for row in cursor.fetchall():
-            result[(row[1], row[2])] = row[0]
+            result[(row[1], row[2])] = _ExistingArticle(row[0], row[3], row[4])
         return result
 
     def _update_existing_articles(
@@ -498,6 +568,15 @@ class PostgresManager:
         """Batch-UPDATE existing articles matched by URL.
 
         Must be called within the caller's transaction (shared cursor).
+
+        Preserva o que o enriquecimento gravou: o scraper nunca preenche summary
+        nem tema, então summary usa COALESCE (NULL do re-scrape não apaga o
+        resumo) e as colunas de tema e de embedding não são tocadas; image_url
+        vazio ou NULL não apaga a miniatura do thumbnail-worker. O embedding
+        não é zerado nem quando o conteúdo muda: nada o regeraria (o
+        enrichment-worker pula o já enriquecido e o embeddings-api só assina
+        dgb.news.enriched), e o vetor é de título + resumo, que é preservado.
+        No SET, as referências a `news.*` leem os valores anteriores ao UPDATE.
         """
         if not updates:
             return []
@@ -526,13 +605,14 @@ class PostgresManager:
             """
             UPDATE news SET
                 title = v.title, content = v.content, content_hash = v.content_hash,
-                summary = v.summary, image_url = v.image_url, video_url = v.video_url,
+                summary = COALESCE(v.summary, news.summary),
+                image_url = COALESCE(NULLIF(v.image_url, ''), news.image_url),
+                video_url = v.video_url,
                 category = v.category, tags = v.tags::TEXT[], editorial_lead = v.editorial_lead,
                 subtitle = v.subtitle,
                 updated_datetime = v.updated_datetime::TIMESTAMPTZ,
                 extracted_at = v.extracted_at::TIMESTAMPTZ,
-                updated_at = NOW(),
-                content_embedding = NULL, embedding_generated_at = NULL
+                updated_at = NOW()
             FROM (VALUES %s) AS v(
                 title, content, content_hash, summary, image_url, video_url,
                 category, tags, editorial_lead, subtitle, updated_datetime,

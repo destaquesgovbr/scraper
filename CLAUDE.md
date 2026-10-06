@@ -204,7 +204,9 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 ### Pub/Sub Events
 
-Após persistir artigos (insert ou update), `EventPublisher` publica no tópico `dgb.news.scraped`:
+Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou **ou que ainda não têm tema** (`most_specific_theme_id IS NULL`, o mesmo critério do `is_already_enriched` do enrichment-worker). Re-scrape de artigo já enriquecido e sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
+
+**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (~10 min, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
 
 ```json
 {
@@ -350,6 +352,12 @@ Cada DAG de scraping:
 
 **Nuance do `allow_update`:** Artigos com mesmo `(agency_key, url)` são **sempre** atualizados via pre-check, independentemente do `allow_update`. O parâmetro controla apenas o comportamento para artigos novos com conflito em `unique_id` (ON CONFLICT DO UPDATE vs DO NOTHING).
 
+**Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)` e não toca nos temas nem no embedding. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
+
+**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil, re-raspada a cada 10 min no dia). O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
+
+**Edição de conteúdo não regera nada downstream:** quando o `content_hash` muda, o artigo é republicado, mas o enrichment-worker pula o já enriquecido (`skipped/already_enriched`, sem `dgb.news.enriched`), então resumo, temas e embedding ficam os da primeira versão. Por isso o embedding **não é zerado** na edição: o vetor é de título + resumo (`embeddings_client/text_prep.py`), o resumo é preservado, e zerar sem caminho de regeneração (o embeddings-api só assina `dgb.news.enriched`; a DAG `generate_embeddings` saiu) tiraria o artigo da busca semântica para sempre. Só uma edição de título deixa o vetor um pouco desatualizado. Regerar resumo e embedding em edições é evolução downstream (re-enriquecer quando o conteúdo muda), não do scraper.
+
 ### Tabela `agencies`
 
 | Coluna | Tipo |
@@ -431,7 +439,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 
 | Workflow | Trigger | Ação |
 |----------|---------|------|
-| `tests.yaml` | PR | pytest com coverage |
+| `tests.yaml` | PR | pytest com coverage (`-m "not integration"`) + testes `postgres` contra service container `pgvector/pgvector:pg16` (porta 55432) |
 | `scraper-api-deploy.yaml` | push main | Build Docker + deploy Cloud Run |
 | `composer-deploy-dags.yaml` | push main | rsync `dags/` → bucket Composer |
 
@@ -439,6 +447,10 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
+  - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
+  - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
+  - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.
 
 ```bash
 # Rodar todos os testes unitários
@@ -446,6 +458,13 @@ poetry run pytest tests/unit/
 
 # Rodar apenas integration (requer DATABASE_URL configurado)
 poetry run pytest -m integration
+
+# Rodar os testes contra Postgres descartável (pgvector)
+docker run -d --rm --name scraper-it-pg -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
+SCRAPER_TEST_POSTGRES_URL=postgresql://postgres@127.0.0.1:55432/postgres \
+    PYTHONPATH=src poetry run pytest -m postgres --no-cov
+docker rm -f scraper-it-pg
 
 # Rodar todos com coverage
 poetry run pytest --cov=govbr_scraper --cov-report=term-missing
