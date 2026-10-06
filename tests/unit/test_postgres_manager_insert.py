@@ -127,6 +127,43 @@ class TestInsertQuery:
         assert "DO UPDATE SET" in query
         assert "RETURNING unique_id" in query
 
+    @pytest.mark.parametrize(
+        "column",
+        ["summary", "theme_l1_id", "theme_l2_id", "theme_l3_id", "most_specific_theme_id"],
+    )
+    def test_allow_update_does_not_overwrite_enriched_columns(
+        self, pg_manager, mock_pool, sample_news, column
+    ):
+        """allow_update=True: colunas do enriquecimento (resumo e temas) não podem
+        ser sobrescritas pelo NULL do scraper; só um valor não nulo substitui."""
+        _, _, mock_cursor = mock_pool
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[("mec-2026-01-01-noticia-1",)],
+        ) as mock_exec:
+            pg_manager.insert(sample_news, allow_update=True)
+
+        query = " ".join(mock_exec.call_args[0][1].split())
+        assert f"{column} = EXCLUDED.{column}" not in query
+        assert f"{column} = COALESCE(EXCLUDED.{column}, news.{column})" in query
+
+    def test_allow_update_still_overwrites_scraped_columns(
+        self, pg_manager, mock_pool, sample_news
+    ):
+        """Colunas que vêm do scraper continuam sendo atualizadas com EXCLUDED."""
+        _, _, mock_cursor = mock_pool
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[("mec-2026-01-01-noticia-1",)],
+        ) as mock_exec:
+            pg_manager.insert(sample_news, allow_update=True)
+
+        query = " ".join(mock_exec.call_args[0][1].split())
+        for column in ("title", "url", "content", "content_hash", "extracted_at"):
+            assert f"{column} = EXCLUDED.{column}" in query
+
     def test_execute_values_called_with_fetch_true(self, pg_manager, mock_pool, sample_news):
         """execute_values is called with fetch=True."""
         _, _, mock_cursor = mock_pool

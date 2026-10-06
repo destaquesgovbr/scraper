@@ -339,3 +339,34 @@ class TestRescrapePreservesEnrichment:
         pg.insert([_scraped(pg, summary="Resumo vindo da fonte.")])
 
         assert _row(db)["summary"] == "Resumo vindo da fonte."
+
+
+# =============================================================================
+# Phase 2 com allow_update=True (ON CONFLICT (unique_id) DO UPDATE)
+# =============================================================================
+
+
+class TestAllowUpdatePreservesEnrichment:
+    """O ON CONFLICT (unique_id) só é alcançado quando o (agency_key, url) não casa
+    na Phase 1: URL alterada na fonte ou artigo sem URL."""
+
+    @pytest.mark.parametrize(
+        "new_url",
+        [f"{URL}?origem=defeso", None],
+        ids=["url-alterada", "sem-url"],
+    )
+    def test_on_conflict_does_not_overwrite_summary_or_themes(self, pg, db, theme_ids, new_url):
+        pg.insert([_scraped(pg)])
+        _enrich(db, theme_ids)
+
+        pg.insert(
+            [_scraped(pg, url=new_url, extracted_at=RESCRAPE_EXTRACTED_AT)],
+            allow_update=True,
+        )
+
+        assert _count_news(db) == 1
+        row = _row(db)
+        assert row["url"] == new_url  # o DO UPDATE rodou
+        assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        assert row["summary"] == SUMMARY
+        _assert_themes(row, theme_ids)
