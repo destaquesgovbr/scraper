@@ -29,18 +29,18 @@ from unittest.mock import MagicMock, patch
 
 import psycopg2
 import pytest
-from psycopg2.extensions import make_dsn, parse_dsn
+from psycopg2.extensions import make_dsn
 from psycopg2.extras import RealDictCursor
 
 from govbr_scraper.models.news import NewsInsert
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.storage.postgres_manager import PostgresManager
 from govbr_scraper.storage.storage_adapter import StorageAdapter
+from tests.integration.postgres_guard import unsafe_dsn_reason
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
 ENV_VAR = "SCRAPER_TEST_POSTGRES_URL"
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _EMBEDDING_DIM = 768
 
 _DDL = f"""
@@ -130,9 +130,9 @@ def base_dsn() -> str:
     dsn = os.getenv(ENV_VAR, "").strip()
     if not dsn:
         pytest.skip(f"{ENV_VAR} não definido: requer um Postgres local descartável")
-    host = parse_dsn(dsn).get("host", "")
-    if host not in _LOCAL_HOSTS and not host.startswith("/"):
-        pytest.fail(f"{ENV_VAR} deve apontar para um Postgres LOCAL descartável (host={host!r})")
+    reason = unsafe_dsn_reason(dsn)
+    if reason:
+        pytest.fail(f"{ENV_VAR} deve apontar para um Postgres LOCAL descartável: {reason}")
     return dsn
 
 
