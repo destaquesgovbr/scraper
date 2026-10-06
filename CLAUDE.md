@@ -350,6 +350,8 @@ Cada DAG de scraping:
 
 **Nuance do `allow_update`:** Artigos com mesmo `(agency_key, url)` são **sempre** atualizados via pre-check, independentemente do `allow_update`. O parâmetro controla apenas o comportamento para artigos novos com conflito em `unique_id` (ON CONFLICT DO UPDATE vs DO NOTHING).
 
+**Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)`, não toca nos temas e só zera o embedding quando `content_hash` muda. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
+
 ### Tabela `agencies`
 
 | Coluna | Tipo |
@@ -439,6 +441,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`, que só aceita host local (cada execução cria e remove um schema próprio)
 
 ```bash
 # Rodar todos os testes unitários
@@ -446,6 +449,13 @@ poetry run pytest tests/unit/
 
 # Rodar apenas integration (requer DATABASE_URL configurado)
 poetry run pytest -m integration
+
+# Rodar os testes contra Postgres descartável (pgvector)
+docker run -d --rm --name scraper-it-pg -e POSTGRES_HOST_AUTH_METHOD=trust \
+    -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
+SCRAPER_TEST_POSTGRES_URL=postgresql://postgres@127.0.0.1:55432/postgres \
+    PYTHONPATH=src poetry run pytest -m postgres --no-cov
+docker rm -f scraper-it-pg
 
 # Rodar todos com coverage
 poetry run pytest --cov=govbr_scraper --cov-report=term-missing
