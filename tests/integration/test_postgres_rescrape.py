@@ -2,7 +2,8 @@
 Testes de integração do PostgresManager contra um Postgres descartável.
 
 Provam que o re-scrape (Phase 1: artigo existente casado por (agency_key, url))
-preserva o que o enriquecimento gravou (summary, temas, embedding).
+preserva o que o enriquecimento gravou (summary, temas, embedding) e só
+republica dgb.news.scraped quando o conteúdo mudou.
 
 Requer SCRAPER_TEST_POSTGRES_URL apontando para um Postgres LOCAL e descartável,
 com pgvector. Sem a variável, os testes são pulados. Exemplo:
@@ -20,7 +21,9 @@ migrações 002, 009 e 012), e o remove ao final. Nada fora dele é tocado.
 
 import os
 import uuid
+from collections import OrderedDict
 from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
 
 import psycopg2
 import pytest
@@ -30,6 +33,7 @@ from psycopg2.extras import RealDictCursor
 from govbr_scraper.models.news import NewsInsert
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.storage.postgres_manager import PostgresManager
+from govbr_scraper.storage.storage_adapter import StorageAdapter
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -370,3 +374,85 @@ class TestAllowUpdatePreservesEnrichment:
         assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT
         assert row["summary"] == SUMMARY
         _assert_themes(row, theme_ids)
+
+
+# =============================================================================
+# Republicação de dgb.news.scraped (StorageAdapter → EventPublisher)
+# =============================================================================
+
+
+def _scraped_batch(**overrides) -> OrderedDict:
+    """Lote no formato colunar que os scrape managers entregam ao StorageAdapter."""
+    item = {
+        "unique_id": UID,
+        "agency": AGENCY_KEY,
+        "published_at": PUBLISHED_AT,
+        "updated_datetime": PUBLISHED_AT,
+        "title": TITLE,
+        "content": CONTENT,
+        "url": URL,
+        "tags": ["governo"],
+        "category": "Geral",
+        "extracted_at": FIRST_EXTRACTED_AT,
+    }
+    item.update(overrides)
+    item["content_hash"] = compute_content_hash(item["title"], item["content"])
+    return OrderedDict((key, [value]) for key, value in item.items())
+
+
+def _published_uids(publisher: MagicMock) -> list[str]:
+    return [
+        article["unique_id"]
+        for call in publisher.publish_scraped.call_args_list
+        for article in call.args[0]
+    ]
+
+
+class TestRepublishOnlyOnContentChange:
+    @pytest.fixture
+    def publisher(self) -> MagicMock:
+        publisher = MagicMock()
+        publisher.enabled = True
+        return publisher
+
+    @pytest.fixture
+    def adapter(self, pg, publisher) -> StorageAdapter:
+        with patch(
+            "govbr_scraper.storage.storage_adapter.EventPublisher",
+            return_value=publisher,
+        ):
+            return StorageAdapter(postgres_manager=pg)
+
+    def test_new_article_is_published(self, adapter, publisher):
+        assert adapter.insert(_scraped_batch()) == 1
+        assert _published_uids(publisher) == [UID]
+
+    def test_rescrape_without_content_change_is_not_republished(
+        self, adapter, publisher, db, theme_ids
+    ):
+        adapter.insert(_scraped_batch())
+        _enrich(db, theme_ids)
+        publisher.reset_mock()
+
+        saved = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
+
+        assert saved == 1  # a Phase 1 atualizou a linha (articles_saved inalterado)
+        assert _row(db)["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        publisher.publish_scraped.assert_not_called()
+
+    def test_rescrape_with_content_change_is_republished(self, adapter, publisher, db, theme_ids):
+        adapter.insert(_scraped_batch())
+        _enrich(db, theme_ids)
+        publisher.reset_mock()
+
+        adapter.insert(
+            _scraped_batch(
+                content="Conteúdo corrigido pela agência.",
+                extracted_at=RESCRAPE_EXTRACTED_AT,
+            )
+        )
+
+        assert _published_uids(publisher) == [UID]
+        row = _row(db)
+        assert row["summary"] == SUMMARY
+        assert row["has_embedding"] is False
