@@ -562,9 +562,11 @@ class PostgresManager:
 
         Preserva o que o enriquecimento gravou: o scraper nunca preenche summary
         nem tema, então summary usa COALESCE (NULL do re-scrape não apaga o
-        resumo) e as colunas de tema não são tocadas. O embedding só é invalidado
-        quando o conteúdo muda (content_hash diferente do gravado). No SET, as
-        referências a `news.*` leem os valores anteriores ao UPDATE.
+        resumo) e as colunas de tema e de embedding não são tocadas. O embedding
+        não é zerado nem quando o conteúdo muda: nada o regeraria (o
+        enrichment-worker pula o já enriquecido e o embeddings-api só assina
+        dgb.news.enriched), e o vetor é de título + resumo, que é preservado.
+        No SET, as referências a `news.*` leem os valores anteriores ao UPDATE.
         """
         if not updates:
             return []
@@ -599,11 +601,7 @@ class PostgresManager:
                 subtitle = v.subtitle,
                 updated_datetime = v.updated_datetime::TIMESTAMPTZ,
                 extracted_at = v.extracted_at::TIMESTAMPTZ,
-                updated_at = NOW(),
-                content_embedding = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash
-                    THEN NULL ELSE news.content_embedding END,
-                embedding_generated_at = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash
-                    THEN NULL ELSE news.embedding_generated_at END
+                updated_at = NOW()
             FROM (VALUES %s) AS v(
                 title, content, content_hash, summary, image_url, video_url,
                 category, tags, editorial_lead, subtitle, updated_datetime,
