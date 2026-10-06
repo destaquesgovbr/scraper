@@ -164,8 +164,10 @@ class TestUrlBasedDedup:
         assert rows[0][10] == updated_dt
         assert rows[0][11] == extracted_dt
 
-    def test_update_invalidates_embedding_only_on_content_change(self, pg_manager, mock_pool):
-        """O embedding só é invalidado quando o content_hash muda (antes: sempre)."""
+    def test_update_preserves_embedding_on_content_change(self, pg_manager, mock_pool):
+        """Nem com o conteúdo alterado o re-scrape zera o embedding (antes: sempre zerava).
+        O vetor é de título + resumo, o resumo não é regerado na edição e nada regera
+        o embedding depois (embeddings-api só assina dgb.news.enriched)."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
             ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
@@ -178,10 +180,10 @@ class TestUrlBasedDedup:
         ) as mock_exec:
             pg_manager.insert(news)
 
-        sql = " ".join(mock_exec.call_args[0][1].split())
-        assert "content_embedding = NULL" not in sql
-        assert "embedding_generated_at = NULL" not in sql
-        assert "news.content_hash IS DISTINCT FROM v.content_hash THEN NULL" in sql
+        sql = mock_exec.call_args[0][1]
+        assert "UPDATE news SET" in sql
+        assert "content_embedding" not in sql
+        assert "embedding_generated_at" not in sql
 
     def test_mixed_batch_new_and_existing(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool

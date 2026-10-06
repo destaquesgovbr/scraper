@@ -297,7 +297,9 @@ class TestRescrapePreservesEnrichment:
         assert row["embedding_generated_at"] == EMBEDDED_AT
         assert _count_news(db) == 1
 
-    def test_changed_content_clears_embedding_but_preserves_summary(self, pg, db, theme_ids):
+    def test_changed_content_preserves_summary_and_embedding(self, pg, db, theme_ids):
+        """Edição de conteúdo não zera o embedding: nada o regeraria (o enrichment-worker
+        pula o já enriquecido e o embeddings-api só assina dgb.news.enriched)."""
         pg.insert([_scraped(pg)])
         _enrich(db, theme_ids)
 
@@ -307,8 +309,8 @@ class TestRescrapePreservesEnrichment:
         row = _row(db)
         assert row["content"] == new_content
         assert row["content_hash"] == compute_content_hash(TITLE, new_content)
-        assert row["has_embedding"] is False
-        assert row["embedding_generated_at"] is None
+        assert row["has_embedding"] is True
+        assert row["embedding_generated_at"] == EMBEDDED_AT
         assert row["summary"] == SUMMARY
         _assert_themes(row, theme_ids)
 
@@ -332,7 +334,7 @@ class TestRescrapePreservesEnrichment:
         assert _count_news(db) == 1
         row = _row(db)
         assert row["title"] == new_title
-        assert row["has_embedding"] is False  # o título entra no content_hash
+        assert row["has_embedding"] is True  # vetor um pouco desatualizado > nenhum
         assert row["summary"] == SUMMARY
         _assert_themes(row, theme_ids)
 
@@ -470,4 +472,4 @@ class TestRepublishOnlyOnContentChange:
         assert _published_uids(publisher) == [UID]
         row = _row(db)
         assert row["summary"] == SUMMARY
-        assert row["has_embedding"] is False
+        assert row["has_embedding"] is True

@@ -79,27 +79,19 @@ def test_update_preserves_existing_summary_when_rescrape_has_none(
     assert "summary = v.summary" not in sql
 
 
-def test_update_invalidates_embedding_only_when_content_hash_changes(
-    pg_manager, mock_pool, sample_update
-):
-    """content_embedding/embedding_generated_at só viram NULL quando o conteúdo
-    mudou (content_hash diferente); caso contrário o embedding é preservado."""
+def test_update_does_not_touch_embedding_columns(pg_manager, mock_pool, sample_update):
+    """content_embedding/embedding_generated_at são do embeddings-api: o re-scrape não
+    os toca, nem com o conteúdo alterado. Zerar sem um caminho de regeneração tiraria
+    o artigo da busca semântica para sempre (o vetor é de título + resumo, e o resumo
+    é preservado)."""
     _, _, mock_cursor = mock_pool
 
     with patch("govbr_scraper.storage.postgres_manager.execute_values") as mock_exec:
         pg_manager._update_existing_articles(sample_update, mock_cursor)
 
     sql = _normalized_sql(mock_exec)
-    assert "content_embedding = NULL" not in sql
-    assert "embedding_generated_at = NULL" not in sql
-    assert (
-        "content_embedding = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash "
-        "THEN NULL ELSE news.content_embedding END"
-    ) in sql
-    assert (
-        "embedding_generated_at = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash "
-        "THEN NULL ELSE news.embedding_generated_at END"
-    ) in sql
+    assert "content_embedding" not in sql
+    assert "embedding_generated_at" not in sql
 
 
 def test_update_does_not_touch_theme_columns(pg_manager, mock_pool, sample_update):
