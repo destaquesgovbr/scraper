@@ -8,7 +8,11 @@ quando o conteúdo mudou ou quando o artigo ainda não tem tema (a republicaçã
 o retry de um enriquecimento que falhou).
 
 Requer SCRAPER_TEST_POSTGRES_URL apontando para um Postgres LOCAL e descartável,
-com pgvector. Sem a variável, os testes são pulados. Exemplo:
+com pgvector, numa porta diferente de 5432. Sem a variável, os testes são
+pulados. A guarda (tests/integration/postgres_guard.py) recusa, antes de
+conectar, host não local, hostaddr/service, a porta 5432 do Cloud SQL Proxy e
+dbname de produção; depois de conectar e antes de qualquer DDL, recusa banco de
+produção, instância Cloud SQL e banco que já tenha tabela news. Exemplo:
 
     docker run -d --rm --name scraper-it-pg -e POSTGRES_HOST_AUTH_METHOD=trust \\
         -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16
@@ -139,9 +143,14 @@ def base_dsn() -> str:
 @pytest.fixture(scope="module")
 def schema_dsn(base_dsn):
     """Cria um schema isolado com o subconjunto do schema de produção; remove ao final."""
-    schema = f"scraper_it_{uuid.uuid4().hex[:12]}"
+    schema = f"{postgres_guard.TEST_SCHEMA_PREFIX}{uuid.uuid4().hex[:12]}"
     admin = psycopg2.connect(base_dsn)
     admin.autocommit = True
+    with admin.cursor() as cur:
+        reason = postgres_guard.unsafe_database_reason(cur)
+    if reason:
+        admin.close()
+        pytest.fail(f"{ENV_VAR} não aponta para um Postgres descartável: {reason}")
     try:
         with admin.cursor() as cur:
             try:
