@@ -3,7 +3,8 @@ Testes de integração do PostgresManager contra um Postgres descartável.
 
 Provam que o re-scrape (Phase 1: artigo existente casado por (agency_key, url))
 preserva o que o enriquecimento gravou (summary, temas, embedding) e só
-republica dgb.news.scraped quando o conteúdo mudou.
+republica dgb.news.scraped quando o conteúdo mudou ou quando o artigo ainda não
+tem tema (a republicação é o retry de um enriquecimento que falhou).
 
 Requer SCRAPER_TEST_POSTGRES_URL apontando para um Postgres LOCAL e descartável,
 com pgvector. Sem a variável, os testes são pulados. Exemplo:
@@ -439,6 +440,20 @@ class TestRepublishOnlyOnContentChange:
         assert saved == 1  # a Phase 1 atualizou a linha (articles_saved inalterado)
         assert _row(db)["extracted_at"] == RESCRAPE_EXTRACTED_AT
         publisher.publish_scraped.assert_not_called()
+
+    def test_rescrape_without_content_change_but_not_enriched_is_republished(
+        self, adapter, publisher, db
+    ):
+        """Enriquecimento falhou (sem tema gravado): o enrichment-worker faz ACK sem
+        retry, então a republicação do re-scrape é a nova tentativa."""
+        adapter.insert(_scraped_batch())
+        publisher.reset_mock()
+
+        saved = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
+
+        assert saved == 1
+        assert _row(db)["most_specific_theme_id"] is None
+        assert _published_uids(publisher) == [UID]
 
     def test_rescrape_with_content_change_is_republished(self, adapter, publisher, db, theme_ids):
         adapter.insert(_scraped_batch())
