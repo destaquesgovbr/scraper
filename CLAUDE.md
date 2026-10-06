@@ -204,7 +204,9 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 ### Pub/Sub Events
 
-Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou. Re-scrape sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
+Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou **ou que ainda não têm tema** (`most_specific_theme_id IS NULL`, o mesmo critério do `is_already_enriched` do enrichment-worker). Re-scrape de artigo já enriquecido e sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
+
+**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (~10 min, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
 
 ```json
 {

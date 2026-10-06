@@ -8,7 +8,7 @@ import os
 import subprocess  # nosec B404
 
 # Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 from urllib.parse import quote_plus
 
 from loguru import logger
@@ -19,6 +19,14 @@ from govbr_scraper.models.news import Agency, NewsInsert, Theme
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
+
+
+class _ExistingArticle(NamedTuple):
+    """Artigo já gravado, casado por (agency_key, url) no pré-check da Phase 1."""
+
+    unique_id: str
+    content_hash: str | None
+    most_specific_theme_id: int | None
 
 
 class PostgresManager:
@@ -215,8 +223,9 @@ class PostgresManager:
             (inserted or updated). inserted_articles is a list of dicts with
             unique_id, agency_key, published_at for each row to publish as
             dgb.news.scraped: new rows, plus existing rows (matched by URL)
-            whose content_hash changed. Re-scrapes without content change are
-            updated but not returned.
+            whose content_hash changed or that are not enriched yet (no theme:
+            the republication is the enrichment retry). Re-scrapes of enriched
+            articles without content change are updated but not returned.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -267,19 +276,20 @@ class PostgresManager:
             cursor = conn.cursor()
 
             # Two-phase insert: pre-check URLs against existing records
-            to_update, to_insert, unchanged_uids = self._match_existing_by_url(news, cursor)
+            to_update, to_insert, skip_publish_uids = self._match_existing_by_url(news, cursor)
 
             if to_update:
                 logger.info(
                     f"Updating {len(to_update)} existing articles by URL match "
-                    f"({len(unchanged_uids)} with unchanged content, not republished)"
+                    f"({len(skip_publish_uids)} enriched with unchanged content, not republished)"
                 )
 
-            # Phase 1: UPDATE existing articles matched by URL. Only the ones whose
-            # content changed go back for publication (dgb.news.scraped).
+            # Phase 1: UPDATE existing articles matched by URL. Go back for
+            # publication (dgb.news.scraped) only the ones whose content changed or
+            # that have no theme yet (retry of a failed enrichment).
             updated_articles = self._update_existing_articles(to_update, cursor)
             inserted_articles.extend(
-                a for a in updated_articles if a["unique_id"] not in unchanged_uids
+                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
             )
 
             # Phase 2: INSERT new articles
@@ -420,7 +430,7 @@ class PostgresManager:
                 "UniqueViolation on INSERT (race condition with concurrent worker). "
                 "Re-checking URLs and retrying."
             )
-            retry_update, retry_insert, unchanged_uids = self._match_existing_by_url(
+            retry_update, retry_insert, skip_publish_uids = self._match_existing_by_url(
                 to_insert, cursor
             )
             updated_articles = self._update_existing_articles(retry_update, cursor)
@@ -457,7 +467,7 @@ class PostgresManager:
                 result = []
             returned_ids = [row[0] for row in result]
             inserted_articles = [
-                a for a in updated_articles if a["unique_id"] not in unchanged_uids
+                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
             ]
             for uid in returned_ids:
                 n = news_by_uid.get(uid)
@@ -493,46 +503,52 @@ class PostgresManager:
         """Separa os artigos que já existem (casados por (agency_key, url)) dos novos.
 
         Returns:
-            (to_update, to_insert, unchanged_uids). to_update tem pares
-            (unique_id existente, dados do re-scrape). unchanged_uids são os
-            unique_ids existentes cujo content_hash gravado é igual ao do
-            re-scrape: a Phase 1 os atualiza, mas não os republica em
-            dgb.news.scraped (sem mudança de conteúdo, nada a reprocessar).
+            (to_update, to_insert, skip_publish_uids). to_update tem pares
+            (unique_id existente, dados do re-scrape). skip_publish_uids são os
+            unique_ids existentes que a Phase 1 atualiza mas não republica em
+            dgb.news.scraped: content_hash gravado igual ao do re-scrape E artigo
+            já enriquecido (most_specific_theme_id gravado, o mesmo critério do
+            is_already_enriched do enrichment-worker). Sem tema, a republicação
+            é a única nova tentativa de um enriquecimento que falhou: o worker
+            faz ACK mesmo em erro e não há reconciliação agendada.
         """
         url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
         existing_by_url = self._find_existing_by_url(url_pairs, cursor)
 
         to_update: list[tuple[str, NewsInsert]] = []
         to_insert: list[NewsInsert] = []
-        unchanged_uids: set[str] = set()
+        skip_publish_uids: set[str] = set()
         for n in news:
             key = (n.agency_key, n.url) if n.url and n.agency_key else None
             if key and key in existing_by_url:
-                existing_uid, existing_hash = existing_by_url[key]
-                to_update.append((existing_uid, n))
-                if existing_hash == n.content_hash:
-                    unchanged_uids.add(existing_uid)
+                existing = existing_by_url[key]
+                to_update.append((existing.unique_id, n))
+                if (
+                    existing.content_hash == n.content_hash
+                    and existing.most_specific_theme_id is not None
+                ):
+                    skip_publish_uids.add(existing.unique_id)
             else:
                 to_insert.append(n)
-        return to_update, to_insert, unchanged_uids
+        return to_update, to_insert, skip_publish_uids
 
     def _find_existing_by_url(
         self,
         url_pairs: list[tuple[str, str]],
         cursor,
-    ) -> dict[tuple[str, str], tuple[str, str | None]]:
-        """Mapeia (agency_key, url) -> (unique_id, content_hash gravado)."""
+    ) -> dict[tuple[str, str], _ExistingArticle]:
+        """Mapeia (agency_key, url) -> (unique_id, content_hash, most_specific_theme_id)."""
         if not url_pairs:
             return {}
 
         query = """
-            SELECT unique_id, agency_key, url, content_hash FROM news
+            SELECT unique_id, agency_key, url, content_hash, most_specific_theme_id FROM news
             WHERE (agency_key, url) IN %s
         """
         cursor.execute(query, (tuple(url_pairs),))
-        result: dict[tuple[str, str], tuple[str, str | None]] = {}
+        result: dict[tuple[str, str], _ExistingArticle] = {}
         for row in cursor.fetchall():
-            result[(row[1], row[2])] = (row[0], row[3])
+            result[(row[1], row[2])] = _ExistingArticle(row[0], row[3], row[4])
         return result
 
     def _update_existing_articles(
