@@ -335,6 +335,19 @@ class PostgresManager:
         "agency_name",
     ]
 
+    # Colunas gravadas pelo enriquecimento (enrichment-worker), não pelo scraper.
+    # No ON CONFLICT do allow_update=True usam COALESCE: o NULL do scraper não
+    # apaga o valor gravado; um valor não nulo enviado explicitamente prevalece.
+    _ENRICHED_COLUMNS = frozenset(
+        {
+            "summary",
+            "theme_l1_id",
+            "theme_l2_id",
+            "theme_l3_id",
+            "most_specific_theme_id",
+        }
+    )
+
     def _insert_new_articles(
         self,
         to_insert: list[NewsInsert],
@@ -381,7 +394,12 @@ class PostgresManager:
                 for c in self._INSERT_COLUMNS
                 if c not in ["unique_id", "agency_id", "published_at"]
             ]
-            update_set = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            update_set = ", ".join(
+                f"{c} = COALESCE(EXCLUDED.{c}, news.{c})"
+                if c in self._ENRICHED_COLUMNS
+                else f"{c} = EXCLUDED.{c}"
+                for c in update_cols
+            )
             # update_cols is derived exclusively from _INSERT_COLUMNS.
             conflict_clause = (
                 f" ON CONFLICT (unique_id) DO UPDATE SET {update_set}, updated_at = NOW()"  # nosec B608
