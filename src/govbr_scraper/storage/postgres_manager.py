@@ -211,8 +211,12 @@ class PostgresManager:
             allow_update: If True, update existing records (ON CONFLICT UPDATE)
 
         Returns:
-            Tuple of (count, inserted_articles) where inserted_articles is a list
-            of dicts with unique_id, agency_key, published_at for each inserted row.
+            Tuple of (count, inserted_articles). count includes every row written
+            (inserted or updated). inserted_articles is a list of dicts with
+            unique_id, agency_key, published_at for each row to publish as
+            dgb.news.scraped: new rows, plus existing rows (matched by URL)
+            whose content_hash changed. Re-scrapes without content change are
+            updated but not returned.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -263,24 +267,20 @@ class PostgresManager:
             cursor = conn.cursor()
 
             # Two-phase insert: pre-check URLs against existing records
-            url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
-            existing_by_url = self._find_existing_by_url(url_pairs, cursor)
-
-            to_update: list[tuple[str, NewsInsert]] = []
-            to_insert: list[NewsInsert] = []
-            for n in news:
-                key = (n.agency_key, n.url) if n.url and n.agency_key else None
-                if key and key in existing_by_url:
-                    to_update.append((existing_by_url[key], n))
-                else:
-                    to_insert.append(n)
+            to_update, to_insert, unchanged_uids = self._match_existing_by_url(news, cursor)
 
             if to_update:
-                logger.info(f"Updating {len(to_update)} existing articles by URL match")
+                logger.info(
+                    f"Updating {len(to_update)} existing articles by URL match "
+                    f"({len(unchanged_uids)} with unchanged content, not republished)"
+                )
 
-            # Phase 1: UPDATE existing articles matched by URL
+            # Phase 1: UPDATE existing articles matched by URL. Only the ones whose
+            # content changed go back for publication (dgb.news.scraped).
             updated_articles = self._update_existing_articles(to_update, cursor)
-            inserted_articles.extend(updated_articles)
+            inserted_articles.extend(
+                a for a in updated_articles if a["unique_id"] not in unchanged_uids
+            )
 
             # Phase 2: INSERT new articles
             if to_insert:
@@ -420,16 +420,9 @@ class PostgresManager:
                 "UniqueViolation on INSERT (race condition with concurrent worker). "
                 "Re-checking URLs and retrying."
             )
-            url_pairs = [(n.agency_key, n.url) for n in to_insert if n.url and n.agency_key]
-            now_existing = self._find_existing_by_url(url_pairs, cursor)
-            retry_update: list[tuple[str, NewsInsert]] = []
-            retry_insert: list[NewsInsert] = []
-            for n in to_insert:
-                key = (n.agency_key, n.url) if n.url and n.agency_key else None
-                if key and key in now_existing:
-                    retry_update.append((now_existing[key], n))
-                else:
-                    retry_insert.append(n)
+            retry_update, retry_insert, unchanged_uids = self._match_existing_by_url(
+                to_insert, cursor
+            )
             updated_articles = self._update_existing_articles(retry_update, cursor)
             if retry_insert:
                 retry_values = [
@@ -463,7 +456,9 @@ class PostgresManager:
             else:
                 result = []
             returned_ids = [row[0] for row in result]
-            inserted_articles = list(updated_articles)
+            inserted_articles = [
+                a for a in updated_articles if a["unique_id"] not in unchanged_uids
+            ]
             for uid in returned_ids:
                 n = news_by_uid.get(uid)
                 if n:
@@ -490,22 +485,54 @@ class PostgresManager:
                 )
         return len(returned_ids), inserted_articles
 
+    def _match_existing_by_url(
+        self,
+        news: list[NewsInsert],
+        cursor,
+    ) -> tuple[list[tuple[str, NewsInsert]], list[NewsInsert], set[str]]:
+        """Separa os artigos que já existem (casados por (agency_key, url)) dos novos.
+
+        Returns:
+            (to_update, to_insert, unchanged_uids). to_update tem pares
+            (unique_id existente, dados do re-scrape). unchanged_uids são os
+            unique_ids existentes cujo content_hash gravado é igual ao do
+            re-scrape: a Phase 1 os atualiza, mas não os republica em
+            dgb.news.scraped (sem mudança de conteúdo, nada a reprocessar).
+        """
+        url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
+        existing_by_url = self._find_existing_by_url(url_pairs, cursor)
+
+        to_update: list[tuple[str, NewsInsert]] = []
+        to_insert: list[NewsInsert] = []
+        unchanged_uids: set[str] = set()
+        for n in news:
+            key = (n.agency_key, n.url) if n.url and n.agency_key else None
+            if key and key in existing_by_url:
+                existing_uid, existing_hash = existing_by_url[key]
+                to_update.append((existing_uid, n))
+                if existing_hash == n.content_hash:
+                    unchanged_uids.add(existing_uid)
+            else:
+                to_insert.append(n)
+        return to_update, to_insert, unchanged_uids
+
     def _find_existing_by_url(
         self,
         url_pairs: list[tuple[str, str]],
         cursor,
-    ) -> dict[tuple[str, str], str]:
+    ) -> dict[tuple[str, str], tuple[str, str | None]]:
+        """Mapeia (agency_key, url) -> (unique_id, content_hash gravado)."""
         if not url_pairs:
             return {}
 
         query = """
-            SELECT unique_id, agency_key, url FROM news
+            SELECT unique_id, agency_key, url, content_hash FROM news
             WHERE (agency_key, url) IN %s
         """
         cursor.execute(query, (tuple(url_pairs),))
-        result: dict[tuple[str, str], str] = {}
+        result: dict[tuple[str, str], tuple[str, str | None]] = {}
         for row in cursor.fetchall():
-            result[(row[1], row[2])] = row[0]
+            result[(row[1], row[2])] = (row[0], row[3])
         return result
 
     def _update_existing_articles(

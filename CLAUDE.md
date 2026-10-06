@@ -204,7 +204,7 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 ### Pub/Sub Events
 
-Após persistir artigos (insert ou update), `EventPublisher` publica no tópico `dgb.news.scraped`:
+Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou. Re-scrape sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
 
 ```json
 {
