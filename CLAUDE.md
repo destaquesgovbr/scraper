@@ -439,7 +439,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 
 | Workflow | Trigger | Ação |
 |----------|---------|------|
-| `tests.yaml` | PR | pytest com coverage |
+| `tests.yaml` | PR | pytest com coverage (`-m "not integration"`) + testes `postgres` contra service container `pgvector/pgvector:pg16` (porta 55432) |
 | `scraper-api-deploy.yaml` | push main | Build Docker + deploy Cloud Run |
 | `composer-deploy-dags.yaml` | push main | rsync `dags/` → bucket Composer |
 
@@ -450,6 +450,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 - **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
   - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
   - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
+  - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.
 
 ```bash
 # Rodar todos os testes unitários

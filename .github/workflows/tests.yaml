@@ -8,12 +8,29 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - 'dags/**'
+      - '.github/workflows/tests.yaml'
   workflow_dispatch:
 
 jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
+
+    # Postgres descartável (pgvector) para os testes `postgres`: provam contra um
+    # banco real que o re-scrape preserva resumo, temas, embedding e thumbnail e só
+    # republica o que deve. Porta 55432: a guarda recusa 5432 (Cloud SQL Proxy).
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout code
@@ -42,3 +59,8 @@ jobs:
 
       - name: Run tests
         run: poetry run pytest -m "not integration"
+
+      - name: Run Postgres tests (pgvector descartável)
+        env:
+          SCRAPER_TEST_POSTGRES_URL: postgresql://postgres@127.0.0.1:55432/postgres
+        run: poetry run pytest -m postgres --no-cov -rs

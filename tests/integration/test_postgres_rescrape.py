@@ -156,7 +156,9 @@ def schema_dsn(base_dsn):
             try:
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
             except psycopg2.Error as e:
-                pytest.skip(f"pgvector indisponível no Postgres de teste: {e}")
+                # Falha, não pula: com a variável definida, rodar é pedido explícito,
+                # e no CI um skip silencioso esconderia a regressão.
+                pytest.fail(f"pgvector indisponível no Postgres de teste: {e}")
             cur.execute(f"CREATE SCHEMA {schema}")
             cur.execute(f"SET search_path TO {schema}, public")
             cur.execute(_DDL)
