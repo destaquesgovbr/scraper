@@ -498,6 +498,12 @@ class PostgresManager:
         """Batch-UPDATE existing articles matched by URL.
 
         Must be called within the caller's transaction (shared cursor).
+
+        Preserva o que o enriquecimento gravou: o scraper nunca preenche summary
+        nem tema, então summary usa COALESCE (NULL do re-scrape não apaga o
+        resumo) e as colunas de tema não são tocadas. O embedding só é invalidado
+        quando o conteúdo muda (content_hash diferente do gravado). No SET, as
+        referências a `news.*` leem os valores anteriores ao UPDATE.
         """
         if not updates:
             return []
@@ -526,13 +532,17 @@ class PostgresManager:
             """
             UPDATE news SET
                 title = v.title, content = v.content, content_hash = v.content_hash,
-                summary = v.summary, image_url = v.image_url, video_url = v.video_url,
+                summary = COALESCE(v.summary, news.summary),
+                image_url = v.image_url, video_url = v.video_url,
                 category = v.category, tags = v.tags::TEXT[], editorial_lead = v.editorial_lead,
                 subtitle = v.subtitle,
                 updated_datetime = v.updated_datetime::TIMESTAMPTZ,
                 extracted_at = v.extracted_at::TIMESTAMPTZ,
                 updated_at = NOW(),
-                content_embedding = NULL, embedding_generated_at = NULL
+                content_embedding = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash
+                    THEN NULL ELSE news.content_embedding END,
+                embedding_generated_at = CASE WHEN news.content_hash IS DISTINCT FROM v.content_hash
+                    THEN NULL ELSE news.embedding_generated_at END
             FROM (VALUES %s) AS v(
                 title, content, content_hash, summary, image_url, video_url,
                 category, tags, editorial_lead, subtitle, updated_datetime,
