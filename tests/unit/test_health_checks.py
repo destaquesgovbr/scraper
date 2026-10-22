@@ -1,4 +1,4 @@
-"""Tests for health check functions — consecutive failures, stale agencies, coverage."""
+"""Tests for health check functions — consecutive failures, stale, silent agencies, coverage."""
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -6,8 +6,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from govbr_scraper.monitoring.health_checks import (
+    SILENT_AGENCIES_QUERY,
     compute_coverage_report,
     find_consecutive_failures,
+    find_silent_agencies,
     find_stale_agencies,
 )
 
@@ -82,6 +84,56 @@ class TestFindStaleAgencies:
         mock_conn, _ = mock_cursor_with_rows([])
         result = find_stale_agencies(mock_conn, stale_hours=24)
         assert result == []
+
+
+class TestFindSilentAgencies:
+    """Agência ativa sem nenhum scrape_run na janela = DAG que não chama a API.
+
+    Caso real (out/2026): scrape_inma, scrape_inpe, scrape_aids e scrape_patrimonio
+    ficaram meses com um DagRun preso em 'running' (DagVersion sem serialized_dag) e
+    não geraram scrape_runs; as checagens que partem de scrape_runs não os viam.
+    """
+
+    def test_returns_active_agencies_without_recent_runs(self, mock_cursor_with_rows):
+        mock_conn, _ = mock_cursor_with_rows(
+            [
+                {
+                    "agency_key": "aids",
+                    "last_run_at": datetime(2026, 8, 21, 11, 32, tzinfo=UTC),
+                },
+                {"agency_key": "inma", "last_run_at": None},
+            ]
+        )
+        result = find_silent_agencies(mock_conn, ["aids", "inma", "mec"], silent_hours=2)
+        assert [r["agency_key"] for r in result] == ["aids", "inma"]
+        assert result[1]["last_run_at"] is None
+
+    def test_passes_active_agencies_and_window_as_params(self, mock_cursor_with_rows):
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        find_silent_agencies(mock_conn, ("mec", "aids"), silent_hours=3)
+        sql, params = mock_cursor.execute.call_args[0]
+        assert sql == SILENT_AGENCIES_QUERY
+        assert params == {"agencies": ["mec", "aids"], "silent_hours": 3}
+
+    def test_default_window_is_2_hours(self, mock_cursor_with_rows):
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        find_silent_agencies(mock_conn, ["mec"])
+        assert mock_cursor.execute.call_args[0][1]["silent_hours"] == 2
+
+    def test_empty_active_list_skips_query(self, mock_cursor_with_rows):
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        assert find_silent_agencies(mock_conn, []) == []
+        mock_cursor.execute.assert_not_called()
+
+    def test_any_run_counts_regardless_of_status(self):
+        """Agência que falha grava scrape_run de erro: é falha, não silêncio."""
+        assert "status" not in SILENT_AGENCIES_QUERY
+
+    def test_uses_latest_run_per_agency_via_lateral(self):
+        """Top-1 por agência usa o índice idx_scrape_runs_agency_scraped."""
+        normalized = " ".join(SILENT_AGENCIES_QUERY.split())
+        assert "LEFT JOIN LATERAL" in normalized
+        assert "ORDER BY sr.scraped_at DESC LIMIT 1" in normalized
 
 
 class TestComputeCoverageReport:

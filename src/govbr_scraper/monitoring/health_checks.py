@@ -6,7 +6,29 @@ They are used by the monitoring DAG and by tests.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from psycopg2.extras import RealDictCursor
+
+# Última execução de cada agência ativa (LATERAL top-1 pelo índice
+# idx_scrape_runs_agency_scraped) e filtro das que não rodaram na janela.
+# Qualquer scrape_run conta, sucesso ou erro: agência que falha é falha, não silêncio.
+#
+# NOTE: This query is duplicated in dags/monitor_scraping_health.py
+# (_SILENT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+SILENT_AGENCIES_QUERY = """
+    SELECT k.agency_key, last_run.scraped_at AS last_run_at
+    FROM unnest(%(agencies)s::text[]) AS k(agency_key)
+    LEFT JOIN LATERAL (
+        SELECT sr.scraped_at
+        FROM scrape_runs sr
+        WHERE sr.agency_key = k.agency_key
+        ORDER BY sr.scraped_at DESC LIMIT 1
+    ) AS last_run ON TRUE
+    WHERE last_run.scraped_at IS NULL
+       OR last_run.scraped_at < NOW() - INTERVAL '1 hour' * %(silent_hours)s
+    ORDER BY k.agency_key
+"""
 
 
 def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 2) -> list[dict]:
@@ -76,6 +98,33 @@ def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(query, {"stale_hours": stale_hours})
+        return [dict(row) for row in cur.fetchall()]
+
+
+def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int = 2) -> list[dict]:
+    """Find active agencies with no scrape_run at all (success or error) in the window.
+
+    Every call to the scraper API records one scrape_run per agency, success or
+    error. An active agency without any run means its DAG is not calling the API:
+    a DagRun stuck in 'running' (with max_active_runs=1, e.g. pointing to a
+    DagVersion without serialized_dag), a paused DAG or a DAG missing from Airflow.
+    find_consecutive_failures and find_stale_agencies start from scrape_runs, so
+    they cannot see this case.
+
+    Args:
+        conn: psycopg2 connection (or mock).
+        active_agencies: Agency keys expected to run (active in site_urls.yaml).
+        silent_hours: Hours without any run to consider the agency silent.
+
+    Returns:
+        List of dicts with agency_key and last_run_at (None when there is no run
+        within the scrape_runs retention), sorted by agency_key.
+    """
+    agencies = list(active_agencies)
+    if not agencies:
+        return []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(SILENT_AGENCIES_QUERY, {"agencies": agencies, "silent_hours": silent_hours})
         return [dict(row) for row in cur.fetchall()]
 
 
