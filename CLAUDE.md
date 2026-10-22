@@ -78,7 +78,7 @@ scraper/
 ├── dags/
 │   ├── scrape_agencies.py             # ~155 DAGs dinâmicas (1 por agência)
 │   ├── scrape_ebc.py                  # 1 DAG para sites EBC
-│   ├── monitor_scraping_health.py     # Monitoramento: falhas + agências stale
+│   ├── monitor_scraping_health.py     # Monitoramento: sem execução + falhas + stale
 │   ├── cleanup_old_scrape_runs.py     # Retenção: delete > N dias
 │   ├── scraper_coverage_report.py     # Relatório diário + alerta cobertura
 │   ├── notify.py                      # Utilitário: Telegram > webhook > log
@@ -292,7 +292,7 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 |-----|----------|-----------|
 | `scrape_{agency_key}` (~155) | A cada 10min (offset 0-9) | 1 DAG por agência gov.br |
 | `scrape_ebc` | A cada 10min (offset 0) | Sites EBC |
-| `monitor_scraping_health` | A cada 30min | Falhas consecutivas + agências stale |
+| `monitor_scraping_health` | A cada 30min | Agências sem execução + falhas consecutivas + agências stale |
 | `cleanup_old_scrape_runs` | Diário 03h UTC | Delete registros > retention_days |
 | `scraper_coverage_report` | Diário 08h UTC | Cobertura 24h + alerta se < threshold |
 | `notify.py` | (utilitário) | Telegram > webhook > log-only |
@@ -309,7 +309,7 @@ Cada DAG de scraping:
 
 ### DAGs de manutenção
 
-**`monitor_scraping_health`:** Verifica agências com N falhas consecutivas (threshold configurável) e agências sem notícias em X horas (stale). Envia alertas via `notify.send_alert()`.
+**`monitor_scraping_health`:** Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 2h: a DAG `scrape_*` não está chamando a API, ex. DagRun preso em `running`; ver runbook, "DAG de Agência Travada"), agências com N falhas consecutivas (threshold configurável) e agências sem notícias em X horas (stale). Envia alertas via `notify.send_alert()`. A query de agências silenciosas fica duplicada em `health_checks.SILENT_AGENCIES_QUERY`, e um teste garante que as duas não divergem.
 
 **`cleanup_old_scrape_runs`:** Deleta registros da tabela `scrape_runs` mais antigos que `scraper_retention_days` (default 90). Com ~155 agências rodando a cada 10min, isso são ~22k rows/dia.
 
@@ -419,6 +419,7 @@ PUBSUB_TOPIC_NEWS_SCRAPED=projects/{project}/topics/dgb.news.scraped  # Opcional
 | `scraper_consecutive_failure_threshold` | Não | 3 | Falhas consecutivas para alerta |
 | `scraper_failure_window_hours` | Não | 2 | Janela de tempo para verificar falhas |
 | `scraper_stale_hours` | Não | 24 | Horas sem notícias para considerar stale |
+| `scraper_silent_hours` | Não | 2 | Horas sem nenhum scrape_run (sucesso ou erro) para considerar a agência ativa silenciosa (mínimo 1) |
 | `scraper_min_coverage_ratio` | Não | 0.8 | Cobertura mínima antes de alertar |
 
 ## IAM e Autenticação
@@ -447,7 +448,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
-- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py` e `test_postgres_health_checks.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
   - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
   - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
   - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.

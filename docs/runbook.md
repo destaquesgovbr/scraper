@@ -136,6 +136,59 @@ curl -X POST http://localhost:8000/scrape/agencies \
   -d '{"start_date": "2026-05-18", "agencies": ["mec"]}'
 ```
 
+## DAG de Agência Travada (DagRun zumbi)
+
+**Sintoma.** O `monitor_scraping_health` alerta "Agencias Sem Execucao": a agência está ativa no `site_urls.yaml`, mas não tem nenhum `scrape_run` (sucesso ou erro) na janela de `scraper_silent_hours`. As outras checagens não veem o caso, porque partem de `scrape_runs` e a DAG nem chega a chamar a API. No log do scheduler, o erro se repete em loop (centenas de linhas por hora por DAG):
+
+```
+DAG 'scrape_X' not found in serialized_dag table
+Couldn't find DAG scrape_X in DAG bag or database!
+```
+
+**Causa conhecida (Composer 3, Airflow 3.1.0).** Logo depois de um deploy das DAGs, a DagVersion mais recente de algumas DAGs ficou gravada sem `serialized_dag` e sem `dag_code`. O bundle `dags-folder` não é versionado, então o scheduler resolve qualquer run para a versão mais recente, não acha a DAG serializada e deixa o DagRun em `running` sem task instances. Como `max_active_runs=1`, nenhum run novo é criado e a agência para de ser raspada sem nenhum erro de task. Casos de 2026: `scrape_inma` (13/04), `scrape_inpe` (11/06), `scrape_aids` e `scrape_patrimonio` (21/08), todos minutos depois de um deploy.
+
+**Diagnóstico (somente leitura).**
+
+```bash
+# array: funciona igual no bash e no zsh
+COMPOSER=(destaquesgovbr-composer --location southamerica-east1 --project inspire-7-finep)
+
+# 1. Um único run em 'running' há horas ou dias
+gcloud composer environments run "${COMPOSER[@]}" dags list-runs -- scrape_X
+
+# 2. O run não tem task instances (resposta vazia)
+gcloud composer environments run "${COMPOSER[@]}" tasks states-for-dag-run -- scrape_X <run_id>
+
+# 3. A versão mais recente não tem código serializado (REST API, só GET)
+AIRFLOW_URI=$(gcloud composer environments describe "${COMPOSER[@]}" --format='value(config.airflowUri)')
+TOKEN=$(gcloud auth print-access-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$AIRFLOW_URI/api/v2/dags/scrape_X/dagVersions?order_by=-version_number&limit=1"
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  "$AIRFLOW_URI/api/v2/dagSources/scrape_X?version_number=<N>"  # 404 = versão órfã
+```
+
+**Correção.** É uma ação mutante no Airflow e precisa de aprovação humana.
+
+Marcar o run como `failed` **não resolve**: o run seguinte também é criado com a versão órfã e trava de novo. Apague os metadados da DAG. O `delete_dag` do Airflow 3.1 remove todas as linhas com o `dag_id`, inclusive `dag_version` e `serialized_dag`. Depois, o dag-processor reparseia `scraper/scrape_agencies.py` e cria uma v1 nova, já serializada:
+
+```bash
+COMPOSER=(destaquesgovbr-composer --location southamerica-east1 --project inspire-7-finep)
+gcloud composer environments run "${COMPOSER[@]}" dags delete -- scrape_X --yes
+```
+
+Só se perde o histórico de runs dessa DAG no Airflow. A tabela `scrape_runs` e as notícias no Postgres não são afetadas.
+
+**Validação.**
+1. `dagSources/scrape_X?version_number=<nova versão>` responde 200.
+2. `dags list-runs -- scrape_X` mostra runs a cada 10 min, com task instances.
+3. O erro `not found in serialized_dag table` para a DAG some do log do scheduler.
+4. O próximo `monitor_scraping_health` não lista mais a agência.
+
+**Recuperar o período perdido.** A DAG só raspa a janela da `logical_date`. O que a agência publicou enquanto a DAG estava travada só volta com um re-scrape dirigido (ver "Forçar Re-scrape Completo"), com `start_date` no dia em que o run travou. Sem `allow_update`, o re-scrape só insere o que falta.
+
+**Depois de deploys que mudam as DAGs** (`site_urls.yaml`, schedule, `default_args`): acompanhe o alerta "Agencias Sem Execucao" nas 2 h seguintes.
+
 ## Tratar Anti-Bot
 
 Quando uma agência retorna `ErrorCategory.ANTI_BOT`:
@@ -172,6 +225,7 @@ curl -X POST https://{API_URL}/scrape/agencies \
 ### Telegram
 
 Alertas são enviados para o chat configurado em `scraper_telegram_monitor_chat_id`. Tipos:
+- **Agências sem execução:** Agência ativa sem nenhum `scrape_run` (sucesso ou erro) em X horas (`scraper_silent_hours`, default 2h). A DAG `scrape_*` não está chamando a API; ver "DAG de Agência Travada". Vem primeiro na mensagem.
 - **Falhas consecutivas:** Agência com N+ erros seguidos (threshold configurável)
 - **Agências stale:** Sem notícias em X horas (stale_hours configurável)
 - **Cobertura baixa:** Menos de 80% das agências com sucesso em 24h
@@ -179,6 +233,14 @@ Alertas são enviados para o chat configurado em `scraper_telegram_monitor_chat_
 ### Fallback
 
 Se Telegram não estiver configurado, alertas vão para o webhook (`scraper_alert_webhook_url`). Se nenhum estiver configurado, alertas são apenas logados.
+
+Cada seção lista no máximo 25 agências (`... e mais N`), e a mensagem é cortada em fim de linha para caber em 4000 caracteres: o Telegram recusa texto acima de 4096, e o Cloud Logging corta a linha `Alert (log-only): ...` em 4096. A lista completa fica nos logs das tasks `check_*`.
+
+Para ler os alertas que só foram logados (`Alert (log-only)`, task `send_alerts`):
+```bash
+gcloud logging read 'resource.type="cloud_composer_environment" AND textPayload:"Alert (log-only)"' \
+  --project=inspire-7-finep --freshness=2h --limit=5 --format='value(timestamp,textPayload)'
+```
 
 ## Monitorar Fallback de Scraper
 
