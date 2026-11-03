@@ -6,6 +6,7 @@ from typing import Any
 from govbr_scraper.models.monitoring import ErrorCategory, classify_error
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
+from govbr_scraper.scrapers.content_validation import invalid_content_reason
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
@@ -13,6 +14,12 @@ from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_ya
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def _skipped_redated(scraper: Any) -> int:
+    """Itens redatados pulados pelo scraper (0 se o scraper não expõe o contador)."""
+    value = getattr(scraper, "skipped_redated", 0)
+    return value if isinstance(value, int) else 0
 
 
 def _try_scrape_with_fallback(
@@ -56,6 +63,7 @@ def _try_scrape_with_fallback(
 
     try:
         data = primary_scraper.scrape_news()
+        metadata["skipped_redated"] = _skipped_redated(primary_scraper)
         return data, metadata
     except ScrapingError as e:
         error_category = classify_error(str(e))
@@ -80,6 +88,7 @@ def _try_scrape_with_fallback(
                 )
                 data = fallback_scraper.scrape_news()
                 metadata["fallback_success"] = True
+                metadata["skipped_redated"] = _skipped_redated(fallback_scraper)
 
                 logging.info(
                     f"{agency_name}: Plone6 API fallback SUCCEEDED. "
@@ -146,6 +155,7 @@ class ScrapeManager:
         """
         articles_scraped = 0
         articles_saved = 0
+        articles_skipped = 0
         agencies_processed = []
         errors = []
 
@@ -200,6 +210,10 @@ class ScrapeManager:
                         scraped_data, metadata = _try_scrape_with_fallback(
                             primary_scraper, fallback_config, agency_name
                         )
+                        scraped_data, skipped = self._drop_invalid_content(
+                            scraped_data, agency_name, metadata.get("skipped_redated", 0)
+                        )
+                        articles_skipped += skipped
                         elapsed = time.monotonic() - start_time
                         if scraped_data:
                             logging.info(f"Appending news for {agency_name} to storage backend.")
@@ -252,6 +266,10 @@ class ScrapeManager:
                         scraped_data, metadata = _try_scrape_with_fallback(
                             primary_scraper, fallback_config, agency_name
                         )
+                        scraped_data, skipped = self._drop_invalid_content(
+                            scraped_data, agency_name, metadata.get("skipped_redated", 0)
+                        )
+                        articles_skipped += skipped
                         elapsed = time.monotonic() - start_time
                         if scraped_data:
                             all_news_data.extend(scraped_data)
@@ -307,9 +325,38 @@ class ScrapeManager:
         return {
             "articles_scraped": articles_scraped,
             "articles_saved": articles_saved,
+            "articles_skipped": articles_skipped,
             "agencies_processed": agencies_processed,
             "errors": errors,
         }
+
+    @staticmethod
+    def _drop_invalid_content(
+        data: list[dict[str, Any]] | None, agency_name: str, skipped_redated: int = 0
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Remove itens com conteúdo inválido (scraper#65) antes de persistir.
+
+        Tela de login, "Error retrieving content" e conteúdo vazio não são gravados: a URL fica
+        fora de known_urls e o artigo é tentado de novo numa execução seguinte. Devolve os itens
+        válidos e o total pulado na agência (inválidos + redatados já pulados pelo scraper).
+        """
+        kept = []
+        invalid = 0
+        for item in data or []:
+            reason = invalid_content_reason(item)
+            if reason is None:
+                kept.append(item)
+                continue
+            invalid += 1
+            logging.warning(
+                f"skipped_invalid_content agency={agency_name} reason={reason} url={item.get('url')}"
+            )
+        if invalid or skipped_redated:
+            logging.info(
+                f"scrape_skipped agency={agency_name} invalid_content={invalid} "
+                f"redated={skipped_redated}"
+            )
+        return kept, invalid + skipped_redated
 
     def _process_and_upload_data(self, new_data, allow_update: bool):
         """

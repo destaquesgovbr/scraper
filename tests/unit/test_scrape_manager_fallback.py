@@ -69,7 +69,7 @@ class TestFallbackWebScraperToPlone6:
 
         # Plone6 returns valid data
         mock_scrapers["p6_scrape"].return_value = [
-            {"title": "Test Article", "url": "https://www.gov.br/coaf/test"}
+            {"title": "Test Article", "url": "https://www.gov.br/coaf/test", "content": "Texto"}
         ]
 
         manager, storage = _make_manager()
