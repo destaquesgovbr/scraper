@@ -46,6 +46,7 @@ agencies:
   aneel:
     url: https://www.gov.br/aneel/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   anm:
     url: https://www.gov.br/anm/pt-br/assuntos/noticias/ultimas-noticias
     active: true
@@ -75,6 +76,7 @@ agencies:
   anvisa:
     url: https://www.gov.br/anvisa/pt-br/assuntos/noticias-anvisa
     active: true
+    scraper_type: plone6_api
   arquivonacional:
     url: https://www.gov.br/arquivonacional/pt-br/canais_atendimento/imprensa/copy_of_noticias
     active: true
@@ -123,6 +125,7 @@ agencies:
   cetene:
     url: https://www.gov.br/cetene/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   cgu:
     url: https://www.gov.br/cgu/pt-br/assuntos/noticias/ultimas-noticias
     active: true
@@ -155,12 +158,14 @@ agencies:
   conitec:
     url: https://www.gov.br/conitec/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   conselho-nacional-de-saude:
     url: https://www.gov.br/conselho-nacional-de-saude/pt-br/assuntos/noticias
     active: true
   corregedorias:
     url: https://www.gov.br/corregedorias/pt-br/aconteceu-aqui/noticias
     active: true
+    scraper_type: plone6_api
   crcnne:
     url: https://www.gov.br/crcnne/pt-br/assuntos/noticias
     active: true
@@ -202,6 +207,7 @@ agencies:
   empresas-e-negocios:
     url: https://www.gov.br/empresas-e-negocios/pt-br/empreendedor/mais-noticias
     active: true
+    scraper_type: plone6_api
   esd:
     url: https://www.gov.br/esd/pt-br/central-de-conteudo/noticias
     active: true
@@ -235,6 +241,7 @@ agencies:
   funag:
     url: https://www.gov.br/funag/pt-br/centrais-de-conteudo/noticias
     active: true
+    scraper_type: plone6_api
   funai:
     url: https://www.gov.br/funai/pt-br/assuntos/noticias
     active: true
@@ -314,9 +321,11 @@ agencies:
   ines:
     url: https://www.gov.br/ines/pt-br/central-de-conteudos/noticias
     active: true
+    scraper_type: plone6_api
   inma:
     url: https://www.gov.br/inma/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   inmetro:
     url: https://www.gov.br/inmetro/pt-br/centrais-de-conteudo/noticias
     active: true
@@ -360,6 +369,7 @@ agencies:
   ird:
     url: https://www.gov.br/ird/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   iti:
     url: https://www.gov.br/iti/pt-br/assuntos/noticias/indice-de-noticias/
     active: true
@@ -379,6 +389,7 @@ agencies:
   lncc:
     url: https://www.gov.br/lncc/pt-br/assuntos/noticias/ultimas-noticias-1
     active: true
+    scraper_type: plone6_api
   mast:
     url: https://www.gov.br/mast/pt-br/assuntos/noticias
     active: true
@@ -436,6 +447,7 @@ agencies:
   mpa:
     url: https://www.gov.br/mpa/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   mre:
     url: https://www.gov.br/mre/pt-br/assuntos/portal-consular/alertas%20e%20noticias/noticias
     active: true
@@ -546,6 +558,7 @@ agencies:
   senappen:
     url: https://www.gov.br/senappen/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
   servicoscompartilhados:
     url: https://www.gov.br/servicoscompartilhados/pt-br/acesso-a-informacao/noticias
     active: true
@@ -585,6 +598,7 @@ agencies:
   tesouronacional:
     url: https://www.gov.br/tesouronacional/pt-br/noticias
     active: true
+    scraper_type: plone6_api
   trabalho-e-emprego:
     url: https://www.gov.br/trabalho-e-emprego/pt-br/noticias-e-conteudo
     active: true
