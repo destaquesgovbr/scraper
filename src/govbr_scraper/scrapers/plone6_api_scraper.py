@@ -18,7 +18,14 @@ from markdownify import markdownify as md
 from retry import retry
 
 # Importar constantes e exceções do WebScraper
-from govbr_scraper.scrapers.redated import REDATED_MIN_GAP_DAYS, created_gap_days, log_redated
+from govbr_scraper.scrapers.redated import (
+    REDATED_MIN_GAP_DAYS,
+    created_date,
+    created_gap_days,
+    in_retained_window,
+    log_redated,
+    log_retained,
+)
 from govbr_scraper.scrapers.webscraper import (
     DEFAULT_HEADERS,
     SLEEP_TIME_INTERVAL,
@@ -251,7 +258,11 @@ class Plone6APIScraper:
         gap = created_gap_days(item.get("created"), published_dt)
         if gap is not None and gap >= REDATED_MIN_GAP_DAYS:
             detail = f"created={item.get('created')} effective={effective_str} gap_days={gap:.0f}"
-            if log_redated(self.agency, url, "plone_created", detail):
+            created_day = created_date(item.get("created"))
+            if created_day is not None and in_retained_window(created_day):
+                # conteúdo retido no defeso e publicado depois: primeira publicação, mantém
+                log_retained(self.agency, url, "plone_created", detail)
+            elif log_redated(self.agency, url, "plone_created", detail):
                 self.skipped_redated += 1
                 return True  # PULAR mas continuar
 

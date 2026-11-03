@@ -23,6 +23,14 @@ from datetime import date, datetime
 REDATED_MIN_GAP_DAYS = 30
 URL_FOLDER_MAX_MONTHS = 1
 
+# Exceção: conteúdo retido num defeso eleitoral. No defeso de 2026 (04/07 a 25/10) o conteúdo criado
+# ficou privado e foi publicado pela primeira vez depois dele, com a data da liberação. Isso não é
+# redatação: a data nova é a da primeira publicação. Itens com created (Plone 6) ou pasta de data
+# (HTML) dentro de uma dessas janelas não são pulados. Para um defeso futuro, acrescente a janela.
+DEFESO_2026_START = date(2026, 7, 4)
+DEFESO_2026_END = date(2026, 10, 25)
+RETAINED_CONTENT_WINDOWS: tuple[tuple[date, date], ...] = ((DEFESO_2026_START, DEFESO_2026_END),)
+
 _MONTHS = {
     "janeiro": 1,
     "fevereiro": 2,
@@ -71,6 +79,35 @@ def is_stale_url_folder(url: str, ref_date: date | None) -> bool:
         return False
     months = (ref_date.year * 12 + ref_date.month) - (folder[0] * 12 + folder[1])
     return months > URL_FOLDER_MAX_MONTHS
+
+
+def in_retained_window(day: date) -> bool:
+    """True se ``day`` cai numa janela de conteúdo retido (defeso eleitoral)."""
+    return any(start <= day <= end for start, end in RETAINED_CONTENT_WINDOWS)
+
+
+def folder_in_retained_window(year: int, month: int) -> bool:
+    """True se a pasta ano/mês cai num mês de janela de conteúdo retido (defeso eleitoral)."""
+    key = year * 12 + month
+    return any(
+        start.year * 12 + start.month <= key <= end.year * 12 + end.month
+        for start, end in RETAINED_CONTENT_WINDOWS
+    )
+
+
+def created_date(created: str | None) -> date | None:
+    """Data (calendário) do ``created`` ISO da API do Plone; None se não der para ler."""
+    if not created:
+        return None
+    try:
+        return datetime.fromisoformat(created).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def log_retained(agency: str, url: str, signal: str, detail: str) -> None:
+    """Loga o item mantido pela exceção de conteúdo retido no defeso."""
+    logging.info(f"redated_kept_retained agency={agency} signal={signal} {detail} url={url}")
 
 
 def created_gap_days(created: str | None, published_dt: datetime | None) -> float | None:
