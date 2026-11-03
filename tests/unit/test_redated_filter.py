@@ -19,14 +19,14 @@ from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+
+from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.redated import (
     REDATED_MIN_GAP_DAYS,
     created_gap_days,
     is_stale_url_folder,
     url_folder_month,
 )
-
-from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.webscraper import WebScraper
 
 TZ_BR = timezone(timedelta(hours=-3))
