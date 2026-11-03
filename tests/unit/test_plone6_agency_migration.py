@@ -105,3 +105,33 @@ class TestMigratedAgenciesConfig:
         assert "/2026" not in url, (
             f"URL da funai nao deve conter /2026 (ano especifico). Got: {url}"
         )
+
+
+# Agências que rodavam em fallback permanente (WebScraper falha com HTML_CHANGED em toda execução e o
+# Plone6APIScraper assume com known_urls vazio, re-raspando a janela inteira a cada 10 min: 137
+# regravações para 2 artigos novos em 24h, em 03/11/2026). Validadas com o Plone6APIScraper local,
+# sem banco: a API responde e a cerca de URLs conhecidas para nas que têm itens recentes.
+FALLBACK_AGENCIES_2026_11 = [
+    "aneel",
+    "anvisa",
+    "cetene",
+    "conitec",
+    "corregedorias",
+    "empresas-e-negocios",
+    "funag",
+    "inma",
+    "ines",
+    "ird",
+    "lncc",
+    "mpa",
+    "senappen",
+    "tesouronacional",
+]
+
+
+@pytest.mark.parametrize("agency", FALLBACK_AGENCIES_2026_11)
+def test_agencia_em_fallback_permanente_usa_plone6_api(agency):
+    result = load_urls_from_yaml(get_config_dir(_SCRAPERS_MODULE), "site_urls.yaml", agency=agency)
+    assert result[agency]["scraper_type"] == "plone6_api", (
+        f"{agency} roda em fallback Plone 6 em toda execução; configure scraper_type: plone6_api"
+    )
