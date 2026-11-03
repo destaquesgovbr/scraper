@@ -32,10 +32,13 @@ def _scrape_window(logical_date: datetime) -> tuple[str, str]:
     antes da execução até a execução: na primeira hora do dia ela ainda inclui o dia anterior.
     Datetime sem fuso é tratado como UTC.
     """
+    # O logical_date do Airflow é pendulum.DateTime, cuja aritmética e astimezone não
+    # preservam o fuso de um ZoneInfo (em produção a janela saiu invertida). Só o instante
+    # (timestamp) é usado, convertido para um datetime da stdlib em Brasília.
     if logical_date.tzinfo is None:
         # timezone.utc (não datetime.UTC, 3.11+): o arquivo roda no Python do Composer.
         logical_date = logical_date.replace(tzinfo=timezone.utc)  # noqa: UP017
-    local = logical_date.astimezone(BRASILIA)
+    local = datetime.fromtimestamp(logical_date.timestamp(), tz=BRASILIA)
     return (local - timedelta(hours=1)).strftime("%Y-%m-%d"), local.strftime("%Y-%m-%d")
 
 

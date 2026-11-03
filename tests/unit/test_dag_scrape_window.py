@@ -89,3 +89,38 @@ def test_scrape_window_aceita_logical_date_em_outro_fuso(dag_module):
 
     brt = datetime(2026, 11, 2, 22, 30, tzinfo=ZoneInfo("America/Sao_Paulo"))
     assert dag_module._scrape_window(brt) == ("2026-11-02", "2026-11-02")
+
+
+class _PendulumLike:
+    """Imita o logical_date do Airflow (pendulum.DateTime): a aritmética e o astimezone do
+    pendulum não preservam o fuso de um ZoneInfo como o datetime da stdlib. Em produção
+    (03/11/2026, 01:42Z) isso inverteu a janela ("from 2026-11-03 to 2026-11-02"). A
+    função só pode depender do instante (timestamp) e do tzinfo."""
+
+    def __init__(self, dt):
+        self._dt = dt
+        self.tzinfo = dt.tzinfo
+
+    def timestamp(self):
+        return self._dt.timestamp()
+
+    def astimezone(self, tz=None):
+        raise AssertionError("não use astimezone do objeto do Airflow")
+
+    def __sub__(self, other):
+        raise AssertionError("não use a aritmética do objeto do Airflow")
+
+    def strftime(self, fmt):
+        raise AssertionError("não formate o objeto do Airflow diretamente")
+
+
+@pytest.mark.parametrize(
+    ("instante", "esperado"),
+    [
+        (datetime(2026, 11, 3, 1, 42, tzinfo=UTC), ("2026-11-02", "2026-11-02")),
+        (datetime(2026, 11, 3, 3, 30, tzinfo=UTC), ("2026-11-02", "2026-11-03")),
+        (datetime(2026, 11, 3, 18, 0, tzinfo=UTC), ("2026-11-03", "2026-11-03")),
+    ],
+)
+def test_scrape_window_nao_depende_da_aritmetica_do_pendulum(dag_module, instante, esperado):
+    assert dag_module._scrape_window(_PendulumLike(instante)) == esperado
