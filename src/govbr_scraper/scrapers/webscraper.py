@@ -12,7 +12,13 @@ from markdownify import markdownify as md
 from retry import retry
 
 from govbr_scraper.scrapers.content_validation import LOGIN_REQUIRED_CONTENT, is_login_redirect
-from govbr_scraper.scrapers.redated import is_stale_url_folder, log_redated, url_folder_month
+from govbr_scraper.scrapers.redated import (
+    folder_in_retained_window,
+    is_stale_url_folder,
+    log_redated,
+    log_retained,
+    url_folder_month,
+)
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -264,7 +270,15 @@ class WebScraper:
         # before fetching the article (cheap) and before the known URL fence.
         if is_stale_url_folder(url, news_date):
             year, month = url_folder_month(url)
-            if log_redated(
+            if folder_in_retained_window(year, month):
+                # conteúdo retido no defeso e publicado depois: primeira publicação, mantém
+                log_retained(
+                    self.agency,
+                    url,
+                    "url_folder",
+                    f"folder={year}-{month:02d} listing_date={news_date}",
+                )
+            elif log_redated(
                 self.agency,
                 url,
                 "url_folder",

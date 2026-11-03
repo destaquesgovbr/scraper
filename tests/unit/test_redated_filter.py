@@ -188,9 +188,15 @@ class TestPlone6Redated:
         assert "skipped_redated" in caplog.text
 
     def test_limiar_de_30_dias(self):
-        s = self._scraper()
-        s._process_news_item(_api_item("2026-09-27T12:18:36+00:00", slug="trinta"))  # 30 dias
-        s._process_news_item(_api_item("2026-09-28T12:18:37+00:00", slug="vinte-e-nove"))  # < 30
+        # datas fora da janela do defeso (a exceção de conteúdo retido não se aplica)
+        s = Plone6APIScraper(
+            "2026-12-01", "https://www.gov.br/capes/pt-br/assuntos/noticias", max_date="2026-12-31"
+        )
+        eff = "2026-12-15T12:00:00+00:00"
+        s._process_news_item(_api_item("2026-11-15T12:00:00+00:00", eff, slug="trinta"))  # 30 dias
+        s._process_news_item(
+            _api_item("2026-11-16T12:00:01+00:00", eff, slug="vinte-e-nove")
+        )  # < 30
         assert [i["url"].rsplit("/", 1)[1] for i in s.news_data] == ["vinte-e-nove"]
 
     def test_mantem_rascunho_recente_e_item_sem_created(self):
