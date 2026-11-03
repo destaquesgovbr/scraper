@@ -207,3 +207,80 @@ class TestPlone6Redated:
             s._process_news_item(_api_item("2022-12-08T12:22:05+00:00"))
         assert len(s.news_data) == 1
         assert "observe" in caplog.text
+
+
+# ---------------------------------------------------------------- exceção: conteúdo retido no defeso
+#
+# No defeso eleitoral de 2026 (04/07 a 25/10) o conteúdo criado ficou retido (privado) e foi publicado
+# pela primeira vez depois dele. Não é redatação: a data nova é a da primeira publicação. Casos reais
+# da amostra de 03/11/2026: turismo (created 31/07), portos (21/07), iphan (11/08), mcom (pasta
+# 2026/agosto), casacivil (pasta 2026/agosto).
+
+
+def test_janela_do_defeso_2026():
+    from govbr_scraper.scrapers.redated import (
+        DEFESO_2026_END,
+        DEFESO_2026_START,
+        folder_in_retained_window,
+        in_retained_window,
+    )
+
+    assert (DEFESO_2026_START, DEFESO_2026_END) == (date(2026, 7, 4), date(2026, 10, 25))
+    assert in_retained_window(date(2026, 7, 4)) and in_retained_window(date(2026, 10, 25))
+    assert not in_retained_window(date(2026, 7, 3)) and not in_retained_window(date(2026, 10, 26))
+    assert [m for m in range(1, 13) if folder_in_retained_window(2026, m)] == [7, 8, 9, 10]
+    assert not folder_in_retained_window(2025, 8)
+
+
+class TestExcecaoDefeso:
+    def test_html_pasta_do_defeso_e_mantida(self):
+        s = WebScraper(
+            "2026-10-26", "https://www.gov.br/mcom/pt-br/noticias", max_date="2026-11-02"
+        )
+        url = "https://www.gov.br/mcom/pt-br/noticias/2026/agosto/cidades-do-mato-grosso-do-sul"
+        item = _webscraper_item(s, url, date(2026, 10, 27))
+
+        s.extract_news_info(item)
+
+        assert len(s.news_data) == 1
+        assert s.skipped_redated == 0
+
+    def test_html_pasta_anterior_ao_defeso_continua_pulada(self):
+        s = WebScraper(
+            "2026-10-26", "https://www.gov.br/pf/pt-br/assuntos/noticias", max_date="2026-11-02"
+        )
+        url = "https://www.gov.br/pf/pt-br/assuntos/noticias/2026/06/pf-desarticula-organizacao"
+        item = _webscraper_item(s, url, date(2026, 10, 26))
+
+        s.extract_news_info(item)
+
+        assert s.news_data == []
+        assert s.skipped_redated == 1
+
+    def test_plone6_created_no_defeso_e_mantido(self):
+        s = Plone6APIScraper(
+            "2026-10-23",
+            "https://www.gov.br/turismo/pt-br/assuntos/noticias",
+            max_date="2026-11-02",
+        )
+        s._process_news_item(
+            _api_item(
+                "2026-07-31T14:00:00+00:00", effective="2026-10-26T17:10:52+00:00", slug="fnac"
+            )
+        )
+        assert len(s.news_data) == 1
+        assert s.skipped_redated == 0
+
+    def test_plone6_created_antes_do_defeso_continua_pulado(self):
+        s = Plone6APIScraper(
+            "2026-10-23",
+            "https://www.gov.br/turismo/pt-br/assuntos/noticias",
+            max_date="2026-11-02",
+        )
+        s._process_news_item(
+            _api_item(
+                "2026-07-03T14:00:00+00:00", effective="2026-10-26T17:10:52+00:00", slug="antes"
+            )
+        )
+        assert s.news_data == []
+        assert s.skipped_redated == 1
