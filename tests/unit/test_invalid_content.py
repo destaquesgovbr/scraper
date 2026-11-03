@@ -10,6 +10,7 @@ numa execução seguinte, se voltar a responder com conteúdo.
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from govbr_scraper.scrapers.content_validation import (
     ERROR_CONTENT,
     LOGIN_REQUIRED_CONTENT,
