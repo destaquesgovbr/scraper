@@ -23,7 +23,13 @@ class TestScrapeManagerMonitoring:
         }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
-            {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"}
+            {
+                "agency": "mec",
+                "title": "Test",
+                "published_at": "2026-01-01",
+                "url": "http://x",
+                "content": "Texto",
+            }
         ]
         mock_ws_cls.return_value = mock_scraper
 
@@ -71,7 +77,13 @@ class TestScrapeManagerMonitoring:
         }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
-            {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"}
+            {
+                "agency": "mec",
+                "title": "Test",
+                "published_at": "2026-01-01",
+                "url": "http://x",
+                "content": "Texto",
+            }
         ]
         mock_ws_cls.return_value = mock_scraper
 
@@ -139,8 +151,20 @@ class TestScrapeManagerMonitoring:
         }
         mock_scraper = MagicMock()
         mock_scraper.scrape_news.return_value = [
-            {"agency": "mec", "title": "Test", "published_at": "2026-01-01", "url": "http://x"},
-            {"agency": "mec", "title": "Test2", "published_at": "2026-01-01", "url": "http://y"},
+            {
+                "agency": "mec",
+                "title": "Test",
+                "published_at": "2026-01-01",
+                "url": "http://x",
+                "content": "Texto",
+            },
+            {
+                "agency": "mec",
+                "title": "Test2",
+                "published_at": "2026-01-01",
+                "url": "http://y",
+                "content": "Texto",
+            },
         ]
         mock_ws_cls.return_value = mock_scraper
 

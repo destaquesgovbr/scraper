@@ -137,6 +137,13 @@ O campo `scraper_type` no `site_urls.yaml` determina qual scraper é usado para 
 
 Otimização que evita re-processar artigos já coletados. Antes de iniciar o scraping, o `ScrapeManager` consulta as últimas 200 URLs da agência via `get_recent_urls()`. Durante o scraping, URLs já conhecidas são contadas consecutivamente. Ao atingir **3 URLs conhecidas consecutivas**, o scraper para — assumindo que o restante já foi coletado em execuções anteriores.
 
+### Itens pulados (não gravados)
+
+O `ScrapeManager` descarta antes de persistir, loga cada item e soma em `articles_skipped` (resposta da API e linha `scrape_skipped agency=… invalid_content=N redated=M`):
+
+- **Conteúdo inválido** (scraper#65, `content_validation.py`): `"Error retrieving content"`, tela de login do Plone (redirect para `require_login`/`acl_users` ou texto "necessário autenticar para visualizar") e conteúdo vazio. Log `skipped_invalid_content agency=… reason=<error_content|login_page|empty_content> url=…`. A URL não é gravada, então fica fora de `known_urls` e o artigo é tentado de novo enquanto estiver na janela.
+- **Redatados** (`redated.py`): conteúdo antigo republicado com data nova, como na onda pós-defeso de 26-29/10/2026. É avaliado antes de baixar o artigo e antes da cerca de URLs conhecidas. Plone 6: `created` 30 dias ou mais antes do `effective`. HTML: pasta `/AAAA/MM/` ou `/AAAA/<mês>/` da URL anterior ao mês da listagem por mais de 1 mês. Log `skipped_redated agency=… signal=<plone_created|url_folder> … url=…`. Com `SCRAPER_REDATED_FILTER=observe` (env da API), o filtro só loga (`redated_observed`) e mantém o item.
+
 ### Content Hash
 
 Deduplicação por conteúdo via `compute_content_hash(title, content)`:
@@ -306,6 +313,7 @@ Cada DAG de scraping:
   - **Agências gov.br:** backoff exponencial (`retry_exponential_backoff=True`), max_retry_delay 15min
   - **EBC:** flat 5min, sem exponencial
 - Timeout: 10min (agências) / 30min (EBC)
+- Janela: `_scrape_window(logical_date)` em datas de Brasília (`America/Sao_Paulo`), de 1 hora antes da execução até a execução. As listagens datam as notícias em BRT. Com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte e as notícias do dia ficavam de fora.
 
 ### DAGs de manutenção
 

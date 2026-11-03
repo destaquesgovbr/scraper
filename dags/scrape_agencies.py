@@ -12,12 +12,31 @@ Cada DAG:
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import yaml
 from airflow.decorators import dag, task
 
 logger = logging.getLogger(__name__)
+
+
+BRASILIA = ZoneInfo("America/Sao_Paulo")
+
+
+def _scrape_window(logical_date: datetime) -> tuple[str, str]:
+    """Janela (min_date, max_date) da execução, em datas de Brasília.
+
+    As listagens datam as notícias no horário de Brasília. Em UTC, das 22:00 às 23:59 BRT a
+    data já é o dia seguinte e a execução pulava as notícias do dia. A janela vai de 1 hora
+    antes da execução até a execução: na primeira hora do dia ela ainda inclui o dia anterior.
+    Datetime sem fuso é tratado como UTC.
+    """
+    if logical_date.tzinfo is None:
+        # timezone.utc (não datetime.UTC, 3.11+): o arquivo roda no Python do Composer.
+        logical_date = logical_date.replace(tzinfo=timezone.utc)  # noqa: UP017
+    local = logical_date.astimezone(BRASILIA)
+    return (local - timedelta(hours=1)).strftime("%Y-%m-%d"), local.strftime("%Y-%m-%d")
 
 
 def _on_scrape_failure(context):
@@ -106,8 +125,7 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
 
                 logical_date = dt.utcnow()
 
-            min_date = (logical_date - timedelta(hours=1)).strftime("%Y-%m-%d")
-            max_date = logical_date.strftime("%Y-%m-%d")
+            min_date, max_date = _scrape_window(logical_date)
 
             logger.info(f"Calling scraper API for {agency_key}: {min_date} to {max_date}")
 

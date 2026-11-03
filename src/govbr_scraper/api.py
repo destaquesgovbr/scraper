@@ -64,6 +64,7 @@ class ScrapeResponse(BaseModel):
     end_date: str
     articles_scraped: int = 0
     articles_saved: int = 0
+    articles_skipped: int = 0  # conteúdo inválido (scraper#65) ou redatado: não gravados
     agencies_processed: list[str] = []
     errors: list[AgencyError] = []
     message: str
@@ -116,6 +117,7 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
         end_date=end,
         articles_scraped=metrics["articles_scraped"],
         articles_saved=metrics["articles_saved"],
+        articles_skipped=metrics.get("articles_skipped", 0),
         agencies_processed=metrics["agencies_processed"],
         errors=errors,
         message=message,
@@ -223,6 +225,7 @@ def scrape_ebc(req: ScrapeEBCRequest):
         end_date=end,
         articles_scraped=metrics["articles_scraped"],
         articles_saved=metrics["articles_saved"],
+        articles_skipped=metrics.get("articles_skipped", 0),
         agencies_processed=metrics["agencies_processed"],
         errors=errors,
         message=message,

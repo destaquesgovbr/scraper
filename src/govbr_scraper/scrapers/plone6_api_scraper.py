@@ -18,6 +18,7 @@ from markdownify import markdownify as md
 from retry import retry
 
 # Importar constantes e exceções do WebScraper
+from govbr_scraper.scrapers.redated import REDATED_MIN_GAP_DAYS, created_gap_days, log_redated
 from govbr_scraper.scrapers.webscraper import (
     DEFAULT_HEADERS,
     SLEEP_TIME_INTERVAL,
@@ -60,6 +61,7 @@ class Plone6APIScraper:
         self.agency = self.get_agency_name()
         self.known_urls = known_urls or set()
         self._consecutive_known = 0
+        self.skipped_redated = 0
 
     def get_agency_name(self) -> str:
         """
@@ -243,6 +245,14 @@ class Plone6APIScraper:
                 return False  # PARAR
             if self.max_date and news_date > self.max_date:
                 logging.info(f"Pulando notícia de {news_date} (mais nova que max_date)")
+                return True  # PULAR mas continuar
+
+        # 3b. Conteúdo redatado: created muito anterior à publicação (republicação de item antigo)
+        gap = created_gap_days(item.get("created"), published_dt)
+        if gap is not None and gap >= REDATED_MIN_GAP_DAYS:
+            detail = f"created={item.get('created')} effective={effective_str} gap_days={gap:.0f}"
+            if log_redated(self.agency, url, "plone_created", detail):
+                self.skipped_redated += 1
                 return True  # PULAR mas continuar
 
         # 4. Known URL fence (mesma lógica do WebScraper)

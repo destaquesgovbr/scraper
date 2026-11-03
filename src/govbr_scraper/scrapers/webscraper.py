@@ -11,6 +11,9 @@ from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 from retry import retry
 
+from govbr_scraper.scrapers.content_validation import LOGIN_REQUIRED_CONTENT, is_login_redirect
+from govbr_scraper.scrapers.redated import is_stale_url_folder, log_redated, url_folder_month
+
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -72,6 +75,7 @@ class WebScraper:
         self.agency = self.get_agency_name()
         self.known_urls = known_urls or set()
         self._consecutive_known = 0
+        self.skipped_redated = 0
 
     def get_agency_name(self) -> str:
         """
@@ -255,6 +259,19 @@ class WebScraper:
                     f"Skipping news dated {news_date} as it is newer than max_date {self.max_date}."
                 )
                 return True  # Skip this item
+
+        # Redated content: date folder in the URL much older than the listing date. Checked
+        # before fetching the article (cheap) and before the known URL fence.
+        if is_stale_url_folder(url, news_date):
+            year, month = url_folder_month(url)
+            if log_redated(
+                self.agency,
+                url,
+                "url_folder",
+                f"folder={year}-{month:02d} listing_date={news_date}",
+            ):
+                self.skipped_redated += 1
+                return True
 
         # Known URL fence: skip articles already in the database
         if url in self.known_urls:
@@ -836,6 +853,11 @@ class WebScraper:
             response = self.fetch_page(url)
             if not response:
                 return "Error retrieving content", None, None, None, [], None, None, None
+
+            # Private/unpublished item: Plone redirects to its login page (scraper#65)
+            if is_login_redirect(getattr(response, "url", None)):
+                logging.warning(f"skipped_private url={url} (redirect to require_login)")
+                return LOGIN_REQUIRED_CONTENT, None, None, None, [], None, None, None
 
             soup = BeautifulSoup(response.content, "html.parser")
             article_body = soup.find("div", id="content")
