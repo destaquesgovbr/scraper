@@ -117,7 +117,8 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria.
 | `NETWORK_ERROR` | Aguardar; verificar se é transiente |
 | `ANTI_BOT` | Desativar temporariamente se persistir (ver seção abaixo) |
 | `EMPTY_CONTENT` | Normal se agência publica pouco |
-| `URL_BROKEN` | Verificar nova URL no site; atualizar YAML |
+| `URL_BROKEN` | 404/410: verificar nova URL no site; atualizar YAML ou desativar |
+| `ACCESS_DENIED` | 401/403 ou redirect para login: procurar listagem pública; senão desativar (`active: false`) |
 | `HTML_CHANGED` | Verificar site manualmente; fix no parser |
 | `UNKNOWN` | Ver `error_message` para detalhes |
 
