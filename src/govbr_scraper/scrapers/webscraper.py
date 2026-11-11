@@ -9,9 +9,15 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
-from retry import retry
 
 from govbr_scraper.scrapers.content_validation import LOGIN_REQUIRED_CONTENT, is_login_redirect
+from govbr_scraper.scrapers.errors import ScrapingError
+from govbr_scraper.scrapers.http_policy import (
+    REQUEST_TIMEOUT,
+    login_redirect_error,
+    raise_for_http_status,
+    retry_transient,
+)
 from govbr_scraper.scrapers.redated import (
     folder_in_retained_window,
     is_stale_url_folder,
@@ -38,12 +44,6 @@ ANTI_BOT_INDICATORS = [
     "Checking your browser",
     "Just a moment",
 ]
-
-
-class ScrapingError(Exception):
-    """Raised when scraping fails for a detectable reason (anti-bot, blocked, etc)."""
-
-    pass
 
 
 DEFAULT_HEADERS = {
@@ -126,22 +126,21 @@ class WebScraper:
 
         return self.news_data
 
-    @retry(
-        exceptions=requests.exceptions.RequestException,
-        tries=5,
-        delay=2,
-        backoff=3,
-        jitter=(1, 3),
-    )
+    @retry_transient
     def fetch_page(self, url: str) -> requests.Response | None:
         """
-        Fetch the page content from the given URL with retry logic.
+        Fetch the page content from the given URL, retrying only transient failures.
+
+        Política em ``http_policy``: 5xx, 408, 429, timeout e conexão repetem; os outros 4xx
+        levantam ``PermanentHTTPError`` na primeira resposta.
 
         :param url: The URL to fetch.
-        :return: The Response object or None if the request fails after all retries.
+        :return: The Response object.
+        :raises PermanentHTTPError: On a non-retryable 4xx response.
+        :raises requests.exceptions.RequestException: When transient failures exhaust retries.
         """
-        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=20)
-        response.raise_for_status()
+        response = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
+        raise_for_http_status(response)
         return response
 
     def _detect_anti_bot(self, response: requests.Response) -> bool:
@@ -172,6 +171,18 @@ class WebScraper:
             response = self.fetch_page(page_url)
         except requests.exceptions.RequestException as e:
             raise ScrapingError(f"Failed to fetch page after retries for {self.agency}: {e}") from e
+
+        is_first_page = "b_start" not in page_url or "b_start:int=0" in page_url
+
+        # Listagem que redireciona para o login do Plone: seção privada ou removida. Na primeira
+        # página é falha permanente, sem o fallback Plone 6 (que daria "no articles" e repetiria a
+        # falha). Numa página seguinte, só encerra a paginação e mantém o que já foi coletado.
+        final_url = getattr(response, "url", None)
+        if isinstance(final_url, str) and is_login_redirect(final_url):
+            if is_first_page:
+                raise login_redirect_error(self.agency, page_url, final_url)
+            logging.warning(f"Login redirect on later page of {self.agency}: {page_url}. Stopping.")
+            return False, 0
 
         # Check for anti-bot blocking
         if self._detect_anti_bot(response):
@@ -210,7 +221,7 @@ class WebScraper:
 
         if items_per_page == 0:
             # On first page, a large response with 0 articles is suspicious
-            if "b_start" not in page_url or "b_start:int=0" in page_url:
+            if is_first_page:
                 response_size = len(response.content)
                 if response_size > MIN_REAL_PAGE_SIZE:
                     raise ScrapingError(

@@ -6,8 +6,14 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
-from retry import retry
 from scipy.stats import truncnorm
+
+from govbr_scraper.scrapers.errors import PermanentHTTPError
+from govbr_scraper.scrapers.http_policy import (
+    REQUEST_TIMEOUT,
+    raise_for_http_status,
+    retry_transient,
+)
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -332,27 +338,27 @@ class EBCWebScraper:
 
         return True
 
-    @retry(
-        exceptions=requests.exceptions.RequestException,
-        tries=5,
-        delay=2,
-        backoff=3,
-        jitter=(1, 3),
-    )
     def fetch_page(self, url: str) -> requests.Response | None:
         """
-        Fetch the page content from the given URL with retry logic.
+        Fetch the page content from the given URL.
+
+        Falha transitória é repetida em ``_get`` (política em ``http_policy``); 4xx permanente
+        não. Antes, o ``@retry`` envolvia o ``try/except`` que devolvia None, então nunca repetia.
 
         :param url: The URL to fetch.
         :return: The Response object or None if the request fails.
         """
         try:
-            response = requests.get(url, headers=self.headers, timeout=20)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
+            return self._get(url)
+        except (requests.exceptions.RequestException, PermanentHTTPError) as e:
             logging.error(f"Request failed for {url}: {e}")
             return None
+
+    @retry_transient
+    def _get(self, url: str) -> requests.Response:
+        response = requests.get(url, headers=self.headers, timeout=REQUEST_TIMEOUT)
+        raise_for_http_status(response)
+        return response
 
     def scrape_news_page(self, url: str) -> dict[str, str]:
         """

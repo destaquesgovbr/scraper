@@ -15,7 +15,14 @@ from urllib.parse import urlparse, urlunparse
 
 import requests
 from markdownify import markdownify as md
-from retry import retry
+
+from govbr_scraper.scrapers.content_validation import is_login_redirect
+from govbr_scraper.scrapers.http_policy import (
+    REQUEST_TIMEOUT,
+    login_redirect_error,
+    raise_for_http_status,
+    retry_transient,
+)
 
 # Importar constantes e exceções do WebScraper
 from govbr_scraper.scrapers.redated import (
@@ -181,19 +188,14 @@ class Plone6APIScraper:
 
         return api_url
 
-    @retry(
-        exceptions=requests.exceptions.RequestException,
-        tries=5,
-        delay=2,
-        backoff=3,
-        jitter=(1, 3),
-    )
+    @retry_transient
     def _fetch_api_page(self, api_url: str) -> dict:
         """
-        Fetch página da API com retry logic (mesmo padrão do WebScraper).
+        Fetch página da API, repetindo só falha transitória (política em ``http_policy``).
 
         :param api_url: URL da API
         :return: Dict com resposta JSON
+        :raises PermanentHTTPError: Em 4xx permanente ou redirect para o login do Plone
         :raises ScrapingError: Se resposta não for JSON válido
         """
         logging.info(f"Fetching API: {api_url}")
@@ -201,8 +203,12 @@ class Plone6APIScraper:
         headers = DEFAULT_HEADERS.copy()
         headers["Accept"] = "application/json"
 
-        response = requests.get(api_url, headers=headers, timeout=20)
-        response.raise_for_status()
+        response = requests.get(api_url, headers=headers, timeout=REQUEST_TIMEOUT)
+        raise_for_http_status(response)
+
+        final_url = getattr(response, "url", None)
+        if isinstance(final_url, str) and is_login_redirect(final_url):
+            raise login_redirect_error(self.agency, api_url, final_url)
 
         try:
             data = response.json()
