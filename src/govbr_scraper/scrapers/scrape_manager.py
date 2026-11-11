@@ -3,10 +3,11 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from govbr_scraper.models.monitoring import ErrorCategory, classify_error
+from govbr_scraper.models.monitoring import ErrorCategory, classify_exception
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.scrapers.content_validation import invalid_content_reason
+from govbr_scraper.scrapers.errors import PermanentHTTPError
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
@@ -45,6 +46,7 @@ def _try_scrape_with_fallback(
     Raises:
         ScrapingError: Se scraper primário falhar e não houver fallback,
                        ou se ambos falharem.
+        PermanentHTTPError: Em 4xx permanente ou redirect para login, sem tentar o fallback.
     """
     scraper_class_name = primary_scraper.__class__.__name__
     if scraper_class_name == "WebScraper":
@@ -65,8 +67,11 @@ def _try_scrape_with_fallback(
         data = primary_scraper.scrape_news()
         metadata["skipped_redated"] = _skipped_redated(primary_scraper)
         return data, metadata
+    except PermanentHTTPError:
+        # 4xx permanente ou login: o Plone 6 na mesma URL falharia igual (infra#223).
+        raise
     except ScrapingError as e:
-        error_category = classify_error(str(e))
+        error_category = classify_exception(e)
 
         if fallback_config and error_category == ErrorCategory.HTML_CHANGED:
             metadata["fallback_triggered"] = True
@@ -242,7 +247,7 @@ class ScrapeManager:
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=classify_exception(e),
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
@@ -253,7 +258,7 @@ class ScrapeManager:
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=classify_exception(e),
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
@@ -295,7 +300,7 @@ class ScrapeManager:
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=classify_exception(e),
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
@@ -306,7 +311,7 @@ class ScrapeManager:
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=classify_exception(e),
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )

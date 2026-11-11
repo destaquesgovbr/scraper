@@ -168,9 +168,23 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `NETWORK_ERROR` | timeout, connection error/refused |
 | `ANTI_BOT` | anti-bot, JS challenge, cloudflare |
 | `EMPTY_CONTENT` | no news found |
-| `URL_BROKEN` | HTTP 403, 404, 410 |
+| `URL_BROKEN` | HTTP 404, 410 |
+| `ACCESS_DENIED` | HTTP 401, 403, listagem que redireciona para o login do Plone ("login redirect") |
 | `HTML_CHANGED` | no articles found (estrutura mudou) |
 | `UNKNOWN` | fallback |
+
+O `ScrapeManager` classifica com `classify_exception(e)`, que usa o `http_status` do `PermanentHTTPError` quando houver.
+
+### Política HTTP (falhar rápido)
+
+`scrapers/http_policy.py` vale para WebScraper, Plone6APIScraper e EBCWebScraper (infra#223):
+
+- 4xx, menos 408 e 429: `PermanentHTTPError` (`scrapers/errors.py`, subclasse de `ScrapingError` e não de `RequestException`) na primeira resposta, sem retry.
+- Listagem que redireciona para o login do Plone (`is_login_redirect`): `LoginRedirectError` (subclasse de `PermanentHTTPError`), sem retry e sem fallback.
+- 5xx, 408, 429, timeout e conexão: até 3 tentativas (`tries=3, delay=1, backoff=2`, jitter de 0 a 1 s; ~3,5 s de espera no total).
+- `timeout=(5, 15)` (connect, read).
+
+Antes, todo `RequestException` era repetido 5 vezes (`delay=2, backoff=3`, jitter de 1 a 3 s), inclusive 404 e 401: ~116 s de espera por chamada, 86% do tempo faturável do Cloud Run. No EBC o `@retry` envolvia um `try/except` que devolvia None, então nunca repetia; agora `fetch_page` ainda devolve None na falha, mas repete o erro transitório.
 
 ### Fallback Automático (HTML_CHANGED)
 
@@ -182,7 +196,8 @@ Quando WebScraper falha com erro `HTML_CHANGED` (estrutura HTML mudou), o sistem
 - Fallback disponível (instanciado apenas para `scraper_type: html`)
 
 **Não aciona em:**
-- NETWORK_ERROR, ANTI_BOT, URL_BROKEN, EMPTY_CONTENT
+- NETWORK_ERROR, ANTI_BOT, URL_BROKEN, ACCESS_DENIED, EMPTY_CONTENT
+- `PermanentHTTPError` (4xx permanente ou redirect para login), qualquer que seja a categoria
 - Plone6 → WebScraper (tecnicamente inútil para SPAs)
 
 **Campos de monitoramento adicionados:**
@@ -297,7 +312,7 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 
 | DAG | Schedule | Descrição |
 |-----|----------|-----------|
-| `scrape_{agency_key}` (~155) | A cada 10min (offset 0-9) | 1 DAG por agência gov.br |
+| `scrape_{agency_key}` (~155) | A cada 10min (offset 0-9) | 1 DAG por agência gov.br ativa |
 | `scrape_ebc` | A cada 10min (offset 0) | Sites EBC |
 | `monitor_scraping_health` | A cada 30min | Agências sem execução + falhas consecutivas + agências stale |
 | `cleanup_old_scrape_runs` | Diário 03h UTC | Delete registros > retention_days |
@@ -313,6 +328,7 @@ Cada DAG de scraping:
   - **Agências gov.br:** backoff exponencial (`retry_exponential_backoff=True`), max_retry_delay 15min
   - **EBC:** flat 5min, sem exponencial
 - Timeout: 10min (agências) / 30min (EBC)
+- Minuto (agências gov.br): `idx % 10`, com `idx` na lista ordenada de **todas** as chaves do `site_urls.yaml`, inclusive inativas (`_minute_offsets`). Só as ativas viram DAG. Assim, desativar ou reativar uma agência não muda o schedule das outras (mudança de schedule em massa já deixou DagRun zumbi; ver runbook). Uma chave nova ainda desloca as que vêm depois dela na ordem alfabética.
 - Janela: `_scrape_window(logical_date)` em datas de Brasília (`America/Sao_Paulo`), de 1 hora antes da execução até a execução. As listagens datam as notícias em BRT. Com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte e as notícias do dia ficavam de fora.
 
 ### DAGs de manutenção
