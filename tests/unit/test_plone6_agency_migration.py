@@ -124,9 +124,9 @@ FALLBACK_AGENCIES_2026_11 = [
     "ird",
     "lncc",
     "mpa",
-    "senappen",
     "tesouronacional",
 ]
+# senappen saiu em 2026-11-11: a API Plone da listagem retorna 404 e a agência foi desativada.
 
 
 @pytest.mark.parametrize("agency", FALLBACK_AGENCIES_2026_11)

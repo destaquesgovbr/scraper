@@ -11,7 +11,9 @@ agencies:
     active: true
   acessoainformacao:
     url: https://www.gov.br/acessoainformacao/pt-br/noticias
-    active: true
+    active: false
+    disabled_reason: "A listagem redireciona para o login do Plone (require_login)"
+    disabled_date: "2026-11-11"
   aeb:
     url: https://www.gov.br/aeb/pt-br/assuntos/noticias
     active: true
@@ -26,10 +28,9 @@ agencies:
     active: true
     scraper_type: plone6_api
   ana:
-    # url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
-    url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias-periodo-eleitoral-2026/
+    url: https://www.gov.br/ana/pt-br/assuntos/noticias-e-eventos/noticias
     active: true
-    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026). Scraper alterado de plone6_api para html em 2026-07-16."
+    notes: "Defeso eleitoral 2026 encerrado: URL original restaurada em 2026-11-11, com html (a API Plone dá 404 nesta URL)."
   anac:
     # url: https://www.gov.br/anac/pt-br/noticias/ultimas-noticias-1
     url: https://www.gov.br/anac/pt-br/noticias
@@ -178,7 +179,9 @@ agencies:
     active: true
   ctir:
     url: https://www.gov.br/ctir/pt-br/assuntos/noticias/2025
-    active: true
+    active: false
+    disabled_reason: "A listagem não tem itens de 2026"
+    disabled_date: "2026-11-11"
   cultura:
     url: https://www.gov.br/cultura/pt-br/assuntos/noticias
     active: true
@@ -233,11 +236,11 @@ agencies:
     active: true
     scraper_type: plone6_api
   fnde:
-    # url: https://www.gov.br/fnde/pt-br/assuntos/noticias
-    url: https://www.gov.br/fnde/pt-br/assuntos/noticias-1/
+    # url: https://www.gov.br/fnde/pt-br/assuntos/noticias-1/
+    url: https://www.gov.br/fnde/pt-br/assuntos/noticias
     active: true
     scraper_type: plone6_api
-    notes: "2026-11-02: mantida noticias-1/ com plone6_api (o HTML não tem itens e o fallback rodava em toda execução). A original traz ~30 notícias de 2023-2025 redatadas em 26/10."
+    notes: "2026-11-11: URL original restaurada com plone6_api (a API responde 200, com 1.888 itens). Substitui noticias-1/."
   funag:
     url: https://www.gov.br/funag/pt-br/centrais-de-conteudo/noticias
     active: true
@@ -261,7 +264,9 @@ agencies:
     active: true
   governodigital:
     url: https://www.gov.br/governodigital/pt-br/noticias
-    active: true
+    active: false
+    disabled_reason: "A listagem redireciona para o login do Plone (require_login)"
+    disabled_date: "2026-11-11"
   gsi:
     # url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2025
     url: https://www.gov.br/gsi/pt-br/centrais-de-conteudo/noticias/2026
@@ -301,8 +306,11 @@ agencies:
     active: true
     scraper_type: plone6_api
   igualdaderacial:
-    url: https://www.gov.br/igualdaderacial/pt-br/assuntos/copy2_of_noticias
+    # url: https://www.gov.br/igualdaderacial/pt-br/assuntos/copy2_of_noticias
+    url: https://www.gov.br/igualdaderacial/pt-br/assuntos/noticias
     active: true
+    scraper_type: plone6_api
+    notes: "2026-11-11: trocada de copy2_of_noticias para assuntos/noticias, com plone6_api (a API responde 200, com 686 itens)."
   imprensanacional:
     url: https://www.gov.br/imprensanacional/pt-br/assuntos/noticias
     active: false
@@ -418,8 +426,9 @@ agencies:
   mds:
     # url: https://www.gov.br/mds/pt-br/noticias-e-conteudos/desenvolvimento-social/noticias-desenvolvimento-social
     url: https://www.gov.br/mds/pt-br/noticias
-    active: true
-    notes: "URL atualizada em 2026-07-16"
+    active: false
+    disabled_reason: "A listagem retorna 404 (URL atualizada em 2026-07-16)"
+    disabled_date: "2026-11-11"
   mec:
     url: https://www.gov.br/mec/pt-br/assuntos/noticias
     active: true
@@ -457,17 +466,18 @@ agencies:
     scraper_type: plone6_api
   museudoindio:
     url: https://www.gov.br/museudoindio/pt-br/assuntos/noticias
-    active: true
+    active: false
     scraper_type: plone6_api
+    disabled_reason: "A API Plone (++api++) da listagem retorna 401"
+    disabled_date: "2026-11-11"
   museugoeldi:
     url: https://www.gov.br/museugoeldi/pt-br/arquivos/noticias
     active: true
     scraper_type: plone6_api
   museus:
-    # url: https://www.gov.br/museus/pt-br/assuntos/noticias
-    url: https://www.gov.br/museus/pt-br/comunicados-defeso-eleitoral
+    url: https://www.gov.br/museus/pt-br/assuntos/noticias
     active: true
-    notes: "URL alternativa durante defeso eleitoral (04/07-25/10/2026)"
+    notes: "Defeso eleitoral 2026 encerrado: URL original restaurada em 2026-11-11."
   nfse:
     url: https://www.gov.br/nfse/pt-br/noticias
     active: true
@@ -557,8 +567,10 @@ agencies:
     active: true
   senappen:
     url: https://www.gov.br/senappen/pt-br/assuntos/noticias
-    active: true
+    active: false
     scraper_type: plone6_api
+    disabled_reason: "A API Plone (++api++) da listagem retorna 404"
+    disabled_date: "2026-11-11"
   servicoscompartilhados:
     url: https://www.gov.br/servicoscompartilhados/pt-br/acesso-a-informacao/noticias
     active: true
@@ -572,10 +584,14 @@ agencies:
     disabled_date: "2025-01-15"
   sri:
     url: https://www.gov.br/sri/pt-br/noticias/mais-noticias/ultimas-noticias
-    active: true
+    active: false
+    disabled_reason: "A listagem redireciona para o login do Plone (require_login)"
+    disabled_date: "2026-11-11"
   sudam:
     url: https://www.gov.br/sudam/pt-br/noticias-1
-    active: true
+    active: false
+    disabled_reason: "A listagem não tem itens de 2026"
+    disabled_date: "2026-11-11"
   sudeco:
     # url: https://www.gov.br/sudeco/pt-br/assuntos/noticias
     url: https://www.gov.br/sudeco/pt-br/assuntos/acontece-na-sudeco

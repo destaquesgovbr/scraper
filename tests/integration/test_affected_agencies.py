@@ -33,8 +33,9 @@ _ALL_URLS = load_urls_from_yaml(_CONFIG_DIR, "site_urls.yaml")
 # Adding an agency to site_urls.yaml does NOT automatically add it here.
 _WORKING_AGENCY_KEY = "mec"
 
-# Agencies that work with BeautifulSoup (traditional HTML templates, scraper_type: html)
-_SCRAPABLE_AGENCY_KEYS = ["palmares", "sudam", "cemaden", "semanaenef", "sri", "ctir"]
+# Agencies that work with BeautifulSoup (traditional HTML templates, scraper_type: html).
+# sudam, sri e ctir saíram em 2026-11-11: foram desativadas no site_urls.yaml (infra#223).
+_SCRAPABLE_AGENCY_KEYS = ["palmares", "cemaden", "semanaenef"]
 
 # Working agency for baseline comparison
 WORKING_AGENCY = {
@@ -42,8 +43,12 @@ WORKING_AGENCY = {
     "url": _ALL_URLS[_WORKING_AGENCY_KEY]["url"],
 }
 
-# Agencies that work with BeautifulSoup (traditional HTML templates)
-SCRAPABLE_AGENCIES = {key: _ALL_URLS[key]["url"] for key in _SCRAPABLE_AGENCY_KEYS}
+# Agencies that work with BeautifulSoup (traditional HTML templates). _ALL_URLS só tem as
+# ativas: uma agência desativada sai daqui em vez de dar KeyError na coleta, o que derrubava
+# até `pytest -m "not integration"`.
+SCRAPABLE_AGENCIES = {
+    key: _ALL_URLS[key]["url"] for key in _SCRAPABLE_AGENCY_KEYS if key in _ALL_URLS
+}
 
 # Agencies with scraper_type: plone6_api (ctav, esg, esporte, hfa, memp,
 # patrimonio, pncp, povosindigenas, propriedade-intelectual, reconstrucaors, susep)

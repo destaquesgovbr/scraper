@@ -47,16 +47,11 @@ DEFESO_2026_URLS = {
     "servidor": "https://www.gov.br/servidor/pt-br/assuntos/noticias-defeso-eleitoral",
 }
 
-# Agências que ainda podem ficar numa URL de defeso, com o motivo (verificado em 02/11/2026).
+# Agências que ainda podem ficar numa URL de defeso, com o motivo.
 # Ao trocar a URL de uma delas, remova a entrada: test_defeso_allowlist_has_no_stale_entries
-# falha se a agência não usar mais URL de defeso.
-DEFESO_ALLOWLIST = {
-    "ana": "A URL original (noticias-e-eventos/noticias) redireciona para o login do Plone.",
-    "museus": (
-        "A URL original (assuntos/noticias) só lista notícias de 2015 e as de 2026 seguem "
-        "privadas (login); não há outra listagem pública com notícias recentes."
-    ),
-}
+# falha se a agência não usar mais URL de defeso. ana e museus saíram em 11/11/2026, quando as
+# URLs originais voltaram a listar as notícias recentes.
+DEFESO_ALLOWLIST: dict[str, str] = {}
 
 
 def _load_agencies(config_file: Path) -> dict[str, dict]:
