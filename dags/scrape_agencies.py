@@ -2,8 +2,9 @@
 Gera ~155 DAGs de scraping, uma por agência gov.br.
 
 Cada DAG:
-- Roda a cada 10 minutos, com offset de minuto baseado no índice da agência
-  (distribui uniformemente ao longo da janela de 10 min, ~16 DAGs por minuto)
+- Roda a cada 10 minutos, com offset de minuto baseado no índice da agência na lista
+  ordenada de todas as chaves do YAML, inclusive inativas (distribui ao longo da janela de
+  10 min, ~16 DAGs por minuto, e não muda quando outra agência é desativada)
 - Chama a Scraper API no Cloud Run via HTTP
 - Retry: 2x com backoff de 5 min
 - Timeout: 10 min por execução
@@ -58,6 +59,18 @@ def _on_scrape_failure(context):
     )
 
 
+def _read_agencies() -> dict:
+    """Lê todas as agências do YAML, ativas e inativas: {agency_key: config}."""
+    config_path = os.path.join(os.path.dirname(__file__), "config", "site_urls.yaml")
+    with open(config_path) as f:
+        return yaml.safe_load(f)["agencies"]
+
+
+def _active_agencies(agencies: dict) -> dict:
+    """Filtra as agências ativas (``active`` ausente conta como True): {agency_key: url}."""
+    return {key: data.get("url") for key, data in agencies.items() if data.get("active", True)}
+
+
 def _load_agencies_config() -> dict:
     """Carrega config de agências ativas do YAML.
 
@@ -70,18 +83,18 @@ def _load_agencies_config() -> dict:
     Returns:
         dict: Mapeamento {agency_key: url} apenas para agências ativas
     """
-    config_path = os.path.join(os.path.dirname(__file__), "config", "site_urls.yaml")
-    with open(config_path) as f:
-        agencies = yaml.safe_load(f)["agencies"]
+    return _active_agencies(_read_agencies())
 
-    # Filtrar apenas agências ativas e extrair URLs
-    active_agencies = {}
-    for key, data in agencies.items():
-        is_active = data.get("active", True)
-        if is_active:
-            active_agencies[key] = data.get("url")
 
-    return active_agencies
+def _minute_offsets(agency_keys) -> dict:
+    """Minuto (0-9) do schedule de cada agência: posição na lista ordenada de TODAS as chaves.
+
+    O índice inclui as agências inativas, para que ativar ou desativar uma agência não desloque
+    o minuto das outras. Com o índice só das ativas, cada desativação mudava o schedule de
+    quase todas as DAGs, e deploys assim já deixaram DagRun zumbi (docs/runbook.md, "DAG de
+    Agência Travada"). Uma agência nova ainda desloca as chaves que vêm depois dela.
+    """
+    return {key: idx % 10 for idx, key in enumerate(sorted(agency_keys))}
 
 
 def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0):
@@ -162,8 +175,9 @@ def create_scraper_dag(agency_key: str, agency_url: str, minute_offset: int = 0)
     return scraper_dag()
 
 
-# Gerar DAGs dinamicamente com offsets de minuto distribuídos
-# sorted() garante ordenação determinística (mesmo offset para mesma agência)
-for idx, (key, url) in enumerate(sorted(_load_agencies_config().items())):
-    minute_offset = idx % 10
-    globals()[f"scrape_{key}"] = create_scraper_dag(key, url, minute_offset)
+# Gerar DAGs só para as agências ativas, com o minuto calculado sobre todas as chaves do YAML
+# (ver _minute_offsets): desativar uma agência não muda o schedule das outras.
+_ALL_AGENCIES = _read_agencies()
+_MINUTE_OFFSETS = _minute_offsets(_ALL_AGENCIES)
+for key, url in sorted(_active_agencies(_ALL_AGENCIES).items()):
+    globals()[f"scrape_{key}"] = create_scraper_dag(key, url, _MINUTE_OFFSETS[key])

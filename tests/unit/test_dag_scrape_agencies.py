@@ -21,10 +21,16 @@ SAMPLE_YAML = {
 }
 
 
-def _make_airflow_mocks():
-    """Create Airflow module mocks that prevent real execution."""
+def _make_airflow_mocks(dag_calls=None):
+    """Create Airflow module mocks that prevent real execution.
+
+    dag_calls: lista opcional que recebe os kwargs de cada @dag (dag_id, schedule...).
+    """
 
     def fake_dag(**kwargs):
+        if dag_calls is not None:
+            dag_calls.append(kwargs)
+
         def wrapper(fn):
             fn._dag_kwargs = kwargs
             return fn
@@ -57,13 +63,13 @@ def _clean_module():
             del sys.modules[key]
 
 
-def _load_module(yaml_content):
+def _load_module(yaml_content, dag_calls=None):
     """Import scrape_agencies with mocked Airflow and YAML content.
 
     Returns (module, open_mock) — keep open_mock alive for the test duration
     so that subsequent calls to _load_agencies_config() still use the mock.
     """
-    airflow_mocks = _make_airflow_mocks()
+    airflow_mocks = _make_airflow_mocks(dag_calls)
     yaml_data = yaml.dump(yaml_content)
 
     for key in list(sys.modules):
@@ -155,36 +161,86 @@ class TestLoadAgenciesConfig:
             _cleanup(patchers)
 
 
+def _schedules(yaml_content):
+    """{dag_id: schedule} das DAGs geradas na importação do módulo."""
+    dag_calls = []
+    _mod, patchers = _load_module(yaml_content, dag_calls)
+    _cleanup(patchers)
+    return {call["dag_id"]: call["schedule"] for call in dag_calls}
+
+
 class TestDynamicDagGeneration:
     def test_minute_offset_distribution(self):
-        agencies = {"a": "url_a", "b": "url_b", "c": "url_c"}
-        sorted_keys = [k for k, _ in sorted(agencies.items())]
-        offsets = {k: idx % 10 for idx, k in enumerate(sorted_keys)}
+        mod, patchers = _load_module(SAMPLE_YAML)
+        try:
+            offsets = mod._minute_offsets(["a", "b", "c"])
+        finally:
+            _cleanup(patchers)
 
-        assert offsets["a"] == 0
-        assert offsets["b"] == 1
-        assert offsets["c"] == 2
+        assert offsets == {"a": 0, "b": 1, "c": 2}
 
     def test_offset_wraps_at_10(self):
-        agencies = {f"agency_{i:02d}": f"url_{i}" for i in range(25)}
-        sorted_keys = [k for k, _ in sorted(agencies.items())]
-        offsets = [idx % 10 for idx in range(len(sorted_keys))]
+        mod, patchers = _load_module(SAMPLE_YAML)
+        try:
+            offsets = mod._minute_offsets([f"agency_{i:02d}" for i in range(25)])
+        finally:
+            _cleanup(patchers)
 
-        assert offsets[0] == 0
-        assert offsets[9] == 9
-        assert offsets[10] == 0
-        assert offsets[19] == 9
-        assert offsets[24] == 4
+        assert offsets["agency_00"] == 0
+        assert offsets["agency_09"] == 9
+        assert offsets["agency_10"] == 0
+        assert offsets["agency_19"] == 9
+        assert offsets["agency_24"] == 4
 
     def test_offset_is_deterministic(self):
-        agencies = {"zz": "url_z", "aa": "url_a", "mm": "url_m"}
-        run1 = [(k, idx % 10) for idx, (k, _) in enumerate(sorted(agencies.items()))]
-        run2 = [(k, idx % 10) for idx, (k, _) in enumerate(sorted(agencies.items()))]
+        mod, patchers = _load_module(SAMPLE_YAML)
+        try:
+            run1 = mod._minute_offsets(["zz", "aa", "mm"])
+            run2 = mod._minute_offsets(["mm", "zz", "aa"])
+        finally:
+            _cleanup(patchers)
 
-        assert run1 == run2
-        assert run1[0][0] == "aa"
-        assert run1[1][0] == "mm"
-        assert run1[2][0] == "zz"
+        assert run1 == run2 == {"aa": 0, "mm": 1, "zz": 2}
+
+    def test_offset_index_includes_inactive_agencies(self):
+        """O índice do minuto conta as inativas; só as ativas viram DAG."""
+        yaml_content = {
+            "agencies": {
+                "aaa": {"url": "https://gov.br/aaa", "active": True},
+                "bbb": {"url": "https://gov.br/bbb", "active": False},
+                "ccc": {"url": "https://gov.br/ccc", "active": True},
+            }
+        }
+
+        assert _schedules(yaml_content) == {
+            "scrape_aaa": "0/10 * * * *",
+            "scrape_ccc": "2/10 * * * *",
+        }
+
+    def test_deactivating_agency_keeps_other_schedules(self):
+        """Desativar uma agência não desloca o minuto das outras (DagRun zumbi, runbook)."""
+        agencies = {
+            f"ag{i:02d}": {"url": f"https://gov.br/ag{i:02d}", "active": True} for i in range(25)
+        }
+        before = _schedules({"agencies": agencies})
+
+        agencies["ag03"] = {**agencies["ag03"], "active": False}
+        after = _schedules({"agencies": agencies})
+
+        assert "scrape_ag03" not in after
+        assert after == {
+            dag_id: sched for dag_id, sched in before.items() if dag_id != "scrape_ag03"
+        }
+
+    def test_inactive_agency_generates_no_dag(self):
+        mod, patchers = _load_module(SAMPLE_YAML)
+        try:
+            generated = {name for name in vars(mod) if name.startswith("scrape_")}
+            assert {"scrape_mec", "scrape_mds", "scrape_no_active_field"} <= generated
+            assert "scrape_disabled_agency" not in generated
+            assert set(mod._MINUTE_OFFSETS) == set(SAMPLE_YAML["agencies"])
+        finally:
+            _cleanup(patchers)
 
     def test_dag_id_follows_scrape_prefix_pattern(self):
         yaml_content = {
@@ -211,13 +267,12 @@ class TestDynamicDagGeneration:
                 "ccc": {"url": "https://gov.br/ccc", "active": True},
             }
         }
-        mod, patchers = _load_module(yaml_content)
-        try:
-            config = mod._load_agencies_config()
-            expected = [(k, idx % 10) for idx, (k, _) in enumerate(sorted(config.items()))]
-            assert expected == [("aaa", 0), ("bbb", 1), ("ccc", 2)]
-        finally:
-            _cleanup(patchers)
+
+        assert _schedules(yaml_content) == {
+            "scrape_aaa": "0/10 * * * *",
+            "scrape_bbb": "1/10 * * * *",
+            "scrape_ccc": "2/10 * * * *",
+        }
 
 
 class TestOnScrapeFailure:
