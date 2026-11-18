@@ -1,6 +1,6 @@
 # Rearquitetura da ingestão de notícias (scraping)
 
-Plano de 19/11/2026. Mantém a raspagem resiliente, econômica e fácil de observar, e tira o Airflow do caminho crítico da ingestão.
+Plano de 18/11/2026. Mantém a raspagem resiliente, econômica e fácil de observar, e tira o Airflow do caminho crítico da ingestão.
 
 Relacionado: migração do Composer para um Airflow próprio (`infra/_plan/migrar-composer-para-airflow-proprio.md`); scraper#76 e #77; infra#223.
 
@@ -78,7 +78,7 @@ São ~880 chamadas por dia, contra 1.323 hoje. O atraso das agências que concen
 
 ## Passos
 
-### Passo 1: ajustes rápidos (scraper e data-platform; feito em 19/11)
+### Passo 1: ajustes rápidos (scraper e data-platform; feito em 18/11)
 1. **Categoria no erro da API.** `errors[]` de `/scrape/agencies` e `/scrape/ebc` passa a ter `category` e `retryable`. São permanentes:
    - `html_changed`, `url_broken`, `access_denied`, `anti_bot`;
    - agência desconhecida ou inativa.
