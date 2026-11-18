@@ -3,7 +3,9 @@ Testes de integração das queries de saúde contra um Postgres descartável.
 
 Provam a semântica de find_silent_agencies (agência ativa sem nenhum scrape_run na
 janela) num banco real: LEFT JOIN LATERAL, unnest do array de agências e a
-comparação de janela com NOW(). Mock de cursor não pega erro de SQL.
+comparação de janela com NOW(). Também find_stale_agencies e
+compute_coverage_report com COALESCE(articles_new, articles_saved). Mock de
+cursor não pega erro de SQL.
 
 Mesma guarda e mesmo Postgres dos testes de re-scrape (tests/integration/
 test_postgres_rescrape.py): requer SCRAPER_TEST_POSTGRES_URL apontando para um
@@ -19,14 +21,19 @@ import psycopg2
 import pytest
 from psycopg2.extensions import make_dsn
 
-from govbr_scraper.monitoring.health_checks import find_silent_agencies
+from govbr_scraper.monitoring.health_checks import (
+    compute_coverage_report,
+    find_silent_agencies,
+    find_stale_agencies,
+)
 from tests.integration import postgres_guard
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
 ENV_VAR = "SCRAPER_TEST_POSTGRES_URL"
 
-# data-platform: scripts/migrations/008_create_scrape_runs.sql + 026 (fallback_triggered).
+# data-platform: scripts/migrations/008_create_scrape_runs.sql + 026 (fallback_triggered)
+# + 037 (articles_new).
 _DDL = """
 CREATE TABLE scrape_runs (
     id SERIAL PRIMARY KEY,
@@ -39,7 +46,8 @@ CREATE TABLE scrape_runs (
     execution_time_seconds REAL,
     scraped_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    fallback_triggered BOOLEAN DEFAULT FALSE
+    fallback_triggered BOOLEAN DEFAULT FALSE,
+    articles_new INTEGER
 );
 CREATE INDEX idx_scrape_runs_agency_scraped ON scrape_runs (agency_key, scraped_at DESC);
 """
@@ -100,6 +108,16 @@ def _run(db, agency_key: str, hours_ago: float, status: str = "success") -> None
         )
 
 
+def _counted_run(db, agency_key: str, hours_ago: float, saved: int, new: int | None) -> None:
+    """Execução com sucesso; new=None imita uma linha anterior à migration 037."""
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO scrape_runs (agency_key, status, articles_saved, articles_new, scraped_at) "
+            "VALUES (%s, 'success', %s, %s, NOW() - INTERVAL '1 hour' * %s)",
+            (agency_key, saved, new, hours_ago),
+        )
+
+
 def _silent(db, agencies, silent_hours=2) -> dict:
     return {
         r["agency_key"]: r["last_run_at"] for r in find_silent_agencies(db, agencies, silent_hours)
@@ -138,3 +156,43 @@ class TestFindSilentAgenciesPostgres:
 
     def test_results_are_sorted_by_agency_key(self, db):
         assert list(_silent(db, ["patrimonio", "aids", "inpe"])) == ["aids", "inpe", "patrimonio"]
+
+
+class TestFindStaleAgenciesPostgres:
+    """Agência sem notícia NOVA em stale_hours: articles_new, com fallback para articles_saved
+    nas linhas anteriores à migration 037 (articles_new NULL)."""
+
+    def _stale(self, db, stale_hours=24) -> set[str]:
+        return {r["agency_key"] for r in find_stale_agencies(db, stale_hours)}
+
+    def test_rescrape_only_does_not_count_as_news(self, db):
+        """Caso agencia_brasil: re-scrape atualiza linhas (saved > 0) mas nada é novo."""
+        _counted_run(db, "agencia_brasil", hours_ago=30, saved=5, new=1)
+        _counted_run(db, "agencia_brasil", hours_ago=2, saved=40, new=0)
+        assert self._stale(db) == {"agencia_brasil"}
+
+    def test_recent_new_article_is_not_stale(self, db):
+        _counted_run(db, "mec", hours_ago=30, saved=5, new=1)
+        _counted_run(db, "mec", hours_ago=2, saved=1, new=1)
+        assert self._stale(db) == set()
+
+    def test_rows_before_migration_fall_back_to_articles_saved(self, db):
+        _counted_run(db, "mds", hours_ago=2, saved=3, new=None)
+        _counted_run(db, "antaq", hours_ago=30, saved=3, new=None)
+        _counted_run(db, "antaq", hours_ago=2, saved=0, new=None)
+        assert self._stale(db) == {"antaq"}
+
+    def test_agency_without_any_news_in_retention_is_not_listed(self, db):
+        """HAVING ... IS NOT NULL: só entra quem já teve notícia (comportamento mantido)."""
+        _counted_run(db, "quase_parada", hours_ago=2, saved=4, new=0)
+        assert self._stale(db) == set()
+
+
+class TestComputeCoverageReportPostgres:
+    def test_total_articles_counts_new_with_fallback(self, db):
+        _counted_run(db, "agencia_brasil", hours_ago=1, saved=40, new=2)
+        _counted_run(db, "mec", hours_ago=3, saved=5, new=None)  # antes da 037
+        _counted_run(db, "mds", hours_ago=30, saved=9, new=9)  # fora das 24 h
+        report = compute_coverage_report(db, hours=24)
+        assert report["total_articles"] == 7
+        assert report["agencies_scraped"] == 2

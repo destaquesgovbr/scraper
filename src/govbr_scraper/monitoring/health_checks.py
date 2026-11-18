@@ -31,6 +31,32 @@ SILENT_AGENCIES_QUERY = """
 """
 
 
+# Agências cuja última notícia NOVA é mais antiga que stale_hours (e que tiveram alguma nos
+# 90 dias de retenção). articles_new (migration 037 do data-platform) conta só as linhas
+# inseridas; articles_saved soma as atualizadas por re-scrape, e a EBC e o fallback Plone 6
+# (que relêem a janela inteira) nunca ficavam "sem notícias". Linhas anteriores à 037 têm
+# articles_new NULL e caem no articles_saved.
+#
+# NOTE: This query is duplicated in dags/monitor_scraping_health.py
+# (_STALE_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+STALE_AGENCIES_QUERY = """
+    SELECT
+        agency_key,
+        MAX(scraped_at) FILTER (
+            WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+        ) AS last_success_at
+    FROM scrape_runs
+    WHERE scraped_at > NOW() - INTERVAL '90 days'
+    GROUP BY agency_key
+    HAVING MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) < NOW() - INTERVAL '1 hour' * %(stale_hours)s
+       AND MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) IS NOT NULL
+"""
+
+
 def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -> list[dict]:
     """Find agencies with N or more consecutive recent failures.
 
@@ -74,31 +100,21 @@ def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -
 
 
 def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
-    """Find agencies that had successful scrapes but none with articles recently.
+    """Find agencies that had successful scrapes but no new article recently.
 
     Args:
         conn: psycopg2 connection (or mock).
-        stale_hours: Hours without articles to consider stale.
+        stale_hours: Hours without new articles to consider stale.
 
     Returns:
-        List of dicts with agency_key, last_success_at.
+        List of dicts with agency_key, last_success_at (last success with a new article,
+        or with saved articles for rows written before articles_new existed).
 
-    NOTE: This query is duplicated in dags/monitor_scraping_health.py (check_stale_agencies).
-    Changes here must be replicated there and vice-versa.
-    """
-    query = """
-        SELECT
-            agency_key,
-            MAX(scraped_at) FILTER (WHERE status = 'success' AND articles_saved > 0) AS last_success_at
-        FROM scrape_runs
-        WHERE scraped_at > NOW() - INTERVAL '90 days'
-        GROUP BY agency_key
-        HAVING MAX(scraped_at) FILTER (WHERE status = 'success' AND articles_saved > 0)
-               < NOW() - INTERVAL '1 hour' * %(stale_hours)s
-           AND MAX(scraped_at) FILTER (WHERE status = 'success' AND articles_saved > 0) IS NOT NULL
+    NOTE: STALE_AGENCIES_QUERY is duplicated in dags/monitor_scraping_health.py
+    (_STALE_AGENCIES_QUERY); tests/unit/test_dag_monitor_health.py checks they match.
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, {"stale_hours": stale_hours})
+        cur.execute(STALE_AGENCIES_QUERY, {"stale_hours": stale_hours})
         return [dict(row) for row in cur.fetchall()]
 
 
@@ -146,7 +162,7 @@ def compute_coverage_report(conn, hours: int = 24) -> dict:
         SELECT
             COUNT(DISTINCT agency_key) FILTER (WHERE status = 'success') AS agencies_scraped,
             COUNT(DISTINCT agency_key) FILTER (WHERE status = 'error') AS agencies_with_errors,
-            COALESCE(SUM(articles_saved), 0) AS total_articles,
+            COALESCE(SUM(COALESCE(articles_new, articles_saved)), 0) AS total_articles,
             (SELECT COUNT(DISTINCT agency_key) FROM scrape_runs
              WHERE scraped_at > NOW() - INTERVAL '7 days') AS total_active,
             CASE

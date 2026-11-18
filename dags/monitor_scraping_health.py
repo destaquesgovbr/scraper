@@ -49,6 +49,28 @@ _MAX_LINES_PER_SECTION = 25
 _MAX_MESSAGE_CHARS = 4000
 _TRUNCATED_MARKER = "... (alerta truncado; lista completa no log da task)"
 
+# Última notícia NOVA de cada agência (articles_new, migration 037 do data-platform; linhas
+# anteriores a ela têm NULL e caem no articles_saved, que soma as atualizadas por re-scrape).
+#
+# NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+# (STALE_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+_STALE_AGENCIES_QUERY = """
+    SELECT
+        agency_key,
+        MAX(scraped_at) FILTER (
+            WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+        ) AS last_success_at
+    FROM scrape_runs
+    WHERE scraped_at > NOW() - INTERVAL '90 days'
+    GROUP BY agency_key
+    HAVING MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) < NOW() - INTERVAL '1 hour' * %(stale_hours)s
+       AND MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) IS NOT NULL
+"""
+
 # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
 # (SILENT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
 _SILENT_AGENCIES_QUERY = """
@@ -328,7 +350,7 @@ def monitor_scraping_health_dag():
 
     @task
     def check_stale_agencies() -> list[dict]:
-        """Verifica agencias sem noticias em X horas."""
+        """Verifica agencias sem noticias novas em X horas (articles_new; antes, articles_saved)."""
         import psycopg2
         from airflow.models import Variable
         from psycopg2.extras import RealDictCursor
@@ -338,29 +360,10 @@ def monitor_scraping_health_dag():
         if not database_url:
             raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
-        # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
-        # (find_stale_agencies). Changes here must be replicated there and vice-versa.
-        query = """
-            SELECT
-                agency_key,
-                MAX(scraped_at) FILTER (
-                    WHERE status = 'success' AND articles_saved > 0
-                ) AS last_success_at
-            FROM scrape_runs
-            WHERE scraped_at > NOW() - INTERVAL '90 days'
-            GROUP BY agency_key
-            HAVING MAX(scraped_at) FILTER (
-                       WHERE status = 'success' AND articles_saved > 0
-                   ) < NOW() - INTERVAL '1 hour' * %(stale_hours)s
-               AND MAX(scraped_at) FILTER (
-                       WHERE status = 'success' AND articles_saved > 0
-                   ) IS NOT NULL
-        """
-
         conn = psycopg2.connect(database_url)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, {"stale_hours": stale_hours})
+                cur.execute(_STALE_AGENCIES_QUERY, {"stale_hours": stale_hours})
                 results = [dict(row) for row in cur.fetchall()]
         finally:
             conn.close()

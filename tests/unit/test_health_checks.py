@@ -7,6 +7,7 @@ import pytest
 
 from govbr_scraper.monitoring.health_checks import (
     SILENT_AGENCIES_QUERY,
+    STALE_AGENCIES_QUERY,
     compute_coverage_report,
     find_consecutive_failures,
     find_silent_agencies,
@@ -91,6 +92,13 @@ class TestFindStaleAgencies:
         result = find_stale_agencies(mock_conn, stale_hours=24)
         assert result == []
 
+    def test_executes_shared_query_with_stale_hours(self, mock_cursor_with_rows):
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        find_stale_agencies(mock_conn, stale_hours=12)
+        sql, params = mock_cursor.execute.call_args[0]
+        assert sql == STALE_AGENCIES_QUERY
+        assert params == {"stale_hours": 12}
+
 
 class TestFindSilentAgencies:
     """Agência ativa sem nenhum scrape_run na janela = DAG que não chama a API.
@@ -144,6 +152,13 @@ class TestFindSilentAgencies:
 
 
 class TestComputeCoverageReport:
+    def test_total_articles_counts_new_articles(self, mock_cursor_with_rows):
+        """Total de notícias novas (articles_new); antes da migration 037, articles_saved."""
+        mock_conn, mock_cursor = mock_cursor_with_rows([{"total_articles": 0}])
+        compute_coverage_report(mock_conn, hours=24)
+        sql = " ".join(mock_cursor.execute.call_args[0][0].split())
+        assert "COALESCE(SUM(COALESCE(articles_new, articles_saved)), 0) AS total_articles" in sql
+
     def test_returns_correct_ratio(self, mock_cursor_with_rows):
         mock_conn, _ = mock_cursor_with_rows(
             [

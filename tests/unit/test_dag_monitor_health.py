@@ -13,6 +13,7 @@ import yaml
 
 from govbr_scraper.monitoring.health_checks import (
     SILENT_AGENCIES_QUERY,
+    STALE_AGENCIES_QUERY,
     find_consecutive_failures,
     find_silent_agencies,
 )
@@ -362,6 +363,19 @@ class TestSilentQueryParity:
         assert " ".join(mod._SILENT_AGENCIES_QUERY.split()) == " ".join(
             SILENT_AGENCIES_QUERY.split()
         )
+
+
+class TestStaleQueryParity:
+    def test_dag_query_matches_health_checks(self):
+        """A query vive duplicada (o pacote não é instalado no Composer): não pode divergir."""
+        mod = _load_module()
+        assert " ".join(mod._STALE_AGENCIES_QUERY.split()) == " ".join(STALE_AGENCIES_QUERY.split())
+
+    def test_counts_new_articles_with_fallback_to_saved(self):
+        """articles_new (migration 037); linhas anteriores a ela (NULL) usam articles_saved."""
+        normalized = " ".join(STALE_AGENCIES_QUERY.split())
+        assert normalized.count("COALESCE(articles_new, articles_saved) > 0") == 3
+        assert "AND articles_saved > 0" not in normalized
 
 
 class TestBuildAlertMessage:
