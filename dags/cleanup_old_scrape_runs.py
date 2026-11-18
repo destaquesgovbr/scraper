@@ -2,7 +2,8 @@
 DAG de retencao da tabela scrape_runs.
 
 Roda diariamente e deleta registros mais antigos que N dias
-para evitar crescimento ilimitado (~22k rows/dia com 155 agencias).
+para evitar crescimento ilimitado (~1,4 mil rows/dia: ~150 agencias x 9 execucoes
+da scrape_agencies, mais retries e EBC).
 """
 
 import logging

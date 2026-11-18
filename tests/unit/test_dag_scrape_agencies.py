@@ -1,10 +1,16 @@
-"""Tests for dags/scrape_agencies.py — config loading and dynamic DAG generation."""
+"""Tests for dags/scrape_agencies.py — DAG única com uma task mapeada por agência ativa."""
 
+import logging
 import sys
+import types
+from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SAMPLE_YAML = {
     "agencies": {
@@ -21,295 +27,367 @@ SAMPLE_YAML = {
 }
 
 
-def _make_airflow_mocks(dag_calls=None):
-    """Create Airflow module mocks that prevent real execution.
+class FakeParam:
+    def __init__(self, default=None, **schema):
+        self.value = default
+        self.schema = schema
 
-    dag_calls: lista opcional que recebe os kwargs de cada @dag (dag_id, schedule...).
-    """
 
+class FakeTask:
+    """Imita uma task TaskFlow: guarda os kwargs do @task e as chamadas de expand()."""
+
+    def __init__(self, fn, task_kwargs):
+        self._original_fn = fn
+        self.task_kwargs = task_kwargs
+        self.expand_calls = []
+
+    def expand(self, **kwargs):
+        self.expand_calls.append(kwargs)
+        return MagicMock(name="mapped")
+
+    def __call__(self, *args, **kwargs):
+        return MagicMock(name="xcom")
+
+
+class AirflowException(Exception):
+    pass
+
+
+class AirflowFailException(AirflowException):
+    pass
+
+
+def _make_airflow_mocks(dag_calls, tasks, context):
     def fake_dag(**kwargs):
-        if dag_calls is not None:
-            dag_calls.append(kwargs)
+        dag_calls.append(kwargs)
 
         def wrapper(fn):
-            fn._dag_kwargs = kwargs
             return fn
 
         return wrapper
 
-    def fake_task(fn):
-        mock_callable = MagicMock(name=f"task_{fn.__name__}")
-        mock_callable._original_fn = fn
-        return mock_callable
+    def fake_task(fn=None, **task_kwargs):
+        def wrap(f):
+            tasks[f.__name__] = FakeTask(f, task_kwargs)
+            return tasks[f.__name__]
 
-    mock_decorators = MagicMock()
-    mock_decorators.dag = fake_dag
-    mock_decorators.task = fake_task
+        return wrap(fn) if callable(fn) else wrap
+
+    decorators = MagicMock()
+    decorators.dag = fake_dag
+    decorators.task = fake_task
+
+    sdk = types.ModuleType("airflow.sdk")
+    sdk.Param = FakeParam
+    sdk.get_current_context = lambda: context
+
+    exceptions = types.ModuleType("airflow.exceptions")
+    exceptions.AirflowException = AirflowException
+    exceptions.AirflowFailException = AirflowFailException
 
     return {
         "airflow": MagicMock(),
-        "airflow.decorators": mock_decorators,
+        "airflow.decorators": decorators,
         "airflow.models": MagicMock(),
-        "airflow.exceptions": MagicMock(),
+        "airflow.exceptions": exceptions,
+        "airflow.sdk": sdk,
     }
 
 
-@pytest.fixture(autouse=True)
-def _clean_module():
-    """Remove cached DAG module between tests."""
-    yield
+def _drop_cached_module():
     for key in list(sys.modules):
         if key.startswith("dags.scrape_agencies"):
             del sys.modules[key]
 
 
-def _load_module(yaml_content, dag_calls=None):
-    """Import scrape_agencies with mocked Airflow and YAML content.
+class Loaded:
+    """Módulo importado com Airflow mockado (e o YAML, se informado)."""
 
-    Returns (module, open_mock) — keep open_mock alive for the test duration
-    so that subsequent calls to _load_agencies_config() still use the mock.
-    """
-    airflow_mocks = _make_airflow_mocks(dag_calls)
-    yaml_data = yaml.dump(yaml_content)
+    def __init__(self, yaml_content=None):
+        self.dag_calls: list[dict] = []
+        self.tasks: dict[str, FakeTask] = {}
+        self.context: dict = {}
+        self.mocks = _make_airflow_mocks(self.dag_calls, self.tasks, self.context)
+        self._patchers = [patch.dict(sys.modules, self.mocks)]
+        if yaml_content is not None:
+            self._patchers.append(
+                patch("builtins.open", mock_open(read_data=yaml.dump(yaml_content)))
+            )
+        _drop_cached_module()
+        for p in self._patchers:
+            p.start()
+        import dags.scrape_agencies as mod
 
-    for key in list(sys.modules):
-        if key.startswith("dags.scrape_agencies"):
-            del sys.modules[key]
+        self.mod = mod
 
-    open_patcher = patch("builtins.open", mock_open(read_data=yaml_data))
-    modules_patcher = patch.dict(sys.modules, airflow_mocks)
+    @property
+    def dag_kwargs(self) -> dict:
+        assert len(self.dag_calls) == 1
+        return self.dag_calls[0]
 
-    modules_patcher.start()
-    open_patcher.start()
+    @property
+    def scrape(self) -> FakeTask:
+        return self.tasks["scrape"]
 
-    import dags.scrape_agencies as mod
+    def stop(self):
+        for p in reversed(self._patchers):
+            p.stop()
 
-    return mod, (modules_patcher, open_patcher)
 
+@pytest.fixture
+def load():
+    loaded: list[Loaded] = []
 
-def _cleanup(patchers):
-    modules_patcher, open_patcher = patchers
-    open_patcher.stop()
-    modules_patcher.stop()
+    def _load(yaml_content=SAMPLE_YAML):
+        result = Loaded(yaml_content)
+        loaded.append(result)
+        return result
+
+    yield _load
+    for item in loaded:
+        item.stop()
+    _drop_cached_module()
 
 
 class TestLoadAgenciesConfig:
-    def test_filters_inactive_agencies(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            result = mod._load_agencies_config()
-            assert "mec" in result
-            assert "mds" in result
-            assert "disabled_agency" not in result
-        finally:
-            _cleanup(patchers)
+    def test_filters_inactive_agencies(self, load):
+        result = load().mod._load_agencies_config()
+        assert "mec" in result
+        assert "mds" in result
+        assert "disabled_agency" not in result
 
-    def test_default_active_true_when_field_missing(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            result = mod._load_agencies_config()
-            assert "no_active_field" in result
-        finally:
-            _cleanup(patchers)
+    def test_default_active_true_when_field_missing(self, load):
+        assert "no_active_field" in load().mod._load_agencies_config()
 
-    def test_extracts_url_correctly(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            result = mod._load_agencies_config()
-            assert result["mec"] == "https://www.gov.br/mec/pt-br/noticias"
-            assert result["mds"] == "https://www.gov.br/mds/pt-br/noticias"
-        finally:
-            _cleanup(patchers)
+    def test_extracts_url_correctly(self, load):
+        result = load().mod._load_agencies_config()
+        assert result["mec"] == "https://www.gov.br/mec/pt-br/noticias"
+        assert result["mds"] == "https://www.gov.br/mds/pt-br/noticias"
 
-    def test_returns_empty_when_all_inactive(self):
+    def test_returns_empty_when_all_inactive(self, load):
         yaml_content = {
             "agencies": {
                 "a": {"url": "https://x.com", "active": False},
                 "b": {"url": "https://y.com", "active": False},
             }
         }
-        mod, patchers = _load_module(yaml_content)
-        try:
-            result = mod._load_agencies_config()
-            assert result == {}
-        finally:
-            _cleanup(patchers)
+        assert load(yaml_content).mod._load_agencies_config() == {}
 
-    def test_returns_empty_when_no_agencies(self):
-        yaml_content = {"agencies": {}}
-        mod, patchers = _load_module(yaml_content)
-        try:
-            result = mod._load_agencies_config()
-            assert result == {}
-        finally:
-            _cleanup(patchers)
+    def test_returns_empty_when_no_agencies(self, load):
+        assert load({"agencies": {}}).mod._load_agencies_config() == {}
 
-    def test_active_field_respects_false(self):
+    def test_active_field_respects_false(self, load):
         yaml_content = {
             "agencies": {
                 "active_one": {"url": "https://a.com", "active": True},
                 "inactive_one": {"url": "https://b.com", "active": False},
             }
         }
-        mod, patchers = _load_module(yaml_content)
-        try:
-            result = mod._load_agencies_config()
-            assert "active_one" in result
-            assert "inactive_one" not in result
-            assert len(result) == 1
-        finally:
-            _cleanup(patchers)
+        assert load(yaml_content).mod._load_agencies_config() == {"active_one": "https://a.com"}
 
 
-def _schedules(yaml_content):
-    """{dag_id: schedule} das DAGs geradas na importação do módulo."""
-    dag_calls = []
-    _mod, patchers = _load_module(yaml_content, dag_calls)
-    _cleanup(patchers)
-    return {call["dag_id"]: call["schedule"] for call in dag_calls}
+class TestSingleDag:
+    def test_generates_one_dag_scrape_agencies(self, load):
+        loaded = load()
+        assert [call["dag_id"] for call in loaded.dag_calls] == ["scrape_agencies"]
+
+    def test_no_per_agency_dags_or_minute_offsets(self, load):
+        mod = load().mod
+        assert not hasattr(mod, "_minute_offsets")
+        assert not hasattr(mod, "create_scraper_dag")
+        for key in SAMPLE_YAML["agencies"]:
+            assert not hasattr(mod, f"scrape_{key}")
+
+    def test_schedule_every_two_hours_from_6_to_22(self, load):
+        """Cron em BRT (core.default_timezone): 06h, 08h, ..., 22h = 9 execuções por dia."""
+        kwargs = load().dag_kwargs
+        assert kwargs["schedule"] == "0 6-22/2 * * *"
+        assert kwargs["catchup"] is False
+        assert kwargs["max_active_runs"] == 1
+        assert kwargs["start_date"] == datetime(2025, 1, 1)
+        assert kwargs["tags"] == ["scraper", "govbr"]
+
+    def test_default_args_keep_retry_and_timeout_policy(self, load):
+        loaded = load()
+        args = loaded.dag_kwargs["default_args"]
+        assert args["retries"] == 2
+        assert args["retry_delay"].total_seconds() == 5 * 60
+        assert args["retry_exponential_backoff"] is True
+        assert args["max_retry_delay"].total_seconds() == 15 * 60
+        assert args["execution_timeout"].total_seconds() == 10 * 60
+        assert args["on_failure_callback"] is loaded.mod._on_scrape_failure
+
+    def test_optional_catch_up_params(self, load):
+        params = load().dag_kwargs["params"]
+        assert set(params) == {"start_date", "end_date"}
+        for param in params.values():
+            assert param.value is None
+            assert param.schema["type"] == ["null", "string"]
+            assert param.schema["format"] == "date"
+            assert "YYYY-MM-DD" in param.schema["description"]
 
 
-class TestDynamicDagGeneration:
-    def test_minute_offset_distribution(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            offsets = mod._minute_offsets(["a", "b", "c"])
-        finally:
-            _cleanup(patchers)
+class TestMappedTask:
+    def test_expands_over_sorted_active_agencies_only(self, load):
+        loaded = load()
+        expected = ["mds", "mec", "no_active_field"]
+        assert loaded.scrape.expand_calls == [{"agency_key": expected}]
+        assert loaded.mod.ACTIVE_AGENCY_KEYS == expected
 
-        assert offsets == {"a": 0, "b": 1, "c": 2}
+    def test_limits_concurrency_and_names_map_index(self, load):
+        task_kwargs = load().scrape.task_kwargs
+        assert task_kwargs["max_active_tis_per_dag"] == 4
+        assert task_kwargs["map_index_template"] == "{{ agency_key }}"
 
-    def test_offset_wraps_at_10(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            offsets = mod._minute_offsets([f"agency_{i:02d}" for i in range(25)])
-        finally:
-            _cleanup(patchers)
+    def test_empty_config_expands_empty_list(self, load):
+        assert load({"agencies": {}}).scrape.expand_calls == [{"agency_key": []}]
 
-        assert offsets["agency_00"] == 0
-        assert offsets["agency_09"] == 9
-        assert offsets["agency_10"] == 0
-        assert offsets["agency_19"] == 9
-        assert offsets["agency_24"] == 4
+    def test_real_config_maps_exactly_the_active_agencies(self, load):
+        """Com o site_urls.yaml real: uma task mapeada por agência ativa, nenhuma inativa."""
+        loaded = load(yaml_content=None)
+        with open(REPO_ROOT / "dags/config/site_urls.yaml") as f:
+            agencies = yaml.safe_load(f)["agencies"]
+        active = sorted(k for k, v in agencies.items() if v.get("active", True))
+        inactive = {k for k, v in agencies.items() if not v.get("active", True)}
 
-    def test_offset_is_deterministic(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            run1 = mod._minute_offsets(["zz", "aa", "mm"])
-            run2 = mod._minute_offsets(["mm", "zz", "aa"])
-        finally:
-            _cleanup(patchers)
+        mapped = loaded.scrape.expand_calls[0]["agency_key"]
+        assert mapped == active
+        assert len(mapped) > 100
+        assert not inactive & set(mapped)
 
-        assert run1 == run2 == {"aa": 0, "mm": 1, "zz": 2}
 
-    def test_offset_index_includes_inactive_agencies(self):
-        """O índice do minuto conta as inativas; só as ativas viram DAG."""
-        yaml_content = {
-            "agencies": {
-                "aaa": {"url": "https://gov.br/aaa", "active": True},
-                "bbb": {"url": "https://gov.br/bbb", "active": False},
-                "ccc": {"url": "https://gov.br/ccc", "active": True},
-            }
+def _body(loaded, agency_key="mec", context=None, response=None, api_url="https://scraper.run.app"):
+    """Executa o corpo da task scrape com Variable, token e HTTP mockados."""
+    loaded.context.clear()
+    loaded.context.update(
+        context
+        if context is not None
+        else {"logical_date": datetime(2026, 11, 17, 17, 0, tzinfo=UTC), "params": {}}
+    )
+    variable = loaded.mocks["airflow.models"].Variable
+    variable.get = MagicMock(side_effect=lambda key, default_var=None: api_url or default_var)
+    if response is None:
+        response = MagicMock()
+        response.json.return_value = {"status": "completed", "errors": []}
+    with (
+        patch("google.oauth2.id_token.fetch_id_token", return_value="id-token") as fetch,
+        patch("google.auth.transport.requests.Request"),
+        patch("httpx.post", return_value=response) as post,
+    ):
+        loaded.scrape._original_fn(agency_key)
+    return post, fetch, response
+
+
+class TestScrapeTaskBody:
+    def test_posts_same_payload_for_one_agency(self, load):
+        loaded = load()
+        post, fetch, response = _body(loaded)
+
+        fetch.assert_called_once()
+        assert fetch.call_args[0][1] == "https://scraper.run.app"
+        post.assert_called_once()
+        url = post.call_args[0][0]
+        kwargs = post.call_args[1]
+        assert url == "https://scraper.run.app/scrape/agencies"
+        # 14:00 BRT de 17/11: janela de 9 h ainda no mesmo dia
+        assert kwargs["json"] == {
+            "start_date": "2026-11-17",
+            "end_date": "2026-11-17",
+            "agencies": ["mec"],
+            "allow_update": False,
+            "sequential": True,
         }
+        assert kwargs["headers"] == {"Authorization": "Bearer id-token"}
+        assert kwargs["timeout"] == 900.0
+        response.raise_for_status.assert_called_once()
 
-        assert _schedules(yaml_content) == {
-            "scrape_aaa": "0/10 * * * *",
-            "scrape_ccc": "2/10 * * * *",
-        }
+    def test_sets_agency_key_in_context_for_map_index(self, load):
+        loaded = load()
+        _body(loaded, agency_key="mds")
+        assert loaded.context["agency_key"] == "mds"
 
-    def test_deactivating_agency_keeps_other_schedules(self):
-        """Desativar uma agência não desloca o minuto das outras (DagRun zumbi, runbook)."""
-        agencies = {
-            f"ag{i:02d}": {"url": f"https://gov.br/ag{i:02d}", "active": True} for i in range(25)
-        }
-        before = _schedules({"agencies": agencies})
+    def test_six_am_run_includes_previous_day(self, load):
+        loaded = load()
+        post, _, _ = _body(
+            loaded,
+            context={"logical_date": datetime(2026, 11, 17, 9, 0, tzinfo=UTC), "params": {}},
+        )
+        payload = post.call_args[1]["json"]
+        assert (payload["start_date"], payload["end_date"]) == ("2026-11-16", "2026-11-17")
 
-        agencies["ag03"] = {**agencies["ag03"], "active": False}
-        after = _schedules({"agencies": agencies})
+    def test_params_override_window(self, load):
+        loaded = load()
+        post, _, _ = _body(
+            loaded,
+            context={
+                "logical_date": datetime(2026, 11, 17, 17, 0, tzinfo=UTC),
+                "params": {"start_date": "2026-11-12", "end_date": "2026-11-14"},
+            },
+        )
+        payload = post.call_args[1]["json"]
+        assert (payload["start_date"], payload["end_date"]) == ("2026-11-12", "2026-11-14")
 
-        assert "scrape_ag03" not in after
-        assert after == {
-            dag_id: sched for dag_id, sched in before.items() if dag_id != "scrape_ag03"
-        }
+    def test_invalid_params_fail_without_retry_and_without_calling_api(self, load):
+        loaded = load()
+        with pytest.raises(AirflowFailException, match="start_date e end_date"):
+            _body(
+                loaded,
+                context={
+                    "logical_date": datetime(2026, 11, 17, 17, 0, tzinfo=UTC),
+                    "params": {"start_date": "2026-11-12"},
+                },
+            )
+        # A sigla já está no contexto: a task falha aparece com o map index certo.
+        assert loaded.context["agency_key"] == "mec"
 
-    def test_inactive_agency_generates_no_dag(self):
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            generated = {name for name in vars(mod) if name.startswith("scrape_")}
-            assert {"scrape_mec", "scrape_mds", "scrape_no_active_field"} <= generated
-            assert "scrape_disabled_agency" not in generated
-            assert set(mod._MINUTE_OFFSETS) == set(SAMPLE_YAML["agencies"])
-        finally:
-            _cleanup(patchers)
+    def test_manual_run_without_logical_date_uses_run_after(self, load):
+        loaded = load()
+        dag_run = MagicMock(run_after=datetime(2026, 11, 17, 9, 30, tzinfo=UTC))
+        post, _, _ = _body(loaded, context={"logical_date": None, "dag_run": dag_run, "params": {}})
+        payload = post.call_args[1]["json"]
+        assert (payload["start_date"], payload["end_date"]) == ("2026-11-16", "2026-11-17")
 
-    def test_dag_id_follows_scrape_prefix_pattern(self):
-        yaml_content = {
-            "agencies": {
-                "mec": {"url": "https://gov.br/mec", "active": True},
-                "mds": {"url": "https://gov.br/mds", "active": True},
-            }
-        }
-        mod, patchers = _load_module(yaml_content)
-        try:
-            config = mod._load_agencies_config()
-            for key in config:
-                expected_dag_id = f"scrape_{key}"
-                assert expected_dag_id.startswith("scrape_")
-                assert key in expected_dag_id
-        finally:
-            _cleanup(patchers)
+    @pytest.mark.parametrize("status", ["failed", "partial"])
+    def test_raises_on_logical_failure(self, load, status):
+        loaded = load()
+        response = MagicMock()
+        response.json.return_value = {"status": status, "errors": ["boom"]}
+        with pytest.raises(AirflowException, match=f"Scraping {status} for mec"):
+            _body(loaded, response=response)
 
-    def test_all_active_agencies_get_offset(self):
-        yaml_content = {
-            "agencies": {
-                "aaa": {"url": "https://gov.br/aaa", "active": True},
-                "bbb": {"url": "https://gov.br/bbb", "active": True},
-                "ccc": {"url": "https://gov.br/ccc", "active": True},
-            }
-        }
-
-        assert _schedules(yaml_content) == {
-            "scrape_aaa": "0/10 * * * *",
-            "scrape_bbb": "1/10 * * * *",
-            "scrape_ccc": "2/10 * * * *",
-        }
+    def test_requires_scraper_api_url(self, load):
+        loaded = load()
+        with pytest.raises(ValueError, match="scraper_api_url"):
+            _body(loaded, api_url="")
 
 
 class TestOnScrapeFailure:
-    def test_logs_failure_with_context(self, caplog):
-        import logging
+    def test_logs_failure_with_agency_and_map_index(self, load, caplog):
+        mod = load().mod
+        ti = MagicMock(dag_id="scrape_agencies", task_id="scrape", try_number=3, map_index=42)
+        ti.rendered_map_index = "mec"
+        context = {"task_instance": ti, "exception": ValueError("connection timeout")}
 
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            mock_ti = MagicMock()
-            mock_ti.dag_id = "scrape_mec"
-            mock_ti.task_id = "scrape"
-            mock_ti.try_number = 2
+        with caplog.at_level(logging.ERROR):
+            mod._on_scrape_failure(context)
 
-            context = {
-                "task_instance": mock_ti,
-                "exception": ValueError("connection timeout"),
-            }
+        assert "dag=scrape_agencies" in caplog.text
+        assert "task=scrape" in caplog.text
+        assert "agency=mec" in caplog.text
+        assert "map_index=42" in caplog.text
+        assert "connection timeout" in caplog.text
 
-            with caplog.at_level(logging.ERROR):
-                mod._on_scrape_failure(context)
+    def test_prefers_agency_key_from_context(self, load, caplog):
+        mod = load().mod
+        ti = MagicMock(dag_id="scrape_agencies", task_id="scrape", try_number=1, map_index=7)
+        ti.rendered_map_index = None
+        with caplog.at_level(logging.ERROR):
+            mod._on_scrape_failure({"task_instance": ti, "agency_key": "mds", "exception": "x"})
+        assert "agency=mds" in caplog.text
 
-            assert "scrape_mec" in caplog.text
-            assert "scrape" in caplog.text
-            assert "connection timeout" in caplog.text
-        finally:
-            _cleanup(patchers)
-
-    def test_handles_missing_task_instance(self, caplog):
-        import logging
-
-        mod, patchers = _load_module(SAMPLE_YAML)
-        try:
-            context = {"task_instance": None, "exception": "some error"}
-
-            with caplog.at_level(logging.ERROR):
-                mod._on_scrape_failure(context)
-
-            assert "unknown" in caplog.text
-        finally:
-            _cleanup(patchers)
+    def test_handles_missing_task_instance(self, load, caplog):
+        mod = load().mod
+        with caplog.at_level(logging.ERROR):
+            mod._on_scrape_failure({"task_instance": None, "exception": "some error"})
+        assert "dag=unknown" in caplog.text
+        assert "agency=unknown" in caplog.text

@@ -24,10 +24,14 @@ def _make_airflow_mocks():
 
         return wrapper
 
-    def fake_task(fn):
-        mock_callable = MagicMock(name=f"task_{fn.__name__}")
-        mock_callable._original_fn = fn
-        return mock_callable
+    def fake_task(fn=None, **task_kwargs):
+        # Aceita @task e @task(...) (scrape_agencies usa map_index_template etc.).
+        def wrap(f):
+            mock_callable = MagicMock(name=f"task_{f.__name__}")
+            mock_callable._original_fn = f
+            return mock_callable
+
+        return wrap(fn) if callable(fn) else wrap
 
     mock_decorators = MagicMock()
     mock_decorators.dag = fake_dag
@@ -49,6 +53,7 @@ def _make_airflow_mocks():
         "airflow": MagicMock(),
         "airflow.decorators": mock_decorators,
         "airflow.models": mock_models,
+        "airflow.sdk": MagicMock(),
         "scraper": mock_scraper_pkg,
         "scraper.notify": mock_notify,
     }
@@ -314,8 +319,8 @@ class TestLoadActiveAgencies:
         )
         assert mod._load_active_agencies(str(config)) == ["aids", "mec"]
 
-    def test_matches_dags_generated_by_scrape_agencies(self):
-        """O monitor espera execução exatamente das agências que viram DAG scrape_*."""
+    def test_matches_tasks_mapped_by_scrape_agencies(self):
+        """O monitor espera execução exatamente das agências mapeadas na scrape_agencies."""
         monitor = _load_module()
         mocks = _make_airflow_mocks()
         mocks["airflow.exceptions"] = MagicMock()
@@ -326,7 +331,7 @@ class TestLoadActiveAgencies:
             with patch.dict(sys.modules, mocks):
                 import dags.scrape_agencies as scrape_agencies
 
-                generated = sorted(scrape_agencies._load_agencies_config())
+                generated = list(scrape_agencies.ACTIVE_AGENCY_KEYS)
         finally:
             for key in list(sys.modules):
                 if key.startswith("dags.scrape_agencies"):
