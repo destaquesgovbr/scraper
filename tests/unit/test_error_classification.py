@@ -11,7 +11,12 @@ from govbr_scraper.models.monitoring import (
     classify_exception,
     is_retryable,
 )
-from govbr_scraper.scrapers.errors import LoginRedirectError, PermanentHTTPError, ScrapingError
+from govbr_scraper.scrapers.errors import (
+    FallbackFailedError,
+    LoginRedirectError,
+    PermanentHTTPError,
+    ScrapingError,
+)
 
 
 class TestClassifyError:
@@ -113,8 +118,12 @@ class TestClassifyError:
         """O Plone 6 embrulha a RequestException em português; antes virava UNKNOWN."""
         assert classify_error(msg) == ErrorCategory.NETWORK_ERROR
 
-    def test_both_scrapers_failed_keeps_html_changed(self):
-        """O primário falhou por HTML: o fallback com erro de rede não muda a categoria."""
+    def test_both_scrapers_failed_message_reads_as_html_changed(self):
+        """Só pela mensagem vale o primário (html_changed), qualquer que seja o fallback.
+
+        Por isso o ScrapeManager levanta FallbackFailedError com a categoria já decidida
+        (ver TestClassifyException.test_fallback_failed_error_uses_its_category).
+        """
         msg = (
             "Both scrapers failed. Primary: No articles found on first page of mec but "
             "response was 9000 bytes. Fallback: Erro de rede ao acessar API de mec: 503"
@@ -148,6 +157,22 @@ class TestClassifyException:
     def test_plone6_network_error_exception_returns_network_error(self):
         exc = ScrapingError("Erro de rede ao acessar API de mec: 502 Server Error")
         assert classify_exception(exc) == ErrorCategory.NETWORK_ERROR
+
+    @pytest.mark.parametrize(
+        "category", [ErrorCategory.NETWORK_ERROR, ErrorCategory.HTML_CHANGED], ids=str
+    )
+    def test_fallback_failed_error_uses_its_category(self, category):
+        """A categoria do FallbackFailedError vale mais que a mensagem (que lê html_changed)."""
+        exc = FallbackFailedError(
+            "Both scrapers failed. Primary: No articles found on first page of mec but "
+            "response was 9000 bytes. Fallback: Erro de rede ao acessar API de mec: 503",
+            error_category=category,
+        )
+        assert classify_exception(exc) == category
+
+    def test_fallback_failed_error_without_category_falls_back_to_message(self):
+        exc = FallbackFailedError("Both scrapers failed. Primary: No articles found on mec")
+        assert classify_exception(exc) == ErrorCategory.HTML_CHANGED
 
 
 class TestIsRetryable:

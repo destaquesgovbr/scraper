@@ -12,7 +12,7 @@ from govbr_scraper.models.monitoring import (
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.scrapers.content_validation import invalid_content_reason
-from govbr_scraper.scrapers.errors import PermanentHTTPError
+from govbr_scraper.scrapers.errors import FallbackFailedError, PermanentHTTPError
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
@@ -119,8 +119,18 @@ def _try_scrape_with_fallback(
                 logging.error(
                     f"{agency_name}: Both scrapers failed. WebScraper: {str(e)}. Plone6: {str(e2)}"
                 )
-                raise ScrapingError(
-                    f"Both scrapers failed. Primary: {str(e)}. Fallback: {str(e2)}"
+                # Falha de rede do Plone 6 (5xx, 408/429 depois dos retries, timeout, DNS) é
+                # passageira: um retry pode raspar pelo fallback. Nos outros casos (404 da API,
+                # resposta não-JSON: o site não serve a API do Plone 6) vale a do primário,
+                # html_changed, permanente.
+                fallback_category = classify_exception(e2)
+                raise FallbackFailedError(
+                    f"Both scrapers failed. Primary: {str(e)}. Fallback: {str(e2)}",
+                    error_category=(
+                        fallback_category
+                        if fallback_category == ErrorCategory.NETWORK_ERROR
+                        else error_category
+                    ),
                 ) from e2
 
         raise

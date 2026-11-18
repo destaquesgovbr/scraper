@@ -101,10 +101,15 @@ def classify_error(error_message: str, http_status: int | None = None) -> ErrorC
 
 
 def classify_exception(exc: BaseException) -> ErrorCategory:
-    """Classify an exception, using its ``http_status`` attribute when present.
+    """Classify an exception, using its ``error_category`` or ``http_status`` attribute.
 
-    ``PermanentHTTPError`` (scrapers/errors.py) carries the status of the 4xx response.
+    ``FallbackFailedError`` (scrapers/errors.py) carries the category already decided by the
+    ScrapeManager (the message of both scrapers would always read as html_changed);
+    ``PermanentHTTPError`` carries the status of the 4xx response.
     """
+    category = getattr(exc, "error_category", None)
+    if isinstance(category, ErrorCategory):
+        return category
     http_status = getattr(exc, "http_status", None)
     return classify_error(str(exc), http_status if isinstance(http_status, int) else None)
 

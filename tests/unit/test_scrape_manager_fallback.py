@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from govbr_scraper.scrapers.errors import PermanentHTTPError
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.scrape_manager import ScrapeManager
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
@@ -201,6 +202,86 @@ class TestFallbackWebScraperToPlone6:
 
         # Error reported
         assert len(result["errors"]) == 1
+
+
+class TestFallbackFailureCategory:
+    """Categoria (e retry) quando o primário dá html_changed e o fallback Plone 6 também falha.
+
+    A mensagem combinada ("Both scrapers failed. Primary: No articles found...") leria sempre
+    html_changed, permanente: a DAG não repetiria nem quando o Plone 6 só teve um 503.
+    """
+
+    @pytest.mark.parametrize(
+        ("fallback_exc", "category", "retryable"),
+        [
+            pytest.param(
+                ScrapingError(
+                    "Erro de rede ao acessar API de coaf: 503 Server Error: "
+                    "Service Unavailable for url: https://www.gov.br/coaf/++api++/noticias"
+                ),
+                "network_error",
+                True,
+                id="plone6-503",
+            ),
+            pytest.param(
+                ScrapingError(
+                    "Erro de rede ao acessar API de coaf: HTTPSConnectionPool(host='www.gov.br', "
+                    "port=443): Read timed out. (read timeout=15)"
+                ),
+                "network_error",
+                True,
+                id="plone6-read-timeout",
+            ),
+            # Casos reais de nov/2026: o site não serve a API do Plone 6.
+            pytest.param(
+                PermanentHTTPError(
+                    "HTTP 404 (permanent, not retried): https://www.gov.br/mec/++api++/x",
+                    http_status=404,
+                ),
+                "html_changed",
+                False,
+                id="mec-api-404",
+            ),
+            pytest.param(
+                ScrapingError(
+                    "API de antaq retornou resposta não-JSON. Possível problema de "
+                    "autenticação ou mudança de endpoint. URL: https://www.gov.br/antaq/++api++/x"
+                ),
+                "html_changed",
+                False,
+                id="antaq-nao-json",
+            ),
+        ],
+    )
+    @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
+    def test_category_and_retryable(
+        self,
+        mock_load,
+        mock_scrapers,
+        mock_log_scrape_result,
+        fallback_exc,
+        category,
+        retryable,
+    ):
+        mock_load.return_value = {"coaf": _config("https://www.gov.br/coaf/noticias", "html")}
+        mock_scrapers["ws_scrape"].side_effect = ScrapingError(
+            "No articles found on first page of coaf but response was 280000 bytes"
+        )
+        mock_scrapers["p6_scrape"].side_effect = fallback_exc
+
+        manager, _ = _make_manager()
+        result = manager.run_scraper(
+            agencies=["coaf"], min_date="2026-01-01", max_date="2026-01-31", sequential=True
+        )
+
+        (error,) = result["errors"]
+        assert error["category"] == category
+        assert error["retryable"] is retryable
+        assert error["error"].startswith("Both scrapers failed. Primary: No articles found")
+        call_kwargs = mock_log_scrape_result.call_args[1]
+        assert call_kwargs["status"] == "error"
+        # A mesma categoria vai para scrape_runs.
+        assert str(call_kwargs["error_category"]) == category
 
 
 class TestFallbackOnlyForHTMLChanged:
