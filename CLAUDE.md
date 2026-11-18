@@ -6,13 +6,13 @@ Scraper standalone para notícias de sites governamentais brasileiros (~155 agê
 
 O scraper coleta notícias publicadas em sites gov.br e da EBC (Agência Brasil, TV Brasil, etc.), extraindo título, conteúdo, data de publicação e metadados. Os dados são persistidos no PostgreSQL (upsert por unique_id, deduplicação por URL). Após persistência, eventos são publicados no Pub/Sub (`dgb.news.scraped`) para consumo downstream.
 
-A coleta é orquestrada por **DAGs Airflow** (Cloud Composer) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
+A coleta é orquestrada por **DAGs Airflow** (Cloud Composer; em migração para um Airflow próprio, com deploy nos dois buckets) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
 
 ## Arquitetura
 
 ```
-DAGs Airflow (Cloud Composer)
-│   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência)
+DAGs Airflow (Cloud Composer + Airflow próprio, em migração)
+│   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência + summarize)
 │   ├── scrape_ebc (06h–22h de 2 em 2 h)
 │   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)
 │   ├── cleanup_old_scrape_runs (diário 03h)
@@ -68,7 +68,7 @@ scraper/
 │   │   └── event_publisher.py         # Pub/Sub (dgb.news.scraped)
 │   ├── models/
 │   │   ├── news.py                    # Modelos: News, Agency, Theme
-│   │   └── monitoring.py             # ErrorCategory, ScrapeRunResult
+│   │   └── monitoring.py             # ErrorCategory, is_retryable, ScrapeRunResult
 │   ├── integrity/
 │   │   ├── checker.py                 # Verificação de imagens e conteúdo
 │   │   └── service.py                # Batch verification com deadline
@@ -76,7 +76,7 @@ scraper/
 │       ├── health_checks.py           # Queries SQL de saúde
 │       └── structured_log.py         # Log estruturado + record_scrape_run
 ├── dags/
-│   ├── scrape_agencies.py             # 1 DAG, 1 task mapeada por agência ativa
+│   ├── scrape_agencies.py             # 1 DAG, 1 task mapeada por agência ativa + summarize
 │   ├── scrape_ebc.py                  # 1 DAG para sites EBC
 │   ├── monitor_scraping_health.py     # Monitoramento: sem execução + falhas + stale
 │   ├── cleanup_old_scrape_runs.py     # Retenção: delete > N dias
@@ -96,7 +96,7 @@ scraper/
 └── .github/workflows/
     ├── tests.yaml                     # pytest em PRs
     ├── scraper-api-deploy.yaml        # Build + deploy Cloud Run (push main)
-    └── composer-deploy-dags.yaml      # Deploy DAGs → Composer (push main)
+    └── composer-deploy-dags.yaml      # Deploy DAGs → buckets do Composer e do Airflow próprio (push main)
 ```
 
 ### ⚠️ Importante sobre site_urls.yaml
@@ -161,19 +161,21 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 
 ### Classificação de Erros
 
-`ErrorCategory` (StrEnum) classifica falhas de scraping para monitoramento:
+`ErrorCategory` (StrEnum) classifica falhas de scraping para monitoramento e decide se a DAG repete:
 
-| Categoria | Padrões detectados |
-|-----------|-------------------|
-| `NETWORK_ERROR` | timeout, connection error/refused |
-| `ANTI_BOT` | anti-bot, JS challenge, cloudflare |
-| `EMPTY_CONTENT` | no news found |
-| `URL_BROKEN` | HTTP 404, 410 |
-| `ACCESS_DENIED` | HTTP 401, 403, listagem que redireciona para o login do Plone ("login redirect") |
-| `HTML_CHANGED` | no articles found (estrutura mudou) |
-| `UNKNOWN` | fallback |
+| Categoria | Padrões detectados | Retry |
+|-----------|-------------------|-------|
+| `NETWORK_ERROR` | HTTP 408, 429; timeout, connection error/refused, "failed to fetch page"; "erro de rede" (Plone 6: "Erro de rede ao acessar API de ...") | passageiro |
+| `ANTI_BOT` | anti-bot, JS challenge, cloudflare | permanente |
+| `EMPTY_CONTENT` | no news found | passageiro |
+| `URL_BROKEN` | HTTP 404, 410 e qualquer outro 4xx que não seja 401/403/408/429 (400, 405...) | permanente |
+| `ACCESS_DENIED` | HTTP 401, 403, listagem que redireciona para o login do Plone ("login redirect") | permanente |
+| `HTML_CHANGED` | no articles found (estrutura mudou) | permanente |
+| `UNKNOWN` | fallback | passageiro |
 
-O `ScrapeManager` classifica com `classify_exception(e)`, que usa o `http_status` do `PermanentHTTPError` quando houver.
+O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+
+`PERMANENT_ERROR_CATEGORIES` = `url_broken`, `access_denied`, `html_changed`, `anti_bot`; `is_retryable(categoria)` é False para elas e para `unknown_agency` (agência fora do YAML ou inativa, `UnknownAgencyError` do `yaml_config`; só existe na resposta da API, sem linha em `scrape_runs`), True para o resto e para erro sem categoria.
 
 ### Política HTTP (falhar rápido)
 
@@ -278,6 +280,32 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 }
 ```
 
+### Response: `/scrape/agencies` e `/scrape/ebc`
+
+```json
+{
+  "status": "partial",
+  "start_date": "2026-11-19",
+  "end_date": "2026-11-19",
+  "articles_scraped": 12,
+  "articles_saved": 12,
+  "articles_new": 3,
+  "articles_skipped": 0,
+  "agencies_processed": ["mec"],
+  "errors": [
+    {"agency": "antaq", "error": "No articles found on first page of antaq ...",
+     "category": "html_changed", "retryable": false}
+  ],
+  "message": "Completed with 1 error(s)"
+}
+```
+
+- **Status HTTP inalterados:** 200 `completed`, 207 `partial`, 500 `failed` (todas as agências falharam) ou exceção (`{"detail": ...}`), 422 payload inválido.
+- **`articles_saved`:** linhas gravadas em `news`, inseridas + atualizadas (re-scrape casado por `(agency_key, url)` e, com `allow_update`, o `ON CONFLICT DO UPDATE`). Mantém o significado de sempre.
+- **`articles_new`:** só as linhas de fato inseridas: o `RETURNING` do `ON CONFLICT DO NOTHING` ou, com `allow_update=True`, as linhas com `xmax = 0` no `RETURNING unique_id, (xmax = 0) AS inserted` do `DO UPDATE` (o retry do `UniqueViolation` conta igual). `PostgresManager.insert` devolve `InsertResult(saved, articles, new)` e `StorageAdapter.insert`, `InsertCounts(saved, new)`. Em nov/2026: ~242 notícias novas/dia, contra 2.175 "salvas"/dia só na agencia_brasil.
+- **`errors[].category`:** a mesma gravada em `scrape_runs.error_category`, ou `unknown_agency`; `null` em erro sem classificação (ex.: erro de config).
+- **`errors[].retryable`:** `false` em erro permanente; as DAGs falham sem retry. Default `true` (API antiga, sem o campo, é tratada como passageira pelas DAGs).
+
 ### Request: `/verify/integrity`
 
 ```json
@@ -312,7 +340,7 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 
 | DAG | Schedule (BRT) | Descrição |
 |-----|----------|-----------|
-| `scrape_agencies` | `0 6-22/2 * * *` (06h–22h, 9x/dia) | 1 task mapeada (`scrape`) por agência gov.br ativa (~147) |
+| `scrape_agencies` | `0 6-22/2 * * *` (06h–22h, 9x/dia) | 1 task mapeada (`scrape`) por agência gov.br ativa (~147) + `summarize` (única folha) |
 | `scrape_ebc` | `0 6-22/2 * * *` | Sites EBC |
 | `monitor_scraping_health` | `30 6-22/2 * * *` | Agências sem execução + falhas consecutivas + agências stale |
 | `cleanup_old_scrape_runs` | Diário 03h | Delete registros > retention_days |
@@ -325,24 +353,26 @@ Os crons são avaliados no fuso padrão do Airflow (`core.default_timezone = Ame
 
 Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% das task runs do Composer, infra#223). Agora é uma DAG só, `scrape_agencies`:
 - Uma task mapeada por agência ativa do `dags/config/site_urls.yaml` (lista calculada no parse: `_active_agencies(_read_agencies())`), com a sigla como map index na UI (`map_index_template="{{ agency_key }}"`, a task grava `agency_key` no contexto)
-- No máximo 4 agências ao mesmo tempo (`max_active_tis_per_dag=4`): espalha a carga no scraper-api e a rajada de eventos no pipeline downstream; ~5 a 8 min por execução
+- No máximo `MAX_CONCURRENT_AGENCIES` agências ao mesmo tempo (`max_active_tis_per_dag`), lido no parse do env `SCRAPE_MAX_CONCURRENT_AGENCIES`: padrão 4, inválido vale 4, mínimo 1 (0 pararia a DAG). O limite protege o www.gov.br (as agências estão todas no mesmo host) e espalha a rajada de eventos no pipeline downstream; ~5 a 8 min por execução no Composer
 - `max_active_runs=1`, `catchup=False`
 - Cada task chama a API no Cloud Run via HTTP POST (`/scrape/agencies` com uma agência, `allow_update: false`, `sequential: true`), autenticada com ID token IAM (`google.oauth2.id_token`)
-- Retry: 2x com delay fixo de 5min (agências e EBC)
-  - **Nunca use `retry_exponential_backoff` em task mapeada:** no Airflow 3.1.0 do Composer, o scheduler lê `task.max_retry_delay` de uma task mapeada em retry, o `MappedOperator` não tem esse atributo e o `AttributeError` derruba o loop do scheduler inteiro (todas as DAGs paradas de 18/11/2026 02:00Z a 09:00Z)
+- A task lê o corpo antes do status HTTP (sem `raise_for_status`). Erro permanente (todos os `errors[]` da agência com `retryable: false`) levanta `AirflowFailException`: falha numa tentativa só, com agência e categoria na mensagem. Erro passageiro, corpo sem JSON, erro de rede do httpx e API antiga sem `retryable` levantam `AirflowException` e repetem. No sucesso a task devolve `{"agency", "articles_new", "articles_saved"}` (XCom)
+- Task final `summarize` (`trigger_rule="all_done"`, `retries=0`), **única folha** (a cor do DagRun é a dela): itera o `LazyXComSequence` da `scrape` (só tem os resultados das tasks com sucesso, compactados; **nunca fatiar**, `results[:]` levanta TypeError no Airflow 3.0.1), deduz as falhas como ativas − ok, loga contagens, agências com falha e notícias novas. Só falha se nenhuma agência funcionou ou se a fração de falhas passar da Variable `scraper_max_failed_ratio` (padrão 0,10). Agência quebrada fica vermelha só na task mapeada dela
+- Retry: 2x com delay fixo de 5min (agências e EBC), só para erro passageiro
+  - **Nunca use `retry_exponential_backoff` nem `max_retry_delay` em task mapeada (nem em `default_args`):** no Airflow 3.1.0 do Composer, o scheduler lê `task.max_retry_delay` de uma task mapeada em retry, o `MappedOperator` não tem esse atributo e o `AttributeError` derruba o loop do scheduler inteiro (todas as DAGs paradas de 18/11/2026 02:00Z a 09:00Z). Teste de regressão por AST nas duas DAGs
 - Timeout: 10min por agência / 30min (EBC)
 - Janela: `_scrape_window(logical_date, lookback_hours=SCRAPE_LOOKBACK_HOURS)`, em datas de Brasília (`America/Sao_Paulo`), de 9 horas antes da execução até a execução. A execução das 06h precisa cobrir a madrugada sem scraping desde a das 22h do dia anterior (8 h + 1 h de folga): as das 06h e 08h incluem o dia anterior, as outras só o dia corrente. As listagens datam as notícias em BRT; com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte. No Airflow 3 o cron usa o `CronTriggerTimetable`, então a `logical_date` é o próprio horário agendado; disparo manual sem `logical_date` usa o `run_after` do DagRun.
 - Params opcionais `start_date`/`end_date` (YYYY-MM-DD, os dois juntos) substituem a janela num disparo manual, para recuperar dados depois de uma queda (runbook, "Agências Sem Execução"). Formato inválido é recusado no disparo (`Param` com `format: date`); só um dos dois ou início depois do fim falham a task sem retry (`AirflowFailException`).
-- `scrape_ebc` tem a mesma agenda, a mesma janela e os mesmos params (cópia das funções: cada arquivo de DAG é autocontido).
+- `scrape_ebc` tem a mesma agenda, a mesma janela, os mesmos params e a mesma leitura da resposta (cópia das funções: cada arquivo de DAG é autocontido, não importa outro módulo de DAG nem o pacote `govbr_scraper`). Uma task para as duas fontes: se algum erro é passageiro, repete; se todos são permanentes, falha sem retry.
 - Um DagRun zumbi agora para todas as agências de uma vez, e o monitor acusa na execução seguinte. Com uma DAG por agência, ele parava uma agência só, em silêncio (`scrape_esg`, sem execução desde 11/11/2026).
 
 ### DAGs de manutenção
 
-**`monitor_scraping_health`:** Roda 30 min depois de cada execução do scraping (`30 6-22/2 * * *`; nunca na madrugada). Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 3 h = cadência de 2 h + 1 h de folga: a task mapeada da agência na `scrape_agencies` não chamou a API, ex. DAG pausada ou DagRun preso em `running`; ver runbook, "Agências Sem Execução"), agências com N falhas consecutivas (threshold 3, janela `scraper_failure_window_hours` de 6 h) e agências sem notícias em X horas (stale). Envia alertas via `notify.send_alert()`, sem repetir: o resumo das seções sem execução e falhas consecutivas (só as siglas) é comparado com o do último envio, na Variable `scraper_monitor_last_alert`; reenvia se mudou ou se passaram `scraper_alert_repeat_hours` (default 24 h). Mudança só nas agências stale não reenvia. As queries de agências silenciosas e de falhas consecutivas, e seus defaults, ficam duplicados em `health_checks.py`, e testes garantem que não divergem.
+**`monitor_scraping_health`:** Roda 30 min depois de cada execução do scraping (`30 6-22/2 * * *`; nunca na madrugada). Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 3 h = cadência de 2 h + 1 h de folga: a task mapeada da agência na `scrape_agencies` não chamou a API, ex. DAG pausada ou DagRun preso em `running`; ver runbook, "Agências Sem Execução"), agências com N falhas consecutivas (threshold 3, janela `scraper_failure_window_hours` de 6 h) e agências sem notícia nova em X horas (stale: `COALESCE(articles_new, articles_saved) > 0`, para as linhas anteriores à migration 037 valerem pelo `articles_saved`). Envia alertas via `notify.send_alert()`, sem repetir: o resumo das seções sem execução e falhas consecutivas (só as siglas) é comparado com o do último envio, na Variable `scraper_monitor_last_alert`; reenvia se mudou ou se passaram `scraper_alert_repeat_hours` (default 24 h). Mudança só nas agências stale não reenvia. As queries de agências silenciosas, stale e de falhas consecutivas, e seus defaults, ficam duplicados em `health_checks.py`, e testes garantem que não divergem.
 
 **`cleanup_old_scrape_runs`:** Deleta registros da tabela `scrape_runs` mais antigos que `scraper_retention_days` (default 90). Com ~150 agências em 9 execuções por dia, mais retries e EBC, são ~1,4 mil rows/dia (eram ~22 mil com as execuções de 10 em 10 min).
 
-**`scraper_coverage_report`:** Calcula cobertura 24h (agências com sucesso / total ativas), top erros por categoria. Alerta se cobertura < `scraper_min_coverage_ratio` (default 0.8).
+**`scraper_coverage_report`:** Calcula cobertura 24h (agências com sucesso / total ativas), total de notícias novas (`SUM(COALESCE(articles_new, articles_saved))`) e top erros por categoria. Alerta se cobertura < `scraper_min_coverage_ratio` (default 0.8).
 
 **`notify.py`:** Utilitário compartilhado. `send_alert(message, telegram_token, telegram_chat_id, webhook_url, pubsub_topic, title, severity, source)` tenta, nesta ordem: Telegram (token + chat), Pub/Sub (tópico), webhook, log. O canal Pub/Sub publica no `dgb.ops.alerts` pela API REST (`google.auth.default` + `AuthorizedSession`, sem dependência nova) o JSON genérico do alert-relay do data-platform (`{"text", "title", "severity", "source"}`), que repassa ao Telegram da equipe. O relay escapa o HTML, então o texto vai sem `<b>` e com no máximo 3400 caracteres, cortado em fim de linha. Tópico: Variable `scraper_alert_pubsub_topic`, com default `projects/$GCP_PROJECT_ID/topics/dgb.ops.alerts` (`default_alert_topic()`). Até nov/2026 os alertas do scraper só iam para o log, porque as Variables `scraper_telegram_*` nunca foram criadas.
 
@@ -420,10 +450,13 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 | `error_category` | text | ErrorCategory value |
 | `error_message` | text | Truncado em 500 chars |
 | `articles_scraped` | int | |
-| `articles_saved` | int | |
+| `articles_saved` | int | Linhas gravadas: inseridas + atualizadas (re-scrape) |
+| `articles_new` | int | Só as inseridas (migration 037 do data-platform). NULL no modo não sequencial, em erro e nas linhas anteriores à 037 |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
 | `fallback_triggered` | bool | Se fallback automático foi acionado (nullable, default FALSE) |
+
+`record_scrape_run` grava `articles_new`; se o banco ainda não tem a coluna (scraper no ar antes da 037), o INSERT falha com `UndefinedColumn`, é refeito sem ela e o aviso sai uma vez por processo. A linha de `scrape_runs` nunca se perde por isso.
 
 ## Variáveis de Ambiente (API / Cloud Run)
 
@@ -453,6 +486,13 @@ PUBSUB_TOPIC_NEWS_SCRAPED=projects/{project}/topics/dgb.news.scraped  # Opcional
 | `scraper_stale_hours` | Não | 24 | Horas sem notícias para considerar stale |
 | `scraper_silent_hours` | Não | 3 | Horas sem nenhum scrape_run (sucesso ou erro) para considerar a agência ativa silenciosa (mínimo 1) |
 | `scraper_min_coverage_ratio` | Não | 0.8 | Cobertura mínima antes de alertar |
+| `scraper_max_failed_ratio` | Não | 0.10 | Fração de agências com falha (0 a 1) acima da qual a `summarize` derruba a execução da `scrape_agencies`; inválida vale 0.10 |
+
+### Env dos componentes do Airflow
+
+| Env | Default | Uso |
+|-----|---------|-----|
+| `SCRAPE_MAX_CONCURRENT_AGENCIES` | 4 | `max_active_tis_per_dag` da task `scrape`, lido no parse (inválido vale 4, mínimo 1). Vem do Terraform (repo `infra`) |
 
 ## IAM e Autenticação
 
@@ -474,13 +514,13 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 |----------|---------|------|
 | `tests.yaml` | PR | pytest com coverage (`-m "not integration"`) + testes `postgres` contra service container `pgvector/pgvector:pg16` (porta 55432) |
 | `scraper-api-deploy.yaml` | push main | Build Docker + deploy Cloud Run |
-| `composer-deploy-dags.yaml` | push main | rsync `dags/` → bucket Composer |
+| `composer-deploy-dags.yaml` | push main (`dags/**`) | `airflow-deploy-dags.yml@v3` (reusable-workflows): valida com Airflow 3.1.8 e sincroniza `dags/` → `gs://<bucket>/dags/scraper/` nos dois buckets |
 
 ## Testes
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
-- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py` e `test_postgres_health_checks.py`) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`, `test_postgres_health_checks.py` e `test_postgres_scrape_runs.py`, este com `scrape_runs` antes e depois da migration 037) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
   - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
   - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
   - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.
@@ -508,7 +548,7 @@ poetry run pytest --cov=govbr_scraper --cov-report=term-missing
 | Componente | Destino | Workflow |
 |-----------|---------|----------|
 | **API** | Cloud Run (`destaquesgovbr-scraper-api`) | `scraper-api-deploy.yaml` |
-| **DAGs** | Cloud Composer (`{bucket}/scraper/`) | `composer-deploy-dags.yaml` |
+| **DAGs** | Bucket do Composer e bucket do Airflow próprio (`gs://<bucket>/dags/scraper/`) | `composer-deploy-dags.yaml` |
 | **Infra** | Terraform (repo `infra/`) | SA, Cloud Run, Artifact Registry, IAM |
 
 ### Deploy da API
@@ -517,11 +557,19 @@ O workflow `scraper-api-deploy.yaml` faz build da imagem Docker e deploy no Clou
 
 ### Deploy das DAGs
 
-O workflow `composer-deploy-dags.yaml` sincroniza a pasta `dags/` para o bucket do Composer no subdiretório `scraper/`:
+O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3` com `dags_local_path: dags` e `dags_bucket_subdir: scraper`. Ela valida as DAGs com o Airflow 3.1.8 (o da imagem do Airflow próprio) e, para cada bucket da lista padrão (Fase 3 da migração do Composer: bucket do Cloud Composer e `destaquesgovbr-airflow`), faz:
 
 ```bash
-gsutil -m rsync -r -d dags/ gs://{COMPOSER_BUCKET}/dags/scraper/
+gcloud storage rsync --recursive --delete-unmatched-destination-objects dags/ gs://<bucket>/dags/scraper/
 ```
+
+Quando o Composer for desligado, a lista de buckets muda só na reusable workflow (tag `v3`); este repo não muda.
+
+### Ordem de deploy (Passo 1 da rearquitetura da ingestão, `_plan/rearquitetura-ingestao.md`)
+
+1. Migration 037 do data-platform (`scrape_runs.articles_new`) aplicada em produção (workflow `db-migrate`). As queries de stale e de cobertura das DAGs referenciam a coluna; o INSERT do scraper-api tolera a falta dela.
+2. Tag `v3` do reusable-workflows publicada.
+3. Merge do scraper: a API (Cloud Run) e as DAGs sobem juntas. As DAGs novas também funcionam com a API antiga (sem `retryable`, tudo repete, como antes).
 
 ## Desenvolvimento Local
 
