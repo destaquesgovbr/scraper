@@ -20,10 +20,30 @@ class ErrorCategory(StrEnum):
     UNKNOWN = "unknown"
 
 
+# Categorias de erro permanente: repetir a raspagem na mesma execução não resolve (URL
+# quebrada, login, estrutura do HTML mudou, anti-bot). As outras (network_error, unknown,
+# empty_content) e a ausência de categoria são passageiras. A API devolve a decisão em
+# errors[].retryable e as DAGs falham sem retry (AirflowFailException) quando todos os
+# erros são permanentes.
+PERMANENT_ERROR_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.URL_BROKEN,
+        ErrorCategory.ACCESS_DENIED,
+        ErrorCategory.HTML_CHANGED,
+        ErrorCategory.ANTI_BOT,
+    }
+)
+
+# Categoria só da resposta da API (não vai para scrape_runs): agência fora do
+# site_urls.yaml/ebc_urls.yaml ou inativa. Também permanente.
+UNKNOWN_AGENCY = "unknown_agency"
+
 # HTTP status codes indicating broken URLs (a página não existe mais)
 _BROKEN_URL_STATUSES = {404, 410}
 # HTTP status codes indicating the page exists but requires authentication/authorization
 _ACCESS_DENIED_STATUSES = {401, 403}
+# 4xx passageiros (Request Timeout e Too Many Requests): os mesmos que http_policy repete
+_TRANSIENT_HTTP_STATUSES = {408, 429}
 
 # Pattern pairs: (substring to match in lowercase, corresponding category)
 # Order matters — more specific patterns first.
@@ -42,6 +62,9 @@ _ERROR_PATTERNS: list[tuple[str, ErrorCategory]] = [
     ("connection error", ErrorCategory.NETWORK_ERROR),
     ("connection refused", ErrorCategory.NETWORK_ERROR),
     ("network error", ErrorCategory.NETWORK_ERROR),
+    # Plone 6: "Erro de rede ao acessar API de <agência>: ..." embrulha a RequestException
+    # (5xx, 408 e 429 depois dos retries, DNS, conexão).
+    ("erro de rede", ErrorCategory.NETWORK_ERROR),
     ("failed to fetch page", ErrorCategory.NETWORK_ERROR),
 ]
 
@@ -58,10 +81,16 @@ def classify_error(error_message: str, http_status: int | None = None) -> ErrorC
     Returns:
         The ErrorCategory that best matches the error.
     """
-    if http_status is not None and http_status in _BROKEN_URL_STATUSES:
-        return ErrorCategory.URL_BROKEN
-    if http_status is not None and http_status in _ACCESS_DENIED_STATUSES:
-        return ErrorCategory.ACCESS_DENIED
+    if http_status is not None:
+        if http_status in _BROKEN_URL_STATUSES:
+            return ErrorCategory.URL_BROKEN
+        if http_status in _ACCESS_DENIED_STATUSES:
+            return ErrorCategory.ACCESS_DENIED
+        if http_status in _TRANSIENT_HTTP_STATUSES:
+            return ErrorCategory.NETWORK_ERROR
+        if 400 <= http_status < 500:
+            # Outro 4xx permanente (400, 405, 406, 414...): a URL configurada não serve.
+            return ErrorCategory.URL_BROKEN
 
     msg_lower = error_message.lower()
     for pattern, category in _ERROR_PATTERNS:
@@ -80,6 +109,30 @@ def classify_exception(exc: BaseException) -> ErrorCategory:
     return classify_error(str(exc), http_status if isinstance(http_status, int) else None)
 
 
+def is_retryable(category: str | None) -> bool:
+    """True se vale repetir a raspagem: erro passageiro ou sem categoria.
+
+    Permanentes: ``PERMANENT_ERROR_CATEGORIES`` e ``UNKNOWN_AGENCY``. Aceita o enum ou a
+    string gravada em ``scrape_runs.error_category``.
+    """
+    if category is None:
+        return True
+    return category not in PERMANENT_ERROR_CATEGORIES and category != UNKNOWN_AGENCY
+
+
+def agency_error(agency: str, message: str, category: str | None) -> dict:
+    """Erro de uma agência no formato de ``errors[]`` da API (``AgencyError``).
+
+    A categoria é a mesma gravada em ``scrape_runs`` e ``retryable`` sai dela.
+    """
+    return {
+        "agency": agency,
+        "error": message,
+        "category": str(category) if category is not None else None,
+        "retryable": is_retryable(category),
+    }
+
+
 class ScrapeRunResult(BaseModel):
     """Structured result of a single agency scrape execution."""
 
@@ -89,6 +142,9 @@ class ScrapeRunResult(BaseModel):
     error_message: str | None = None
     articles_scraped: int = 0
     articles_saved: int = 0
+    # Linhas de fato inseridas em news (sem as atualizadas). None quando não foi medido:
+    # modo não sequencial e execução com erro.
+    articles_new: int | None = None
     execution_time_seconds: float | None = None
     scraped_at: datetime
     primary_scraper: str | None = None
