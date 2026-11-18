@@ -4,8 +4,9 @@ Testes de integração das queries de saúde contra um Postgres descartável.
 Provam a semântica de find_silent_agencies (agência ativa sem nenhum scrape_run na
 janela) num banco real: LEFT JOIN LATERAL, unnest do array de agências e a
 comparação de janela com NOW(). Também find_stale_agencies e
-compute_coverage_report com COALESCE(articles_new, articles_saved). Mock de
-cursor não pega erro de SQL.
+compute_coverage_report com COALESCE(articles_new, articles_saved), e
+find_consecutive_failures com erro permanente (1 linha por execução) x passageiro
+(até 3 linhas por execução). Mock de cursor não pega erro de SQL.
 
 Mesma guarda e mesmo Postgres dos testes de re-scrape (tests/integration/
 test_postgres_rescrape.py): requer SCRAPER_TEST_POSTGRES_URL apontando para um
@@ -23,6 +24,7 @@ from psycopg2.extensions import make_dsn
 
 from govbr_scraper.monitoring.health_checks import (
     compute_coverage_report,
+    find_consecutive_failures,
     find_silent_agencies,
     find_stale_agencies,
 )
@@ -118,6 +120,15 @@ def _counted_run(db, agency_key: str, hours_ago: float, saved: int, new: int | N
         )
 
 
+def _error(db, agency_key: str, hours_ago: float, category: str | None) -> None:
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT INTO scrape_runs (agency_key, status, error_category, scraped_at) "
+            "VALUES (%s, 'error', %s, NOW() - INTERVAL '1 hour' * %s)",
+            (agency_key, category, hours_ago),
+        )
+
+
 def _silent(db, agencies, silent_hours=2) -> dict:
     return {
         r["agency_key"]: r["last_run_at"] for r in find_silent_agencies(db, agencies, silent_hours)
@@ -196,3 +207,69 @@ class TestComputeCoverageReportPostgres:
         report = compute_coverage_report(db, hours=24)
         assert report["total_articles"] == 7
         assert report["agencies_scraped"] == 2
+
+
+class TestFindConsecutiveFailuresPostgres:
+    """Defaults do monitor (threshold 3, janela 6 h), com o monitor 30 min depois da execução.
+
+    Erro permanente falha a task sem retry: 1 scrape_run por execução. Erro passageiro repete
+    2x: até 3 por execução. As 06h30 a janela de 6 h só tem a execução das 06h (a anterior é a
+    das 22h, 8,5 h antes), e às 08h30 só as das 06h e 08h.
+    """
+
+    @staticmethod
+    def _failures(db) -> dict:
+        return {
+            r["agency_key"]: r for r in find_consecutive_failures(db, threshold=3, window_hours=6)
+        }
+
+    @pytest.mark.parametrize(
+        "runs_hours_ago",
+        [[0.5], [2.5, 0.5], [4.5, 2.5, 0.5]],
+        ids=["06h30", "08h30", "10h30"],
+    )
+    def test_permanent_error_one_row_per_run_is_flagged_every_run(self, db, runs_hours_ago):
+        """Caso mec/antaq: sem retry, a agência quebrada aparece desde a 1a execução e não
+        some de manhã (o digest do alerta não muda e não reenvia)."""
+        _run(db, "mec", hours_ago=8.5)  # 22h do dia anterior, fora da janela
+        for hours_ago in runs_hours_ago:
+            _error(db, "mec", hours_ago, "html_changed")
+        result = self._failures(db)
+        assert set(result) == {"mec"}
+        assert result["mec"]["last_error"] == "html_changed"
+        assert result["mec"]["consecutive_failures"] == len(runs_hours_ago)
+
+    @pytest.mark.parametrize("category", ["url_broken", "access_denied", "anti_bot"])
+    def test_every_permanent_category_counts(self, db, category):
+        _error(db, "sri", 0.5, category)
+        assert set(self._failures(db)) == {"sri"}
+
+    def test_single_transient_error_is_not_flagged(self, db):
+        """Passageiro que se recuperou no retry: erro, sucesso 5 min depois."""
+        _error(db, "mds", 0.6, "network_error")
+        _run(db, "mds", hours_ago=0.5)
+        _error(db, "fnde", 0.5, "network_error")
+        _error(db, "ibama", 0.5, None)
+        assert self._failures(db) == {}
+
+    def test_transient_error_needs_three_rows(self, db):
+        """Execução em que as 3 tentativas falharam (comportamento de antes, mantido)."""
+        for minutes in (10, 5, 0):
+            _error(db, "mds", 0.5 + minutes / 60, "network_error")
+        _error(db, "fnde", 0.6, "unknown")
+        _error(db, "fnde", 0.5, "unknown")
+        result = self._failures(db)
+        assert set(result) == {"mds"}
+        assert result["mds"]["consecutive_failures"] == 3
+
+    def test_permanent_error_followed_by_success_is_not_flagged(self, db):
+        _error(db, "ana", 2.5, "html_changed")
+        _run(db, "ana", hours_ago=0.5)
+        assert self._failures(db) == {}
+
+    def test_consecutive_failures_counts_errors_since_last_success(self, db):
+        _error(db, "ctir", 4.5, "network_error")
+        _run(db, "ctir", hours_ago=2.5)
+        _error(db, "ctir", 0.5, "html_changed")
+        result = self._failures(db)
+        assert result["ctir"]["consecutive_failures"] == 1

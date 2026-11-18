@@ -57,8 +57,44 @@ STALE_AGENCIES_QUERY = """
 """
 
 
+# Agências cujos últimos `threshold` scrape_runs da janela são todos erro (erro passageiro:
+# até 3 linhas por execução, uma por tentativa) OU cujo scrape_run mais recente é um erro
+# permanente (PERMANENT_ERROR_CATEGORIES de models/monitoring.py: a DAG falha sem retry e
+# grava 1 linha por execução; sem esse ramo a agência quebrada só entraria depois de 3
+# execuções e sumiria toda manhã, com 1 linha às 06h30 e 2 às 08h30).
+# consecutive_failures = erros seguidos a partir do mais recente (até `threshold`).
+#
+# NOTE: This query is duplicated in dags/monitor_scraping_health.py
+# (_CONSECUTIVE_FAILURES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+CONSECUTIVE_FAILURES_QUERY = """
+    WITH ranked AS (
+        SELECT agency_key, status, error_category, scraped_at,
+               ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
+        FROM scrape_runs
+        WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
+    ),
+    recent AS (
+        SELECT agency_key, status, error_category, scraped_at, rn
+        FROM ranked
+        WHERE rn <= %(threshold)s
+    )
+    SELECT
+        agency_key,
+        COALESCE(MIN(rn) FILTER (WHERE status <> 'error') - 1, COUNT(*)) AS consecutive_failures,
+        MAX(error_category) FILTER (WHERE rn = 1) AS last_error,
+        MAX(scraped_at) AS last_failure_at
+    FROM recent
+    GROUP BY agency_key
+    HAVING (COUNT(*) = %(threshold)s AND COUNT(*) FILTER (WHERE status = 'error') = %(threshold)s)
+        OR BOOL_OR(
+               rn = 1 AND status = 'error'
+               AND error_category IN ('url_broken', 'access_denied', 'html_changed', 'anti_bot')
+           )
+"""
+
+
 def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -> list[dict]:
-    """Find agencies with N or more consecutive recent failures.
+    """Find agencies with N or more consecutive recent failures, or a permanent last error.
 
     Args:
         conn: psycopg2 connection (or mock).
@@ -69,33 +105,13 @@ def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -
     Returns:
         List of dicts with agency_key, consecutive_failures, last_error, last_failure_at.
 
-    NOTE: This query (and the defaults) is duplicated in dags/monitor_scraping_health.py
-    (check_consecutive_failures). Changes here must be replicated there and vice-versa.
-    """
-    query = """
-        WITH ranked AS (
-            SELECT agency_key, status, error_category, scraped_at,
-                   ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
-            FROM scrape_runs
-            WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
-        ),
-        recent AS (
-            SELECT agency_key, status, error_category, scraped_at, rn
-            FROM ranked
-            WHERE rn <= %(threshold)s
-        )
-        SELECT
-            agency_key,
-            COUNT(*) AS consecutive_failures,
-            MAX(error_category) FILTER (WHERE rn = 1) AS last_error,
-            MAX(scraped_at) AS last_failure_at
-        FROM recent
-        GROUP BY agency_key
-        HAVING COUNT(*) = %(threshold)s
-           AND COUNT(*) FILTER (WHERE status = 'error') = %(threshold)s
+    NOTE: This query (CONSECUTIVE_FAILURES_QUERY) and the defaults are duplicated in
+    dags/monitor_scraping_health.py; tests/unit/test_dag_monitor_health.py checks they match.
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(query, {"threshold": threshold, "window_hours": window_hours})
+        cur.execute(
+            CONSECUTIVE_FAILURES_QUERY, {"threshold": threshold, "window_hours": window_hours}
+        )
         return [dict(row) for row in cur.fetchall()]
 
 
