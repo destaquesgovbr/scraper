@@ -12,9 +12,9 @@ A coleta é orquestrada por **DAGs Airflow** (Cloud Composer) que chamam a **API
 
 ```
 DAGs Airflow (Cloud Composer)
-│   ├── scrape_agencies (a cada 10min, offset por agência)
-│   ├── scrape_ebc (a cada 10min)
-│   ├── monitor_scraping_health (a cada 30min)
+│   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência)
+│   ├── scrape_ebc (06h–22h de 2 em 2 h)
+│   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)
 │   ├── cleanup_old_scrape_runs (diário 03h)
 │   └── scraper_coverage_report (diário 08h)
 │
@@ -76,12 +76,12 @@ scraper/
 │       ├── health_checks.py           # Queries SQL de saúde
 │       └── structured_log.py         # Log estruturado + record_scrape_run
 ├── dags/
-│   ├── scrape_agencies.py             # ~155 DAGs dinâmicas (1 por agência)
+│   ├── scrape_agencies.py             # 1 DAG, 1 task mapeada por agência ativa
 │   ├── scrape_ebc.py                  # 1 DAG para sites EBC
 │   ├── monitor_scraping_health.py     # Monitoramento: sem execução + falhas + stale
 │   ├── cleanup_old_scrape_runs.py     # Retenção: delete > N dias
 │   ├── scraper_coverage_report.py     # Relatório diário + alerta cobertura
-│   ├── notify.py                      # Utilitário: Telegram > webhook > log
+│   ├── notify.py                      # Utilitário: Telegram > Pub/Sub > webhook > log
 │   └── config/
 │       ├── README.md
 │       └── site_urls.yaml             # → Cópia (sincronize manualmente)
@@ -228,7 +228,7 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou **ou que ainda não têm tema** (`most_specific_theme_id IS NULL`, o mesmo critério do `is_already_enriched` do enrichment-worker). Re-scrape de artigo já enriquecido e sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
 
-**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (~10 min, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
+**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (a cada execução da DAG, de 2 em 2 h, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
 
 ```json
 {
@@ -310,36 +310,42 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 
 ## DAGs Airflow
 
-| DAG | Schedule | Descrição |
+| DAG | Schedule (BRT) | Descrição |
 |-----|----------|-----------|
-| `scrape_{agency_key}` (~155) | A cada 10min (offset 0-9) | 1 DAG por agência gov.br ativa |
-| `scrape_ebc` | A cada 10min (offset 0) | Sites EBC |
-| `monitor_scraping_health` | A cada 30min | Agências sem execução + falhas consecutivas + agências stale |
-| `cleanup_old_scrape_runs` | Diário 03h UTC | Delete registros > retention_days |
-| `scraper_coverage_report` | Diário 08h UTC | Cobertura 24h + alerta se < threshold |
-| `notify.py` | (utilitário) | Telegram > webhook > log-only |
+| `scrape_agencies` | `0 6-22/2 * * *` (06h–22h, 9x/dia) | 1 task mapeada (`scrape`) por agência gov.br ativa (~147) |
+| `scrape_ebc` | `0 6-22/2 * * *` | Sites EBC |
+| `monitor_scraping_health` | `30 6-22/2 * * *` | Agências sem execução + falhas consecutivas + agências stale |
+| `cleanup_old_scrape_runs` | Diário 03h | Delete registros > retention_days |
+| `scraper_coverage_report` | Diário 08h | Cobertura 24h + alerta se < threshold |
+| `notify.py` | (utilitário) | Telegram > Pub/Sub `dgb.ops.alerts` > webhook > log-only |
+
+Os crons são avaliados no fuso padrão do Airflow (`core.default_timezone = America/Sao_Paulo` no Composer; o Airflow que o substituir precisa da mesma configuração).
 
 ### DAGs de scraping
 
-Cada DAG de scraping:
-- Chama a API no Cloud Run via HTTP POST
-- Autentica com ID token IAM (`google.oauth2.id_token`)
+Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% das task runs do Composer, infra#223). Agora é uma DAG só, `scrape_agencies`:
+- Uma task mapeada por agência ativa do `dags/config/site_urls.yaml` (lista calculada no parse: `_active_agencies(_read_agencies())`), com a sigla como map index na UI (`map_index_template="{{ agency_key }}"`, a task grava `agency_key` no contexto)
+- No máximo 4 agências ao mesmo tempo (`max_active_tis_per_dag=4`): espalha a carga no scraper-api e a rajada de eventos no pipeline downstream; ~5 a 8 min por execução
+- `max_active_runs=1`, `catchup=False`
+- Cada task chama a API no Cloud Run via HTTP POST (`/scrape/agencies` com uma agência, `allow_update: false`, `sequential: true`), autenticada com ID token IAM (`google.oauth2.id_token`)
 - Retry: 2x com delay de 5min
   - **Agências gov.br:** backoff exponencial (`retry_exponential_backoff=True`), max_retry_delay 15min
   - **EBC:** flat 5min, sem exponencial
-- Timeout: 10min (agências) / 30min (EBC)
-- Minuto (agências gov.br): `idx % 10`, com `idx` na lista ordenada de **todas** as chaves do `site_urls.yaml`, inclusive inativas (`_minute_offsets`). Só as ativas viram DAG. Assim, desativar ou reativar uma agência não muda o schedule das outras (mudança de schedule em massa já deixou DagRun zumbi; ver runbook). Uma chave nova ainda desloca as que vêm depois dela na ordem alfabética.
-- Janela: `_scrape_window(logical_date)` em datas de Brasília (`America/Sao_Paulo`), de 1 hora antes da execução até a execução. As listagens datam as notícias em BRT. Com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte e as notícias do dia ficavam de fora.
+- Timeout: 10min por agência / 30min (EBC)
+- Janela: `_scrape_window(logical_date, lookback_hours=SCRAPE_LOOKBACK_HOURS)`, em datas de Brasília (`America/Sao_Paulo`), de 9 horas antes da execução até a execução. A execução das 06h precisa cobrir a madrugada sem scraping desde a das 22h do dia anterior (8 h + 1 h de folga): as das 06h e 08h incluem o dia anterior, as outras só o dia corrente. As listagens datam as notícias em BRT; com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte. No Airflow 3 o cron usa o `CronTriggerTimetable`, então a `logical_date` é o próprio horário agendado; disparo manual sem `logical_date` usa o `run_after` do DagRun.
+- Params opcionais `start_date`/`end_date` (YYYY-MM-DD, os dois juntos) substituem a janela num disparo manual, para recuperar dados depois de uma queda (runbook, "Agências Sem Execução"). Formato inválido é recusado no disparo (`Param` com `format: date`); só um dos dois ou início depois do fim falham a task sem retry (`AirflowFailException`).
+- `scrape_ebc` tem a mesma agenda, a mesma janela e os mesmos params (cópia das funções: cada arquivo de DAG é autocontido).
+- Um DagRun zumbi agora para todas as agências de uma vez, e o monitor acusa na execução seguinte. Com uma DAG por agência, ele parava uma agência só, em silêncio (`scrape_esg`, sem execução desde 11/11/2026).
 
 ### DAGs de manutenção
 
-**`monitor_scraping_health`:** Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 2h: a DAG `scrape_*` não está chamando a API, ex. DagRun preso em `running`; ver runbook, "DAG de Agência Travada"), agências com N falhas consecutivas (threshold configurável) e agências sem notícias em X horas (stale). Envia alertas via `notify.send_alert()`. A query de agências silenciosas fica duplicada em `health_checks.SILENT_AGENCIES_QUERY`, e um teste garante que as duas não divergem.
+**`monitor_scraping_health`:** Roda 30 min depois de cada execução do scraping (`30 6-22/2 * * *`; nunca na madrugada). Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 3 h = cadência de 2 h + 1 h de folga: a task mapeada da agência na `scrape_agencies` não chamou a API, ex. DAG pausada ou DagRun preso em `running`; ver runbook, "Agências Sem Execução"), agências com N falhas consecutivas (threshold 3, janela `scraper_failure_window_hours` de 6 h) e agências sem notícias em X horas (stale). Envia alertas via `notify.send_alert()`, sem repetir: o resumo das seções sem execução e falhas consecutivas (só as siglas) é comparado com o do último envio, na Variable `scraper_monitor_last_alert`; reenvia se mudou ou se passaram `scraper_alert_repeat_hours` (default 24 h). Mudança só nas agências stale não reenvia. As queries de agências silenciosas e de falhas consecutivas, e seus defaults, ficam duplicados em `health_checks.py`, e testes garantem que não divergem.
 
-**`cleanup_old_scrape_runs`:** Deleta registros da tabela `scrape_runs` mais antigos que `scraper_retention_days` (default 90). Com ~155 agências rodando a cada 10min, isso são ~22k rows/dia.
+**`cleanup_old_scrape_runs`:** Deleta registros da tabela `scrape_runs` mais antigos que `scraper_retention_days` (default 90). Com ~150 agências em 9 execuções por dia, mais retries e EBC, são ~1,4 mil rows/dia (eram ~22 mil com as execuções de 10 em 10 min).
 
 **`scraper_coverage_report`:** Calcula cobertura 24h (agências com sucesso / total ativas), top erros por categoria. Alerta se cobertura < `scraper_min_coverage_ratio` (default 0.8).
 
-**`notify.py`:** Utilitário compartilhado. `send_alert(message, telegram_token, telegram_chat_id, webhook_url)` — tenta Telegram primeiro, fallback para webhook, último recurso é log.
+**`notify.py`:** Utilitário compartilhado. `send_alert(message, telegram_token, telegram_chat_id, webhook_url, pubsub_topic, title, severity, source)` tenta, nesta ordem: Telegram (token + chat), Pub/Sub (tópico), webhook, log. O canal Pub/Sub publica no `dgb.ops.alerts` pela API REST (`google.auth.default` + `AuthorizedSession`, sem dependência nova) o JSON genérico do alert-relay do data-platform (`{"text", "title", "severity", "source"}`), que repassa ao Telegram da equipe. O relay escapa o HTML, então o texto vai sem `<b>` e com no máximo 3400 caracteres, cortado em fim de linha. Tópico: Variable `scraper_alert_pubsub_topic`, com default `projects/$GCP_PROJECT_ID/topics/dgb.ops.alerts` (`default_alert_topic()`). Até nov/2026 os alertas do scraper só iam para o log, porque as Variables `scraper_telegram_*` nunca foram criadas.
 
 ## Schema do Banco
 
@@ -378,7 +384,7 @@ Cada DAG de scraping:
 
 **Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)` e não toca nos temas nem no embedding. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
 
-**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil, re-raspada a cada 10 min no dia). O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
+**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil, re-raspada a cada execução do dia). O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
 
 **Edição de conteúdo não regera nada downstream:** quando o `content_hash` muda, o artigo é republicado, mas o enrichment-worker pula o já enriquecido (`skipped/already_enriched`, sem `dgb.news.enriched`), então resumo, temas e embedding ficam os da primeira versão. Por isso o embedding **não é zerado** na edição: o vetor é de título + resumo (`embeddings_client/text_prep.py`), o resumo é preservado, e zerar sem caminho de regeneração (o embeddings-api só assina `dgb.news.enriched`; a DAG `generate_embeddings` saiu) tiraria o artigo da busca semântica para sempre. Só uma edição de título deixa o vetor um pouco desatualizado. Regerar resumo e embedding em edições é evolução downstream (re-enriquecer quando o conteúdo muda), não do scraper.
 
@@ -439,11 +445,14 @@ PUBSUB_TOPIC_NEWS_SCRAPED=projects/{project}/topics/dgb.news.scraped  # Opcional
 | `scraper_retention_days` | Não | 90 | Dias de retenção em scrape_runs |
 | `scraper_telegram_bot_token` | Não | — | Token do bot Telegram para alertas |
 | `scraper_telegram_monitor_chat_id` | Não | — | Chat ID do grupo de monitoramento |
+| `scraper_alert_pubsub_topic` | Não | `projects/$GCP_PROJECT_ID/topics/dgb.ops.alerts` | Tópico do alert-relay (Telegram da equipe); vazio desliga o canal |
 | `scraper_alert_webhook_url` | Não | — | Webhook fallback para alertas |
+| `scraper_alert_repeat_hours` | Não | 24 | Horas até reenviar o mesmo alerta do monitor (0 = sem dedup) |
+| `scraper_monitor_last_alert` | Não | — | Estado do dedup (JSON gravado pelo monitor no metastore); apagar força o reenvio |
 | `scraper_consecutive_failure_threshold` | Não | 3 | Falhas consecutivas para alerta |
-| `scraper_failure_window_hours` | Não | 2 | Janela de tempo para verificar falhas |
+| `scraper_failure_window_hours` | Não | 6 | Janela de tempo para verificar falhas (3 execuções de 2 em 2 h) |
 | `scraper_stale_hours` | Não | 24 | Horas sem notícias para considerar stale |
-| `scraper_silent_hours` | Não | 2 | Horas sem nenhum scrape_run (sucesso ou erro) para considerar a agência ativa silenciosa (mínimo 1) |
+| `scraper_silent_hours` | Não | 3 | Horas sem nenhum scrape_run (sucesso ou erro) para considerar a agência ativa silenciosa (mínimo 1) |
 | `scraper_min_coverage_ratio` | Não | 0.8 | Cobertura mínima antes de alertar |
 
 ## IAM e Autenticação
@@ -458,7 +467,7 @@ token = google.oauth2.id_token.fetch_id_token(auth_req, scraper_api_url)
 headers = {"Authorization": f"Bearer {token}"}
 ```
 
-O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cloud Run.
+O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cloud Run e, para os alertas via Pub/Sub, `roles/pubsub.publisher` no tópico `dgb.ops.alerts` (sem ela, o publish dá 403 e o alerta cai no webhook ou no log).
 
 ## CI/CD
 
