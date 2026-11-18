@@ -7,6 +7,7 @@ import os
 import pytest
 
 from govbr_scraper.scrapers.yaml_config import (
+    UnknownAgencyError,
     extract_url,
     get_config_dir,
     is_agency_inactive,
@@ -148,17 +149,22 @@ class TestLoadUrlsFromYaml:
         ],
     )
     def test_load_specific_inactive_agency_raises(self, yaml_file, inactive_agency):
-        """Loading a specific inactive agency should raise ValueError."""
+        """Loading a specific inactive agency should raise UnknownAgencyError (a ValueError)."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
-        with pytest.raises(ValueError, match="inactive"):
+        with pytest.raises(UnknownAgencyError, match="inactive"):
             load_urls_from_yaml(config_dir, yaml_file, agency=inactive_agency)
 
     @pytest.mark.parametrize("yaml_file", ["site_urls.yaml", "ebc_urls.yaml"])
     def test_load_nonexistent_agency_raises(self, yaml_file):
-        """Loading a nonexistent agency should raise ValueError."""
+        """Loading a nonexistent agency should raise UnknownAgencyError (a ValueError)."""
         config_dir = get_config_dir(_SCRAPERS_MODULE)
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(UnknownAgencyError, match="not found"):
             load_urls_from_yaml(config_dir, yaml_file, agency="nonexistent_agency_xyz")
+
+
+def test_unknown_agency_error_is_value_error():
+    """Quem já captura ValueError continua funcionando."""
+    assert issubclass(UnknownAgencyError, ValueError)
 
 
 class TestLoadUrlsReturnsConfigDict:

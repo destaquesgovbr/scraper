@@ -29,6 +29,27 @@ class _ExistingArticle(NamedTuple):
     most_specific_theme_id: int | None
 
 
+class InsertResult(NamedTuple):
+    """Resultado de ``PostgresManager.insert``.
+
+    - ``saved``: linhas gravadas, inseridas + atualizadas (vai para ``articles_saved``);
+    - ``articles``: artigos a publicar em ``dgb.news.scraped`` (ver ``insert``);
+    - ``new``: linhas de fato inseridas em ``news`` (vai para ``articles_new``).
+    """
+
+    saved: int
+    articles: list[dict]
+    new: int
+
+
+class _Phase2Result(NamedTuple):
+    """Resultado do INSERT da Phase 2 (incluindo o retry do UniqueViolation)."""
+
+    written: int  # linhas devolvidas pelo RETURNING + as atualizadas no retry
+    new: int  # só as inseridas
+    articles: list[dict]
+
+
 class PostgresManager:
     """
     PostgreSQL storage manager with connection pooling and caching.
@@ -210,7 +231,7 @@ class PostgresManager:
             cursor.close()
             self.put_connection(conn)
 
-    def insert(self, news: list[NewsInsert], allow_update: bool = False) -> tuple[int, list[dict]]:
+    def insert(self, news: list[NewsInsert], allow_update: bool = False) -> InsertResult:
         """
         Insert news records (batch operation).
 
@@ -219,13 +240,17 @@ class PostgresManager:
             allow_update: If True, update existing records (ON CONFLICT UPDATE)
 
         Returns:
-            Tuple of (count, inserted_articles). count includes every row written
-            (inserted or updated). inserted_articles is a list of dicts with
-            unique_id, agency_key, published_at for each row to publish as
-            dgb.news.scraped: new rows, plus existing rows (matched by URL)
-            whose content_hash changed or that are not enriched yet (no theme:
-            the republication is the enrichment retry). Re-scrapes of enriched
-            articles without content change are updated but not returned.
+            InsertResult(saved, articles, new). saved includes every row written
+            (inserted or updated): the articles_saved of scrape_runs. new counts
+            only the rows actually inserted (articles_new): the RETURNING of
+            ON CONFLICT DO NOTHING, or the rows with xmax = 0 in the RETURNING
+            of ON CONFLICT DO UPDATE (allow_update=True). articles is a list of
+            dicts with unique_id, agency_key, published_at for each row to
+            publish as dgb.news.scraped: new rows, plus existing rows (matched
+            by URL) whose content_hash changed or that are not enriched yet (no
+            theme: the republication is the enrichment retry). Re-scrapes of
+            enriched articles without content change are updated but not
+            returned.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -266,7 +291,8 @@ class PostgresManager:
         logger.info(f"Inserting {len(news)} news records (allow_update={allow_update})")
 
         conn = self.get_connection()
-        inserted = 0
+        written = 0
+        new = 0
         inserted_articles: list[dict] = []
 
         # Build lookup for metadata (unique_id -> news item)
@@ -294,22 +320,21 @@ class PostgresManager:
 
             # Phase 2: INSERT new articles
             if to_insert:
-                new_inserted, new_articles = self._insert_new_articles(
+                phase2 = self._insert_new_articles(
                     to_insert,
                     allow_update,
                     cursor,
                     news_by_uid,
                 )
-                inserted = new_inserted
-                inserted_articles.extend(new_articles)
+                written = phase2.written
+                new = phase2.new
+                inserted_articles.extend(phase2.articles)
 
             conn.commit()
 
-            total = inserted + len(updated_articles)
-            logger.success(
-                f"Inserted {inserted}, updated {len(updated_articles)} news records (total={total})"
-            )
-            return total, inserted_articles
+            total = written + len(updated_articles)
+            logger.success(f"Inserted {new}, updated {total - new} news records (total={total})")
+            return InsertResult(saved=total, articles=inserted_articles, new=new)
 
         except Exception as e:
             conn.rollback()
@@ -370,8 +395,14 @@ class PostgresManager:
         allow_update: bool,
         cursor,
         news_by_uid: dict[str, NewsInsert],
-    ) -> tuple[int, list[dict]]:
-        """INSERT new articles with SAVEPOINT to handle (agency_key, url) race conditions."""
+    ) -> _Phase2Result:
+        """INSERT new articles with SAVEPOINT to handle (agency_key, url) race conditions.
+
+        O RETURNING do ON CONFLICT DO NOTHING só traz as linhas inseridas. O do
+        ON CONFLICT DO UPDATE (allow_update=True) traz também as atualizadas; nele
+        ``xmax = 0`` separa as inseridas (a linha nova ainda não foi travada nem
+        atualizada por nenhuma transação).
+        """
         values = [
             (
                 n.unique_id,
@@ -416,10 +447,9 @@ class PostgresManager:
                 f" ON CONFLICT (unique_id) DO UPDATE SET {update_set}, updated_at = NOW()"  # nosec B608
             )
             insert_query += conflict_clause
+            insert_query += " RETURNING unique_id, (xmax = 0) AS inserted"
         else:
-            insert_query += " ON CONFLICT (unique_id) DO NOTHING"
-
-        insert_query += " RETURNING unique_id"
+            insert_query += " ON CONFLICT (unique_id) DO NOTHING RETURNING unique_id"
 
         cursor.execute("SAVEPOINT phase2_insert")
         try:
@@ -470,31 +500,48 @@ class PostgresManager:
             inserted_articles = [
                 a for a in updated_articles if a["unique_id"] not in skip_publish_uids
             ]
-            for uid in returned_ids:
-                n = news_by_uid.get(uid)
-                if n:
-                    inserted_articles.append(
-                        {
-                            "unique_id": uid,
-                            "agency_key": n.agency_key or "",
-                            "published_at": n.published_at,
-                        }
-                    )
-            return len(returned_ids) + len(updated_articles), inserted_articles
+            inserted_articles.extend(self._returned_articles(returned_ids, news_by_uid))
+            return _Phase2Result(
+                written=len(returned_ids) + len(updated_articles),
+                new=self._count_inserted(result, allow_update),
+                articles=inserted_articles,
+            )
 
         returned_ids = [row[0] for row in result]
-        inserted_articles: list[dict] = []
+        return _Phase2Result(
+            written=len(returned_ids),
+            new=self._count_inserted(result, allow_update),
+            articles=self._returned_articles(returned_ids, news_by_uid),
+        )
+
+    @staticmethod
+    def _count_inserted(rows, allow_update: bool) -> int:
+        """Linhas de fato inseridas no RETURNING da Phase 2.
+
+        Sem allow_update (DO NOTHING), toda linha devolvida é nova. Com allow_update
+        (DO UPDATE), a 2ª coluna é ``xmax = 0``: True só para as inseridas.
+        """
+        if not allow_update:
+            return len(rows)
+        return sum(1 for row in rows if row[1])
+
+    @staticmethod
+    def _returned_articles(
+        returned_ids: list[str], news_by_uid: dict[str, NewsInsert]
+    ) -> list[dict]:
+        """Metadados (para dgb.news.scraped) das linhas devolvidas pelo RETURNING."""
+        articles: list[dict] = []
         for uid in returned_ids:
             n = news_by_uid.get(uid)
             if n:
-                inserted_articles.append(
+                articles.append(
                     {
                         "unique_id": uid,
                         "agency_key": n.agency_key or "",
                         "published_at": n.published_at,
                     }
                 )
-        return len(returned_ids), inserted_articles
+        return articles
 
     def _on_conflict_assignment(self, column: str) -> str:
         """SET de uma coluna no ON CONFLICT (unique_id) DO UPDATE do allow_update=True."""
@@ -633,36 +680,42 @@ class PostgresManager:
             for existing_uid, new_data in updates
         ]
 
+    # O aviso de scrape_runs sem articles_new sai uma vez por processo, não por agência.
+    _warned_missing_articles_new = False
+
     def record_scrape_run(self, run: "ScrapeRunResult") -> None:
         """Record a scrape execution result.
+
+        A coluna articles_new vem da migration 037 do data-platform. Se o banco ainda
+        não a tem (deploy do scraper antes da migration), o INSERT é refeito sem ela:
+        perder a linha de scrape_runs faria o monitor acusar todas as agências.
 
         Args:
             run: The scrape run result to persist.
         """
-        query = """
-            INSERT INTO scrape_runs
-                (agency_key, status, error_category, error_message,
-                 articles_scraped, articles_saved, execution_time_seconds, scraped_at,
-                 fallback_triggered)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+        values = {
+            "agency_key": run.agency_key,
+            "status": run.status,
+            "error_category": str(run.error_category) if run.error_category else None,
+            "error_message": str(run.error_message)[:500] if run.error_message else None,
+            "articles_scraped": run.articles_scraped,
+            "articles_saved": run.articles_saved,
+            "execution_time_seconds": run.execution_time_seconds,
+            "scraped_at": run.scraped_at,
+            "fallback_triggered": run.fallback_triggered,
+            "articles_new": run.articles_new,
+        }
         conn = self.pool.getconn()
         try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    query,
-                    (
-                        run.agency_key,
-                        run.status,
-                        str(run.error_category) if run.error_category else None,
-                        str(run.error_message)[:500] if run.error_message else None,
-                        run.articles_scraped,
-                        run.articles_saved,
-                        run.execution_time_seconds,
-                        run.scraped_at,
-                        run.fallback_triggered,
-                    ),
-                )
+            try:
+                self._insert_scrape_run(conn, values)
+            except errors.UndefinedColumn as e:
+                if "articles_new" not in str(e):
+                    raise
+                conn.rollback()
+                self._warn_missing_articles_new()
+                values.pop("articles_new")
+                self._insert_scrape_run(conn, values)
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -670,6 +723,26 @@ class PostgresManager:
             raise
         finally:
             self.pool.putconn(conn)
+
+    @staticmethod
+    def _insert_scrape_run(conn, values: dict[str, Any]) -> None:
+        """INSERT de uma linha em scrape_runs com as colunas de ``values``."""
+        # Os nomes de coluna são as chaves fixas montadas em record_scrape_run.
+        columns = ", ".join(values)
+        placeholders = ", ".join(["%s"] * len(values))
+        query = f"INSERT INTO scrape_runs ({columns}) VALUES ({placeholders})"  # nosec B608
+        with conn.cursor() as cur:
+            cur.execute(query, tuple(values.values()))
+
+    @classmethod
+    def _warn_missing_articles_new(cls) -> None:
+        if cls._warned_missing_articles_new:
+            return
+        cls._warned_missing_articles_new = True
+        logger.warning(
+            "scrape_runs sem a coluna articles_new (migration 037 do data-platform não "
+            "aplicada): gravando sem ela"
+        )
 
     def get_recent_runs(self, agency_key: str, limit: int = 5) -> list[dict]:
         """Get the most recent scrape runs for an agency.

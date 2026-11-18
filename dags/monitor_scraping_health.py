@@ -6,7 +6,7 @@ Roda 30 min depois de cada execucao do scraping (``30 6-22/2 * * *``: 06h30, 08h
 1. Agencias ativas sem nenhuma execucao (scrape_run) em X horas: a task mapeada da
    agencia na DAG scrape_agencies nao chamou a API (DAG pausada ou ausente, DagRun
    travado, task que nao rodou)
-2. Agencias com N falhas consecutivas
+2. Agencias com N falhas consecutivas, ou com erro permanente (sem retry) na ultima execucao
 3. Agencias sem noticias em X horas
 
 Envia o alerta agregado via notify.send_alert (Telegram > Pub/Sub dgb.ops.alerts >
@@ -29,8 +29,9 @@ _AGENCIES_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config", "site_
 # O scraping roda a cada 2 h; 3 h = 2 h + 1 h de folga. As 06h30 a ultima execucao antes
 # da das 06h e a das 22h do dia anterior, entao ali basta perder a das 06h para alertar.
 _DEFAULT_SILENT_HOURS = 3
-# Janela para as falhas consecutivas: cobre 3 execucoes de 2 em 2 h (cada execucao que
-# falha ainda grava ate 3 scrape_runs de erro, um por tentativa).
+# Janela para as falhas consecutivas: cobre 3 execucoes de 2 em 2 h. Erro passageiro grava
+# ate 3 scrape_runs de erro por execucao, um por tentativa; erro permanente grava 1 (a task
+# falha sem retry) e por isso basta na execucao mais recente (_CONSECUTIVE_FAILURES_QUERY).
 _DEFAULT_FAILURE_WINDOW_HOURS = 6
 _DEFAULT_FAILURE_THRESHOLD = 3
 # Dedup: o mesmo alerta (mesmas agencias sem execucao e com falhas) so e reenviado
@@ -48,6 +49,63 @@ _MAX_LINES_PER_SECTION = 25
 # quando o fim do alerta sumia). 4000 deixa folga para o prefixo.
 _MAX_MESSAGE_CHARS = 4000
 _TRUNCATED_MARKER = "... (alerta truncado; lista completa no log da task)"
+
+# Última notícia NOVA de cada agência (articles_new, migration 037 do data-platform; linhas
+# anteriores a ela têm NULL e caem no articles_saved, que soma as atualizadas por re-scrape).
+#
+# NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+# (STALE_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+_STALE_AGENCIES_QUERY = """
+    SELECT
+        agency_key,
+        MAX(scraped_at) FILTER (
+            WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+        ) AS last_success_at
+    FROM scrape_runs
+    WHERE scraped_at > NOW() - INTERVAL '90 days'
+    GROUP BY agency_key
+    HAVING MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) < NOW() - INTERVAL '1 hour' * %(stale_hours)s
+       AND MAX(scraped_at) FILTER (
+               WHERE status = 'success' AND COALESCE(articles_new, articles_saved) > 0
+           ) IS NOT NULL
+"""
+
+# Agencias cujos ultimos `threshold` scrape_runs da janela sao todos erro (erro passageiro:
+# ate 3 linhas por execucao, uma por tentativa) OU cujo scrape_run mais recente e um erro
+# permanente (url_broken, access_denied, html_changed, anti_bot: a task falha sem retry e grava
+# 1 linha por execucao; sem esse ramo a agencia quebrada so entraria depois de 3 execucoes e
+# sumiria toda manha, com 1 linha as 06h30 e 2 as 08h30). A lista e a
+# PERMANENT_ERROR_CATEGORIES de src/govbr_scraper/models/monitoring.py.
+#
+# NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+# (CONSECUTIVE_FAILURES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+_CONSECUTIVE_FAILURES_QUERY = """
+    WITH ranked AS (
+        SELECT agency_key, status, error_category, scraped_at,
+               ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
+        FROM scrape_runs
+        WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
+    ),
+    recent AS (
+        SELECT agency_key, status, error_category, scraped_at, rn
+        FROM ranked
+        WHERE rn <= %(threshold)s
+    )
+    SELECT
+        agency_key,
+        COALESCE(MIN(rn) FILTER (WHERE status <> 'error') - 1, COUNT(*)) AS consecutive_failures,
+        MAX(error_category) FILTER (WHERE rn = 1) AS last_error,
+        MAX(scraped_at) AS last_failure_at
+    FROM recent
+    GROUP BY agency_key
+    HAVING (COUNT(*) = %(threshold)s AND COUNT(*) FILTER (WHERE status = 'error') = %(threshold)s)
+        OR BOOL_OR(
+               rn = 1 AND status = 'error'
+               AND error_category IN ('url_broken', 'access_denied', 'html_changed', 'anti_bot')
+           )
+"""
 
 # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
 # (SILENT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
@@ -264,7 +322,7 @@ def _build_alert_message(
 def monitor_scraping_health_dag():
     @task
     def check_consecutive_failures() -> list[dict]:
-        """Verifica agencias com falhas consecutivas."""
+        """Verifica agencias com falhas consecutivas ou com erro permanente na ultima execucao."""
         import psycopg2
         from airflow.models import Variable
         from psycopg2.extras import RealDictCursor
@@ -281,35 +339,13 @@ def monitor_scraping_health_dag():
         if not database_url:
             raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
-        # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
-        # (find_consecutive_failures). Changes here must be replicated there and vice-versa.
-        query = """
-            WITH ranked AS (
-                SELECT agency_key, status, error_category, scraped_at,
-                       ROW_NUMBER() OVER (PARTITION BY agency_key ORDER BY scraped_at DESC) AS rn
-                FROM scrape_runs
-                WHERE scraped_at > NOW() - INTERVAL '1 hour' * %(window_hours)s
-            ),
-            recent AS (
-                SELECT agency_key, status, error_category, scraped_at, rn
-                FROM ranked
-                WHERE rn <= %(threshold)s
-            )
-            SELECT
-                agency_key,
-                COUNT(*) AS consecutive_failures,
-                MAX(error_category) FILTER (WHERE rn = 1) AS last_error,
-                MAX(scraped_at) AS last_failure_at
-            FROM recent
-            GROUP BY agency_key
-            HAVING COUNT(*) = %(threshold)s
-               AND COUNT(*) FILTER (WHERE status = 'error') = %(threshold)s
-        """
-
         conn = psycopg2.connect(database_url)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, {"threshold": threshold, "window_hours": window_hours})
+                cur.execute(
+                    _CONSECUTIVE_FAILURES_QUERY,
+                    {"threshold": threshold, "window_hours": window_hours},
+                )
                 results = [dict(row) for row in cur.fetchall()]
         finally:
             conn.close()
@@ -328,7 +364,7 @@ def monitor_scraping_health_dag():
 
     @task
     def check_stale_agencies() -> list[dict]:
-        """Verifica agencias sem noticias em X horas."""
+        """Verifica agencias sem noticias novas em X horas (articles_new; antes, articles_saved)."""
         import psycopg2
         from airflow.models import Variable
         from psycopg2.extras import RealDictCursor
@@ -338,29 +374,10 @@ def monitor_scraping_health_dag():
         if not database_url:
             raise ValueError("Missing required Airflow Variable: scraper_database_url")
 
-        # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
-        # (find_stale_agencies). Changes here must be replicated there and vice-versa.
-        query = """
-            SELECT
-                agency_key,
-                MAX(scraped_at) FILTER (
-                    WHERE status = 'success' AND articles_saved > 0
-                ) AS last_success_at
-            FROM scrape_runs
-            WHERE scraped_at > NOW() - INTERVAL '90 days'
-            GROUP BY agency_key
-            HAVING MAX(scraped_at) FILTER (
-                       WHERE status = 'success' AND articles_saved > 0
-                   ) < NOW() - INTERVAL '1 hour' * %(stale_hours)s
-               AND MAX(scraped_at) FILTER (
-                       WHERE status = 'success' AND articles_saved > 0
-                   ) IS NOT NULL
-        """
-
         conn = psycopg2.connect(database_url)
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, {"stale_hours": stale_hours})
+                cur.execute(_STALE_AGENCIES_QUERY, {"stale_hours": stale_hours})
                 results = [dict(row) for row in cur.fetchall()]
         finally:
             conn.close()

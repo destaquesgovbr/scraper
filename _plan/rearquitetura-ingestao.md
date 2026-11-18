@@ -1,0 +1,184 @@
+# Rearquitetura da ingestão de notícias (scraping)
+
+Plano de 18/11/2026. Mantém a raspagem resiliente, econômica e fácil de observar, e tira o Airflow do caminho crítico da ingestão.
+
+Relacionado: migração do Composer para um Airflow próprio (`infra/_plan/migrar-composer-para-airflow-proprio.md`); scraper#76 e #77; infra#223.
+
+## Contexto
+
+Desde o scraper#76 (18/11/2026), a ingestão roda numa DAG `scrape_agencies`:
+- uma task mapeada por agência ativa (147);
+- execução a cada 2 h, das 06h às 22h BRT;
+- no máximo 4 agências ao mesmo tempo.
+
+Cada task faz `POST /scrape/agencies` no scraper-api (Cloud Run), que raspa, grava em `news` e em `scrape_runs` e publica em `dgb.news.scraped`.
+
+Na primeira noite, um bug do Airflow 3.1.0 derrubou o scheduler: o retry de uma task mapeada com backoff exponencial lê `max_retry_delay`, que o `MappedOperator` não tem. **A ingestão ficou 7 h parada** junto com todas as DAGs do Composer. O problema é que a parte mais crítica da plataforma depende de um orquestrador de batch, que vai rodar numa VM única.
+
+## Diagnóstico
+
+Dados de `scrape_runs` e `news` dos últimos 27 dias:
+
+| Fato | Consequência |
+|---|---|
+| As 147 agências estão no **mesmo host, `www.gov.br`** | O limite de concorrência existe para proteger o gov.br, não o scraper-api, que escala até 200 requisições simultâneas. O gov.br já é instável: 330 `network_error` em 68 agências em 7 dias |
+| ~242 notícias novas/dia; **98% publicadas entre 06h e 22h** | A madrugada quase não tem notícias |
+| **Mais de 98% das raspagens não trazem nada novo**; 35 agências publicam menos de 1 notícia a cada 5 dias e 51 menos de 1 por dia | A raspagem tem a mesma frequência para todas e gasta chamadas em agências quase paradas |
+| 5 agências (EBC incluída) concentram 38% do volume (91 notícias/dia) | São as que mais ganhariam com uma frequência maior |
+| Erros permanentes (`html_changed`: 1.787 execuções de 10 agências em 7 dias) e passageiros (`network_error`) recebem o mesmo retry | Cada agência quebrada gasta 2 retries de 5 min por execução, e a DAG fica vermelha em toda execução |
+| `articles_saved` soma **inseridas + atualizadas**: a agencia_brasil aparece com 2.175/dia, mas o sistema inteiro tem ~242 novas/dia | A métrica de volume e a checagem de "agência sem notícias" medem a coisa errada |
+| A janela é fixa, de 9 h para trás | Recupera só falhas curtas. Se as execuções das 06h e das 08h se perderem, perdem-se as notícias das 22h–24h |
+| O scraper-api devolve o erro como texto livre, sem categoria (`AgencyError{agency, error}`) | A DAG não sabe se adianta repetir |
+
+Achados no código (origin/main 8bd596c):
+- `PostgresManager.insert` sempre roda um UPDATE nas linhas que já existem com a mesma `(agency_key, url)`, mesmo com `allow_update=False`, e as conta em `articles_saved` (`storage/postgres_manager.py:290,308`).
+- O `EBCWebScraper` não usa a lista de URLs já conhecidas. Cada execução relê o dia inteiro, e isso é a maior parte da inflação de `articles_saved`.
+- **Uma notícia ainda não enriquecida é publicada de novo em `dgb.news.scraped` a cada execução**, até ser enriquecida (`postgres_manager.py:290-293,535-539`).
+- Erro de rede do Plone 6 vira `unknown`, porque a mensagem está em português ("Erro de rede ao acessar API…"). Um 4xx permanente que não seja 401/403/404/410 também vira `unknown`. A categoria `empty_content` nunca é gerada.
+- O import check da reusable workflow (Airflow 3.0.1) nunca falha: só imprime um aviso.
+
+## Arquitetura alvo
+
+```
+Cloud Scheduler (*/15, 06–23h BRT)
+   └─► scraper-api POST /dispatch
+         ├─ lê scrape_agency_state: agências vencidas (next_due_at <= now) com circuito fechado,
+         │   ou circuito meio-aberto com teste vencido
+         └─ cria 1 tarefa por agência no Cloud Tasks (nome = scrape-<agência>-<horário>)
+                │
+        Cloud Tasks "scrape-govbr"  ← max_concurrent_dispatches e max_dispatches_per_second (proteção do gov.br)
+                │                     retry com backoff só para erro passageiro
+                ▼
+         scraper-api POST /scrape/agency
+           ├─ janela = desde o último sucesso da agência (marca d'água), limitada a 7 dias
+           ├─ grava scrape_runs (articles_new, articles_saved, categoria, retryable)
+           ├─ atualiza scrape_agency_state (próxima raspagem, falhas seguidas, circuito)
+           └─ responde 2xx para sucesso e para erro permanente; 5xx/429 só para erro passageiro
+```
+
+Princípios:
+1. **Cada controle no lugar certo.** O limite de taxa para o gov.br fica numa fila feita para isso, não na contagem de tasks do Airflow. A proteção do pipeline seguinte fica no próprio pipeline.
+2. **O estado mora nos dados, não no orquestrador.** `scrape_agency_state` é a fonte única de verdade por agência: o despacho, o monitoramento e o painel leem dela.
+3. **Idempotente e autorrecuperável.** A janela parte da marca d'água, o nome da tarefa evita duplicata, e se uma rodada se perder a seguinte pega todas as agências vencidas.
+4. **Erro permanente não é repetido.** Um disjuntor tira a agência de circulação até um teste diário passar.
+5. **O Airflow fica com o batch.** Ele mantém o backfill manual, o relatório diário e as DAGs do data-platform, e deixa de ser o relógio da ingestão.
+
+### Raspagem conforme o ritmo de cada agência (Passo 4)
+
+O intervalo de cada agência vem da média móvel exponencial de notícias novas por dia nos últimos 28 dias:
+
+| Notícias novas/dia | Agências | Notícias/dia | Intervalo | Chamadas/dia |
+|---|---|---|---|---|
+| ≥ 5 (inclui EBC) | 5 | 91 | 30 min | 170 |
+| 1 a 5 | 58 | 123 | 2 h | 522 |
+| 0,2 a 1 | 51 | 26 | 6 h | 153 |
+| < 0,2 | 35 | 2 | 1× por dia | 35 |
+
+São ~880 chamadas por dia, contra 1.323 hoje. O atraso das agências que concentram 38% do volume cai de até 2 h para até 30 min. Quando uma raspagem encontra notícia nova, o intervalo daquela agência encurta por algumas horas.
+
+## Passos
+
+### Passo 1: ajustes rápidos (scraper e data-platform; feito em 18/11)
+1. **Categoria no erro da API.** `errors[]` de `/scrape/agencies` e `/scrape/ebc` passa a ter `category` e `retryable`. São permanentes:
+   - `html_changed`, `url_broken`, `access_denied`, `anti_bot`;
+   - agência desconhecida ou inativa.
+
+   `network_error` e `unknown` continuam passageiros.
+2. **Lacunas da classificação corrigidas.**
+   - Erro de rede do Plone 6 passa a ser `network_error`.
+   - Um 4xx permanente passa a ser `url_broken` (401/403 continuam `access_denied`).
+3. **DAGs (`scrape_agencies` e `scrape_ebc`): erro permanente falha sem retry**, com `AirflowFailException`. Erro passageiro repete como antes. Com uma API antiga, sem `retryable`, tudo repete, como hoje.
+4. **Task final `summarize`** (`trigger_rule=all_done`, única folha da DAG):
+   - registra quais agências falharam;
+   - só derruba a execução se nenhuma agência funcionou ou se mais de `scraper_max_failed_ratio` delas falharam (Variable, padrão 0,10).
+
+   Vermelho volta a significar problema de plataforma, e a agência quebrada aparece na própria task mapeada.
+5. **`articles_new`.** A coluna nova em `scrape_runs` vem da migration 037 do data-platform. Ela é preenchida pelo `RETURNING` da fase de inserção (com `xmax = 0` quando `allow_update=True`) e também volta na resposta da API.
+   - A checagem "Agências Sem Notícias" e o total do relatório de cobertura passam a usar `COALESCE(articles_new, articles_saved)`.
+   - `articles_saved` mantém o significado de "linhas gravadas".
+   - **Ordem:** aplicar a 037 em produção (workflow `db-migrate`) antes do merge do scraper.
+6. **Concorrência configurável.** `SCRAPE_MAX_CONCURRENT_AGENCIES` é um env lido no parse, com padrão 4, mínimo 1 e fallback 4 se o valor for inválido. No Airflow próprio, cada task tem ~3 s de overhead, contra ~40 s no Composer. Com 4 agências por vez, uma execução cai de ~25 min para ~6 min, sem pressionar mais o gov.br.
+
+### Passo 2: estado por agência, marca d'água e disjuntor
+- **Migration 038, `scrape_agency_state`:**
+  - `agency_key` (PK), `poll_interval_minutes`, `next_due_at`;
+  - `last_attempt_at`, `last_success_at`, `last_new_article_at`;
+  - `consecutive_permanent_failures`, `consecutive_transient_failures`;
+  - `circuit_state` (`closed`/`open`/`half_open`), `circuit_opened_at`, `last_error_category`, `updated_at`.
+- **O scraper-api atualiza o estado no fim de cada agência**, na mesma transação do `scrape_runs`.
+- **Janela por marca d'água:** `start = (last_success_at em BRT − 1 h).date`, limitada a 7 dias; sem histórico, ontem. Isso substitui o `lookback_hours=9`.
+- **Disjuntor:**
+  - 2 erros permanentes seguidos abrem o circuito;
+  - circuito aberto é testado 1× por dia, às 09h;
+  - um sucesso fecha o circuito;
+  - abrir e fechar geram 1 alerta cada, via `dgb.ops.alerts`;
+  - erro passageiro só abre o circuito se durar mais de 24 h.
+- **Uso imediato:** enquanto o Passo 3 não chega, `list_agencies` da DAG atual já filtra as agências com circuito aberto.
+- **Correções de custo no mesmo passo:**
+  - EBC passa a usar a lista de URLs conhecidas;
+  - o UPDATE de linha existente só roda se o `content_hash` mudou;
+  - parar a republicação em `dgb.news.scraped` de notícia que já está na fila de enriquecimento.
+
+### Passo 3: fila (Cloud Tasks) e Cloud Scheduler; o Airflow sai do caminho
+- **infra:**
+  - fila `scrape-govbr`: `max_concurrent_dispatches=6`, `max_dispatches_per_second=1`, `max_attempts=3`, backoff de 60 a 600 s, `dispatch_deadline=900s`;
+  - SA `scrape-tasks-invoker` com `run.invoker` no scraper-api;
+  - a SA do scraper-api ganha `cloudtasks.enqueuer` e `iam.serviceAccountUser` sobre a SA invoker;
+  - job do Cloud Scheduler `*/15 6-23 * * *` (America/Sao_Paulo) chamando `/dispatch` com OIDC.
+- **scraper-api:**
+  - `/dispatch` escolhe as agências vencidas e cria as tarefas, com nome único por agência e horário;
+  - `/scrape/agency` raspa uma agência e devolve 2xx para sucesso ou erro permanente e 5xx para erro passageiro;
+  - as duas fontes da EBC entram como duas "agências".
+- **Airflow:**
+  - saem `scrape_agencies` e `scrape_ebc`;
+  - entra a DAG manual `scrape_backfill`, com params `agencies` e `start_date`/`end_date`, que chama `/dispatch` com a janela pedida;
+  - `scraper_coverage_report` fica;
+  - `monitor_scraping_health` dá lugar aos alertas do Passo 4.
+- **Custo:** Cloud Tasks (~30 mil operações/mês) e Cloud Scheduler (1 job) cabem no nível gratuito.
+- **Rollout:**
+  - o dispatcher roda "a seco" por 1 dia, registrando o que despacharia, para comparar com a DAG;
+  - depois a fila assume e a DAG é pausada;
+  - 3 dias depois as DAGs são removidas.
+
+### Passo 4: raspagem conforme o ritmo e observabilidade
+- **Raspagem conforme o ritmo:**
+  - o `poll_interval_minutes` é recalculado todo dia, por média móvel exponencial de 28 dias, nas faixas da tabela acima;
+  - quando a raspagem encontra notícia nova, o intervalo da agência cai pela metade por 6 h;
+  - de madrugada só há uma passada, às 03h, para as faixas de 30 min e 2 h.
+- **Métricas**, via logs estruturados e métricas baseadas em log:
+  - `scrape_attempts{agency,outcome,category}` e `articles_new{agency}`;
+  - as métricas nativas do Cloud Tasks (profundidade da fila e idade da tarefa mais antiga);
+  - `freshness_lag_minutes{tier}`, calculado pelo `/dispatch` a partir do estado.
+- **Alertas** no canal `ops_alerts_pubsub`, que vai pelo alert-relay até o Telegram:
+  - tarefa mais antiga da fila com mais de 30 min;
+  - Cloud Scheduler sem execução por 45 min;
+  - mais de 20% das agências com erro numa janela de 1 h, que indica gov.br fora do ar ou nosso IP bloqueado;
+  - circuito abrindo e fechando (Passo 2).
+- **SLOs:**
+  - 95% das agências ativas raspadas com sucesso dentro de 2× o próprio intervalo;
+  - p90 entre publicação e ingestão abaixo de 45 min para a faixa de 30 min e abaixo de 3 h para a de 2 h. Hoje o p50 é 13 min e o p90 34 min, mas com raspagem a cada 10 min.
+- **Painel:** uma página no streamlit-infra-health lendo `scrape_agency_state`, com atraso, circuito, último erro e intervalo de cada agência.
+
+## Ordem em relação à migração do Composer
+1. O Passo 1 vai junto com a Fase 3 da migração (deploy das DAGs nos dois buckets), sem bloqueá-la.
+2. As Fases 4–7 seguem. Prioridade: desligar o Composer, que custa ~US$ 24/dia.
+3. Os Passos 2–4 vêm depois do Composer desligado. Ao final do Passo 3, a VM do Airflow pode encolher (testar e2-medium, −US$ 39/mês).
+
+## Riscos
+- **Rate limit no gov.br.** Mesmo com raspagem conforme o ritmo, os picos de despacho são limitados pela fila. Começar com concorrência 6 e 1 requisição/s, e subir só olhando a taxa de `network_error`.
+- **Deploy da 037 fora de ordem.** Se o scraper que grava `articles_new` subir antes da migration, os INSERTs falham e o monitor acusa "Sem Execução" em todas as agências. Mitigação: aplicar a 037 antes do merge.
+- **Raspagem rara pode atrasar uma notícia rara.** Uma agência da faixa diária que publica fora de hora espera até 24 h. É aceitável pelo volume (2 notícias/dia no total). O "encurtar o intervalo quando há novidade" compensa as agências que voltam a publicar.
+- **Fila sem DLQ nativa.** Tarefa que esgota as tentativas some da fila. O estado (falhas seguidas) e o alerta de falhas cobrem isso.
+
+## Verificação
+- **Passo 1:**
+  - `summarize` verde nas execuções normais;
+  - antaq e mec falham numa tentativa só, com `AirflowFailException`;
+  - `scrape_runs.articles_new` preenchido e ~242 por dia no total;
+  - testes unitários e `pytest -m postgres` verdes.
+- **Passo 2:** `scrape_agency_state` com 149 linhas; uma agência derrubada de propósito abre o circuito e gera 1 alerta.
+- **Passo 3:** no dia a seco, a lista do dispatcher bate com a da DAG. Na virada, `scrape_runs` mantém a cobertura de 147 agências e ~242 notícias/dia, e a fila zera entre os ciclos.
+- **Passo 4:**
+  - chamadas por dia ≤ 900;
+  - p90 de latência por faixa dentro do SLO;
+  - os alertas testados com teste sintético (`"test": true` no `dgb.ops.alerts`).

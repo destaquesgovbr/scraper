@@ -21,6 +21,7 @@ from govbr_scraper.scrapers.http_policy import (
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.scrape_manager import ScrapeManager
 from govbr_scraper.scrapers.webscraper import WebScraper
+from govbr_scraper.storage.storage_adapter import InsertCounts
 
 LISTING_URL = "https://www.gov.br/sri/pt-br/noticias"
 LOGIN_URL = "https://www.gov.br/sri/pt-br/require_login?came_from=https%3A//www.gov.br/sri"
@@ -208,7 +209,7 @@ class TestEBCFetchPage:
 def _manager():
     storage = MagicMock()
     storage.get_recent_urls.return_value = set()
-    storage.insert.return_value = 0
+    storage.insert.return_value = InsertCounts(saved=0, new=0)
     return ScrapeManager(storage)
 
 
@@ -247,16 +248,58 @@ class TestScrapeManagerPermanentErrors:
         assert kwargs["status"] == "error"
         assert kwargs["error_category"] == ErrorCategory.ACCESS_DENIED
         assert len(result["errors"]) == 1
+        assert result["errors"][0]["category"] == "access_denied"
+        assert result["errors"][0]["retryable"] is False
 
     def test_404_is_logged_as_url_broken_without_fallback(self, run):
         with patch("requests.get", return_value=_response(404)) as mock_get:
-            _result, mock_log, mock_p6 = run(
+            result, mock_log, mock_p6 = run(
                 {"url": LISTING_URL, "scraper_type": "html", "active": True}
             )
 
         mock_p6.assert_not_called()
         assert mock_get.call_count == 1
         assert mock_log.call_args.kwargs["error_category"] == ErrorCategory.URL_BROKEN
+        assert result["errors"][0]["category"] == "url_broken"
+        assert result["errors"][0]["retryable"] is False
+
+    def test_400_is_logged_as_url_broken_and_not_retryable(self, run):
+        """Antes virava unknown (passageiro) e gastava os 2 retries da DAG."""
+        with patch("requests.get", return_value=_response(400)) as mock_get:
+            result, mock_log, mock_p6 = run(
+                {"url": LISTING_URL, "scraper_type": "html", "active": True}
+            )
+
+        mock_p6.assert_not_called()
+        assert mock_get.call_count == 1
+        assert mock_log.call_args.kwargs["error_category"] == ErrorCategory.URL_BROKEN
+        assert result["errors"][0]["retryable"] is False
+
+    def test_plone6_503_is_network_error_and_retryable(self, sleep):
+        """Erro de rede do Plone 6 (mensagem em português) é passageiro."""
+        with (
+            patch(
+                "govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml",
+                return_value={
+                    "mec": {
+                        "url": "https://www.gov.br/mec/pt-br/assuntos/noticias",
+                        "scraper_type": "plone6_api",
+                        "active": True,
+                    }
+                },
+            ),
+            patch("govbr_scraper.scrapers.scrape_manager.log_scrape_result") as mock_log,
+            patch("requests.get", return_value=_response(503)) as mock_get,
+        ):
+            mock_log.return_value = MagicMock()
+            result = _manager().run_scraper(
+                agencies=["mec"], min_date="2026-11-10", max_date="2026-11-11", sequential=True
+            )
+
+        assert mock_get.call_count == RETRY_TRIES
+        assert mock_log.call_args.kwargs["error_category"] == ErrorCategory.NETWORK_ERROR
+        assert result["errors"][0]["category"] == "network_error"
+        assert result["errors"][0]["retryable"] is True
 
     def test_plone6_401_is_logged_as_access_denied(self, sleep):
         with (

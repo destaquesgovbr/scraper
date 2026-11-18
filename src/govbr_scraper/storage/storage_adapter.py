@@ -6,7 +6,7 @@ Simplified postgres-only storage interface for the scraper service.
 
 from collections import OrderedDict
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from loguru import logger
 
@@ -16,6 +16,17 @@ from govbr_scraper.storage.postgres_manager import PostgresManager
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
+
+
+class InsertCounts(NamedTuple):
+    """Contagens de ``StorageAdapter.insert``.
+
+    - ``saved``: linhas gravadas, inseridas + atualizadas (``articles_saved``);
+    - ``new``: linhas de fato inseridas (``articles_new``).
+    """
+
+    saved: int
+    new: int
 
 
 class StorageAdapter:
@@ -51,7 +62,7 @@ class StorageAdapter:
         """Return recent article URLs for an agency (for known URL fence optimization)."""
         return self.postgres.get_recent_urls(agency_key, limit)
 
-    def insert(self, new_data: OrderedDict, allow_update: bool = False) -> int:
+    def insert(self, new_data: OrderedDict, allow_update: bool = False) -> InsertCounts:
         """
         Insert new records into PostgreSQL.
 
@@ -60,7 +71,8 @@ class StorageAdapter:
             allow_update: If True, update existing records with same unique_id
 
         Returns:
-            Number of records inserted/updated
+            InsertCounts(saved, new): records written (inserted + updated) and records
+            actually inserted
         """
         total_records = len(new_data.get("unique_id", []))
         logger.info(f"Inserting {total_records} records into PostgreSQL")
@@ -71,16 +83,16 @@ class StorageAdapter:
                 f"No valid records to insert into PostgreSQL "
                 f"(all {total_records} records were skipped due to missing required fields)"
             )
-            return 0
+            return InsertCounts(saved=0, new=0)
 
-        inserted, inserted_articles = self.postgres.insert(news_list, allow_update=allow_update)
-        logger.success(f"PostgreSQL: inserted {inserted} records")
+        result = self.postgres.insert(news_list, allow_update=allow_update)
+        logger.success(f"PostgreSQL: {result.saved} records written, {result.new} new")
 
         # Publish events for newly inserted articles (best-effort)
-        if inserted_articles:
-            self._event_publisher.publish_scraped(inserted_articles)
+        if result.articles:
+            self._event_publisher.publish_scraped(result.articles)
 
-        return inserted
+        return InsertCounts(saved=result.saved, new=result.new)
 
     def record_scrape_run(self, run: "ScrapeRunResult") -> None:
         """Record a scrape execution result. Delegates to PostgresManager."""

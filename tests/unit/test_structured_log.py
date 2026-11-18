@@ -23,6 +23,18 @@ class TestLogScrapeResult:
         assert result.execution_time_seconds == 2.5
         assert result.scraped_at is not None
 
+    def test_articles_new_is_optional(self):
+        assert log_scrape_result(agency_key="mec", status="success").articles_new is None
+        result = log_scrape_result(
+            agency_key="mec", status="success", articles_saved=8, articles_new=2
+        )
+        assert (result.articles_saved, result.articles_new) == (8, 2)
+
+    @patch("govbr_scraper.monitoring.structured_log.logger")
+    def test_binds_articles_new(self, mock_logger):
+        log_scrape_result(agency_key="mec", status="success", articles_saved=8, articles_new=2)
+        assert mock_logger.bind.call_args[1]["articles_new"] == 2
+
     def test_success_has_no_error_fields(self):
         result = log_scrape_result(agency_key="mec", status="success")
         assert result.error_category is None

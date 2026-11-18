@@ -30,3 +30,19 @@ class PermanentHTTPError(ScrapingError):
 
 class LoginRedirectError(PermanentHTTPError):
     """A URL redirecionou para a tela de login do Plone (seção privada ou removida)."""
+
+
+class FallbackFailedError(ScrapingError):
+    """O scraper primário falhou com html_changed e o fallback Plone 6 também falhou.
+
+    A mensagem junta os dois erros (``Both scrapers failed. Primary: ... Fallback: ...``) e,
+    como começa pelo "No articles found" do primário, a classificação pela mensagem daria
+    sempre html_changed (permanente). ``error_category`` fixa a categoria que vale para a
+    agência, e ``classify_exception`` a usa no lugar da mensagem.
+
+    :param error_category: categoria do erro (``ErrorCategory``); None classifica pela mensagem.
+    """
+
+    def __init__(self, message: str, error_category: str | None = None):
+        super().__init__(message)
+        self.error_category = error_category

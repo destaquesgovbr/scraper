@@ -1,7 +1,10 @@
-# Cloud Composer DAGs Deployment
-# Automatically deploys scraper DAGs to Cloud Composer when changes are pushed to main
+# Deploy das DAGs do scraper no Airflow
+# Em push na main, publica dags/ em gs://<bucket>/dags/scraper/ em cada bucket da lista padrão
+# da reusable workflow (v3): na Fase 3 da migração do Composer, o bucket do Cloud Composer e o
+# do Airflow próprio (infra/_plan/migrar-composer-para-airflow-proprio.md). Quando o Composer
+# for desligado, a lista muda na reusable workflow; este arquivo não muda.
 
-name: Deploy Scraper DAGs to Composer
+name: Deploy Scraper DAGs to Airflow
 
 on:
   push:
@@ -9,6 +12,7 @@ on:
       - main
     paths:
       - 'dags/**'
+      - '.github/workflows/composer-deploy-dags.yaml'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +21,7 @@ permissions:
 
 jobs:
   deploy:
-    uses: destaquesgovbr/reusable-workflows/.github/workflows/composer-deploy-dags.yml@v1
+    uses: destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3
     with:
       dags_local_path: dags
       dags_bucket_subdir: scraper

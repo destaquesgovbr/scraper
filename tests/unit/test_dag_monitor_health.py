@@ -11,8 +11,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from govbr_scraper.models.monitoring import PERMANENT_ERROR_CATEGORIES
 from govbr_scraper.monitoring.health_checks import (
+    CONSECUTIVE_FAILURES_QUERY,
     SILENT_AGENCIES_QUERY,
+    STALE_AGENCIES_QUERY,
     find_consecutive_failures,
     find_silent_agencies,
 )
@@ -362,6 +365,35 @@ class TestSilentQueryParity:
         assert " ".join(mod._SILENT_AGENCIES_QUERY.split()) == " ".join(
             SILENT_AGENCIES_QUERY.split()
         )
+
+
+class TestConsecutiveFailuresQueryParity:
+    def test_dag_query_matches_health_checks(self):
+        """A query vive duplicada (o pacote não é instalado no Composer): não pode divergir."""
+        mod = _load_module()
+        assert " ".join(mod._CONSECUTIVE_FAILURES_QUERY.split()) == " ".join(
+            CONSECUTIVE_FAILURES_QUERY.split()
+        )
+
+    def test_permanent_categories_match_models(self):
+        """Erro permanente na última execução basta: a lista é a de PERMANENT_ERROR_CATEGORIES."""
+        match = re.search(r"error_category IN \(([^)]*)\)", CONSECUTIVE_FAILURES_QUERY)
+        assert match
+        listed = {item.strip().strip("'") for item in match.group(1).split(",")}
+        assert listed == {str(c) for c in PERMANENT_ERROR_CATEGORIES}
+
+
+class TestStaleQueryParity:
+    def test_dag_query_matches_health_checks(self):
+        """A query vive duplicada (o pacote não é instalado no Composer): não pode divergir."""
+        mod = _load_module()
+        assert " ".join(mod._STALE_AGENCIES_QUERY.split()) == " ".join(STALE_AGENCIES_QUERY.split())
+
+    def test_counts_new_articles_with_fallback_to_saved(self):
+        """articles_new (migration 037); linhas anteriores a ela (NULL) usam articles_saved."""
+        normalized = " ".join(STALE_AGENCIES_QUERY.split())
+        assert normalized.count("COALESCE(articles_new, articles_saved) > 0") == 3
+        assert "AND articles_saved > 0" not in normalized
 
 
 class TestBuildAlertMessage:

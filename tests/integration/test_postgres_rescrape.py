@@ -39,7 +39,7 @@ from psycopg2.extras import RealDictCursor
 from govbr_scraper.models.news import NewsInsert
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.storage.postgres_manager import PostgresManager
-from govbr_scraper.storage.storage_adapter import StorageAdapter
+from govbr_scraper.storage.storage_adapter import InsertCounts, StorageAdapter
 from tests.integration import postgres_guard
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
@@ -526,7 +526,7 @@ class TestRepublishOnlyOnContentChange:
             return StorageAdapter(postgres_manager=pg)
 
     def test_new_article_is_published(self, adapter, publisher):
-        assert adapter.insert(_scraped_batch()) == 1
+        assert adapter.insert(_scraped_batch()) == InsertCounts(saved=1, new=1)
         assert _published_uids(publisher) == [UID]
 
     def test_rescrape_without_content_change_is_not_republished(
@@ -536,9 +536,10 @@ class TestRepublishOnlyOnContentChange:
         _enrich(db, theme_ids)
         publisher.reset_mock()
 
-        saved = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
+        counts = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
 
-        assert saved == 1  # a Phase 1 atualizou a linha (articles_saved inalterado)
+        assert counts.saved == 1  # a Phase 1 atualizou a linha (articles_saved inalterado)
+        assert counts.new == 0  # articles_new: re-scrape não é notícia nova
         assert _row(db)["extracted_at"] == RESCRAPE_EXTRACTED_AT
         publisher.publish_scraped.assert_not_called()
 
@@ -550,9 +551,9 @@ class TestRepublishOnlyOnContentChange:
         adapter.insert(_scraped_batch())
         publisher.reset_mock()
 
-        saved = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
+        counts = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
 
-        assert saved == 1
+        assert counts == InsertCounts(saved=1, new=0)
         assert _row(db)["most_specific_theme_id"] is None
         assert _published_uids(publisher) == [UID]
 
@@ -572,3 +573,73 @@ class TestRepublishOnlyOnContentChange:
         row = _row(db)
         assert row["summary"] == SUMMARY
         assert row["has_embedding"] is True
+
+
+# =============================================================================
+# articles_new: só as linhas de fato inseridas (RETURNING + xmax = 0)
+# =============================================================================
+
+OTHER_UID = "ministerio-lanca-edital_def789"
+OTHER_URL = "https://agenciabrasil.ebc.com.br/geral/noticia/2026-10/ministerio-lanca-edital"
+
+
+class TestArticlesNewCount:
+    """articles_saved continua "linhas gravadas"; articles_new conta só as inseridas.
+
+    O ``xmax = 0`` do RETURNING com ON CONFLICT DO UPDATE só dá para provar num banco real.
+    """
+
+    def test_new_article_counts_as_new(self, pg):
+        result = pg.insert([_scraped(pg)])
+        assert (result.saved, result.new) == (1, 1)
+
+    def test_rescrape_by_url_is_saved_but_not_new(self, pg):
+        pg.insert([_scraped(pg)])
+        result = pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)])
+        assert (result.saved, result.new) == (1, 0)
+
+    def test_mixed_batch_counts_only_the_inserted(self, pg, db):
+        pg.insert([_scraped(pg)])
+        result = pg.insert(
+            [
+                _scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT),
+                _scraped(pg, unique_id=OTHER_UID, url=OTHER_URL, title="Ministério lança edital"),
+            ]
+        )
+        assert (result.saved, result.new) == (2, 1)
+        assert _count_news(db) == 2
+
+    def test_unique_id_conflict_without_allow_update_is_neither(self, pg, db):
+        """URL diferente, mesmo unique_id: DO NOTHING não grava nem conta."""
+        pg.insert([_scraped(pg)])
+        result = pg.insert([_scraped(pg, url=f"{URL}?origem=defeso")])
+        assert (result.saved, result.new) == (0, 0)
+        assert _row(db)["url"] == URL
+
+    def test_allow_update_conflict_is_saved_but_not_new(self, pg, db):
+        """ON CONFLICT (unique_id) DO UPDATE: a linha volta no RETURNING com xmax != 0."""
+        pg.insert([_scraped(pg)])
+        result = pg.insert(
+            [_scraped(pg, url=f"{URL}?origem=defeso", extracted_at=RESCRAPE_EXTRACTED_AT)],
+            allow_update=True,
+        )
+        assert (result.saved, result.new) == (1, 0)
+        assert _row(db)["url"] == f"{URL}?origem=defeso"  # o DO UPDATE rodou
+        # A linha atualizada continua sendo publicada, como antes.
+        assert [a["unique_id"] for a in result.articles] == [UID]
+
+    def test_allow_update_new_article_counts_as_new(self, pg):
+        result = pg.insert([_scraped(pg)], allow_update=True)
+        assert (result.saved, result.new) == (1, 1)
+
+    def test_allow_update_mixed_batch(self, pg, db):
+        pg.insert([_scraped(pg)])
+        result = pg.insert(
+            [
+                _scraped(pg, url=None, extracted_at=RESCRAPE_EXTRACTED_AT),  # conflito
+                _scraped(pg, unique_id=OTHER_UID, url=OTHER_URL, title="Ministério lança edital"),
+            ],
+            allow_update=True,
+        )
+        assert (result.saved, result.new) == (2, 1)
+        assert _count_news(db) == 2

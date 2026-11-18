@@ -1,9 +1,17 @@
 """Tests for scrape run tracking — recording and querying scrape results."""
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
+from psycopg2 import errors
 
 from govbr_scraper.models.monitoring import ErrorCategory, ScrapeRunResult
+from govbr_scraper.storage.postgres_manager import PostgresManager
+
+MISSING_COLUMN = errors.UndefinedColumn(
+    'column "articles_new" of relation "scrape_runs" does not exist'
+)
 
 
 def _make_pg_with_mock_pool():
@@ -62,6 +70,96 @@ class TestRecordScrapeRun:
         params = mock_cursor.execute.call_args[0][1]
         assert "anti_bot" in params
         assert "Anti-bot protection detected" in params
+
+    def test_record_scrape_run_writes_articles_new(self):
+        pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
+
+        pg.record_scrape_run(self._make_run(articles_saved=8, articles_new=3))
+
+        sql, params = mock_cursor.execute.call_args[0]
+        columns = [c.strip() for c in sql.split("(")[1].split(")")[0].split(",")]
+        assert columns[-1] == "articles_new"
+        assert dict(zip(columns, params, strict=True))["articles_new"] == 3
+        assert dict(zip(columns, params, strict=True))["articles_saved"] == 8
+        mock_conn.commit.assert_called_once()
+
+    def test_record_scrape_run_writes_null_articles_new_when_not_measured(self):
+        pg, _, mock_cursor = _make_pg_with_mock_pool()
+
+        pg.record_scrape_run(self._make_run())
+
+        sql, params = mock_cursor.execute.call_args[0]
+        assert "articles_new" in sql
+        assert params[-1] is None
+
+
+class TestRecordScrapeRunBeforeMigration037:
+    """Scraper no ar antes da migration 037: a linha de scrape_runs não pode se perder."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warning(self, monkeypatch):
+        monkeypatch.setattr(PostgresManager, "_warned_missing_articles_new", False)
+
+    def _run(self) -> ScrapeRunResult:
+        return ScrapeRunResult(
+            agency_key="mec",
+            status="success",
+            articles_scraped=10,
+            articles_saved=8,
+            articles_new=2,
+            scraped_at=datetime(2026, 11, 19, 12, 0, tzinfo=UTC),
+        )
+
+    def test_retries_without_articles_new_on_undefined_column(self):
+        pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
+        mock_cursor.execute.side_effect = [MISSING_COLUMN, None]
+
+        pg.record_scrape_run(self._run())
+
+        assert mock_cursor.execute.call_count == 2
+        first_sql = mock_cursor.execute.call_args_list[0][0][0]
+        retry_sql, retry_params = mock_cursor.execute.call_args_list[1][0]
+        assert "articles_new" in first_sql
+        assert "articles_new" not in retry_sql
+        assert "articles_saved" in retry_sql
+        assert len(retry_params) == 9
+        mock_conn.rollback.assert_called_once()  # desfaz a transação abortada
+        mock_conn.commit.assert_called_once()
+
+    def test_warns_once_per_process(self):
+        pg, _, mock_cursor = _make_pg_with_mock_pool()
+        mock_cursor.execute.side_effect = [MISSING_COLUMN, None, MISSING_COLUMN, None]
+
+        with patch("govbr_scraper.storage.postgres_manager.logger") as mock_logger:
+            pg.record_scrape_run(self._run())
+            pg.record_scrape_run(self._run())
+
+        assert mock_logger.warning.call_count == 1
+        assert "articles_new" in mock_logger.warning.call_args[0][0]
+        # Continua tentando com a coluna: depois da migration volta a gravar sozinho.
+        assert "articles_new" in mock_cursor.execute.call_args_list[2][0][0]
+
+    def test_other_undefined_column_is_raised(self):
+        pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
+        mock_cursor.execute.side_effect = errors.UndefinedColumn(
+            'column "fallback_triggered" of relation "scrape_runs" does not exist'
+        )
+
+        with pytest.raises(errors.UndefinedColumn):
+            pg.record_scrape_run(self._run())
+
+        assert mock_cursor.execute.call_count == 1
+        mock_conn.commit.assert_not_called()
+
+    def test_failure_after_retry_is_raised(self):
+        pg, mock_conn, mock_cursor = _make_pg_with_mock_pool()
+        mock_cursor.execute.side_effect = [MISSING_COLUMN, RuntimeError("conexão caiu")]
+
+        with pytest.raises(RuntimeError, match="conexão caiu"):
+            pg.record_scrape_run(self._run())
+
+        mock_conn.commit.assert_not_called()
+        pg.pool.putconn.assert_called_once_with(mock_conn)
 
 
 class TestGetRecentRuns:

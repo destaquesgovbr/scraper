@@ -98,3 +98,29 @@ def test_no_alert_when_coverage_ok(loaded):
     mocks["airflow.models"].Variable.get = MagicMock(side_effect=_variables({}))
     registry["alert_on_low_coverage"]._original_fn({**REPORT, "coverage_ratio": 0.95})
     mocks["scraper.notify"].send_alert.assert_not_called()
+
+
+def test_report_total_counts_new_articles(loaded):
+    """Total artigos = notícias novas (articles_new); antes da 037, articles_saved."""
+    registry, mocks = loaded
+    mocks["airflow.models"].Variable.get = MagicMock(
+        side_effect=_variables({"scraper_database_url": "postgresql://u@h/db"})
+    )
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {
+        "agencies_scraped": 140,
+        "agencies_with_errors": 7,
+        "total_articles": 242,
+        "total_active": 149,
+    }
+    cursor.fetchall.return_value = []
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cursor
+    with patch("psycopg2.connect", return_value=conn):
+        report = registry["generate_report"]._original_fn()
+
+    coverage_sql = " ".join(cursor.execute.call_args_list[0][0][0].split())
+    assert "COALESCE(SUM(COALESCE(articles_new, articles_saved)), 0) AS total_articles" in (
+        coverage_sql
+    )
+    assert report["total_articles"] == 242

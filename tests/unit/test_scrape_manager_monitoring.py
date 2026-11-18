@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from govbr_scraper.models.monitoring import ErrorCategory
+from govbr_scraper.storage.storage_adapter import InsertCounts
 
 
 class TestScrapeManagerMonitoring:
@@ -34,8 +35,8 @@ class TestScrapeManagerMonitoring:
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        storage.insert.return_value = 1
-        manager.run_scraper(
+        storage.insert.return_value = InsertCounts(saved=1, new=1)
+        result = manager.run_scraper(
             agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
         )
 
@@ -44,7 +45,40 @@ class TestScrapeManagerMonitoring:
         assert run.agency_key == "mec"
         assert run.status == "success"
         assert run.articles_scraped == 1
+        assert run.articles_saved == 1
+        assert run.articles_new == 1
         assert run.error_category is None
+        assert result["articles_new"] == 1
+
+    @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
+    @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
+    def test_records_new_separately_from_saved(self, mock_load, mock_ws_cls):
+        """Re-scrape (Phase 1) conta em articles_saved, mas não em articles_new."""
+        mock_load.return_value = {
+            "mec": {"url": "https://www.gov.br/mec", "scraper_type": "html", "active": True}
+        }
+        mock_scraper = MagicMock()
+        mock_scraper.scrape_news.return_value = [
+            {
+                "agency": "mec",
+                "title": f"Test {i}",
+                "published_at": "2026-01-01",
+                "url": f"http://x/{i}",
+                "content": "Texto",
+            }
+            for i in range(3)
+        ]
+        mock_ws_cls.return_value = mock_scraper
+
+        manager, storage = self._make_manager()
+        storage.insert.return_value = InsertCounts(saved=3, new=1)
+        result = manager.run_scraper(
+            agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
+        )
+
+        run = storage.record_scrape_run.call_args[0][0]
+        assert (run.articles_saved, run.articles_new) == (3, 1)
+        assert (result["articles_saved"], result["articles_new"]) == (3, 1)
 
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
@@ -59,7 +93,7 @@ class TestScrapeManagerMonitoring:
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        manager.run_scraper(
+        result = manager.run_scraper(
             agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=True
         )
 
@@ -67,6 +101,16 @@ class TestScrapeManagerMonitoring:
         run = storage.record_scrape_run.call_args[0][0]
         assert run.status == "error"
         assert run.error_category == ErrorCategory.ANTI_BOT
+        assert run.articles_new is None
+        # A resposta da API leva a mesma categoria gravada em scrape_runs.
+        assert result["errors"] == [
+            {
+                "agency": "mec",
+                "error": "Anti-bot protection detected for mec",
+                "category": "anti_bot",
+                "retryable": False,
+            }
+        ]
 
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
     @patch("govbr_scraper.scrapers.scrape_manager.load_urls_from_yaml")
@@ -88,7 +132,7 @@ class TestScrapeManagerMonitoring:
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        storage.insert.return_value = 1
+        storage.insert.return_value = InsertCounts(saved=1, new=1)
         # First call to record_scrape_run raises, second should still be called
         storage.record_scrape_run.side_effect = [Exception("DB down"), None]
 
@@ -140,6 +184,8 @@ class TestScrapeManagerMonitoring:
         run = storage.record_scrape_run.call_args[0][0]
         assert run.status == "success"
         assert run.articles_scraped == 0
+        assert run.articles_saved == 0
+        assert run.articles_new == 0
         assert run.error_category is None
 
     @patch("govbr_scraper.scrapers.scrape_manager.WebScraper")
@@ -169,14 +215,18 @@ class TestScrapeManagerMonitoring:
         mock_ws_cls.return_value = mock_scraper
 
         manager, storage = self._make_manager()
-        storage.insert.return_value = 2
-        manager.run_scraper(
+        storage.insert.return_value = InsertCounts(saved=2, new=1)
+        result = manager.run_scraper(
             agencies=["mec"], min_date="2026-01-01", max_date="2026-01-01", sequential=False
         )
 
         storage.record_scrape_run.assert_called_once()
         run = storage.record_scrape_run.call_args[0][0]
         assert run.articles_saved > 0, f"Expected articles_saved > 0, got {run.articles_saved}"
+        # Gravação em lote no fim: a linha da agência não sabe quantas eram novas.
+        assert run.articles_new is None
+        # A resposta leva o total do lote.
+        assert (result["articles_saved"], result["articles_new"]) == (2, 1)
 
 
 class TestScrapeManagerPreprocessing:
