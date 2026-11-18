@@ -9,7 +9,7 @@ DAG única de scraping das agências gov.br: ``scrape_agencies``.
 - No máximo 4 agências ao mesmo tempo (``max_active_tis_per_dag=4``): espalha a carga no
   scraper-api e a rajada de eventos no pipeline downstream (Pub/Sub, enrichment-worker).
 - Cada task chama a Scraper API no Cloud Run via HTTP, com o mesmo payload de antes.
-- Retry: 2x, a partir de 5 min, com backoff exponencial (máx. 15 min). Timeout: 10 min por task.
+- Retry: 2x, a cada 5 min (intervalo fixo; ver default_args). Timeout: 10 min por task.
 - Janela: ver ``_scrape_window`` (9 h para trás, para a execução das 06h cobrir a madrugada).
 - Params opcionais ``start_date``/``end_date`` (YYYY-MM-DD) para recuperar um período depois
   de uma queda (disparo manual; ver docs/runbook.md).
@@ -201,9 +201,11 @@ _DATE_PARAM_HELP = (
     default_args={
         "owner": "scraper",
         "retries": 2,
+        # Intervalo fixo, SEM retry_exponential_backoff: no Airflow 3.1.0 (Composer), o
+        # scheduler calcula a próxima tentativa de uma task MAPEADA em retry lendo
+        # task.max_retry_delay, que o MappedOperator não tem. O AttributeError derruba o
+        # loop do scheduler inteiro (todas as DAGs paradas de 18/11 02:00Z a 09:00Z).
         "retry_delay": timedelta(minutes=5),
-        "retry_exponential_backoff": True,
-        "max_retry_delay": timedelta(minutes=15),
         "execution_timeout": timedelta(minutes=10),
         "on_failure_callback": _on_scrape_failure,
     },
