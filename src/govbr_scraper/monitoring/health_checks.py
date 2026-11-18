@@ -31,19 +31,20 @@ SILENT_AGENCIES_QUERY = """
 """
 
 
-def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 2) -> list[dict]:
+def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -> list[dict]:
     """Find agencies with N or more consecutive recent failures.
 
     Args:
         conn: psycopg2 connection (or mock).
         threshold: Number of consecutive failures to trigger alert.
-        window_hours: How many hours back to look for failures.
+        window_hours: How many hours back to look for failures (default 6: three runs of
+            the scrape_agencies DAG, which runs every 2 hours).
 
     Returns:
         List of dicts with agency_key, consecutive_failures, last_error, last_failure_at.
 
-    NOTE: This query is duplicated in dags/monitor_scraping_health.py (check_consecutive_failures).
-    Changes here must be replicated there and vice-versa.
+    NOTE: This query (and the defaults) is duplicated in dags/monitor_scraping_health.py
+    (check_consecutive_failures). Changes here must be replicated there and vice-versa.
     """
     query = """
         WITH ranked AS (
@@ -101,20 +102,22 @@ def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
         return [dict(row) for row in cur.fetchall()]
 
 
-def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int = 2) -> list[dict]:
+def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int = 3) -> list[dict]:
     """Find active agencies with no scrape_run at all (success or error) in the window.
 
     Every call to the scraper API records one scrape_run per agency, success or
-    error. An active agency without any run means its DAG is not calling the API:
-    a DagRun stuck in 'running' (with max_active_runs=1, e.g. pointing to a
-    DagVersion without serialized_dag), a paused DAG or a DAG missing from Airflow.
+    error. An active agency without any run means its mapped task in the
+    scrape_agencies DAG is not calling the API: a DagRun stuck in 'running' (with
+    max_active_runs=1, e.g. pointing to a DagVersion without serialized_dag), a paused
+    or missing DAG, or a task that did not run.
     find_consecutive_failures and find_stale_agencies start from scrape_runs, so
     they cannot see this case.
 
     Args:
         conn: psycopg2 connection (or mock).
         active_agencies: Agency keys expected to run (active in site_urls.yaml).
-        silent_hours: Hours without any run to consider the agency silent.
+        silent_hours: Hours without any run to consider the agency silent (default 3:
+            the DAG runs every 2 hours, plus 1 hour of margin).
 
     Returns:
         List of dicts with agency_key and last_run_at (None when there is no run

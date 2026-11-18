@@ -1,29 +1,47 @@
 """
 DAG de monitoramento de saude do scraper.
 
-Roda a cada 30 minutos e verifica:
-1. Agencias ativas sem nenhuma execucao (scrape_run) em X horas: a DAG
-   scrape_<agencia> nao esta chamando a API (DagRun travado, DAG pausada ou ausente)
+Roda 30 min depois de cada execucao do scraping (``30 6-22/2 * * *``: 06h30, 08h30 ...
+22h30, em horario de Brasilia; nao roda na madrugada sem scraping) e verifica:
+1. Agencias ativas sem nenhuma execucao (scrape_run) em X horas: a task mapeada da
+   agencia na DAG scrape_agencies nao chamou a API (DAG pausada ou ausente, DagRun
+   travado, task que nao rodou)
 2. Agencias com N falhas consecutivas
 3. Agencias sem noticias em X horas
 
-Envia alertas via Telegram (ou loga se nao configurado).
+Envia o alerta agregado via notify.send_alert (Telegram > Pub/Sub dgb.ops.alerts >
+webhook > log), sem repetir o mesmo alerta a cada execucao: ver send_alerts.
 """
 
+import json
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import yaml
 from airflow.decorators import dag, task
 
 logger = logging.getLogger(__name__)
 
-# Mesmo arquivo que dags/scrape_agencies.py usa para gerar as DAGs scrape_*.
+# Mesmo arquivo que dags/scrape_agencies.py usa para gerar as tasks mapeadas.
 _AGENCIES_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config", "site_urls.yaml")
-_DEFAULT_SILENT_HOURS = 2
-# Uma pane global (ex.: Composer sem acesso a API) poe as ~155 agencias numa secao.
+# O scraping roda a cada 2 h; 3 h = 2 h + 1 h de folga. As 06h30 a ultima execucao antes
+# da das 06h e a das 22h do dia anterior, entao ali basta perder a das 06h para alertar.
+_DEFAULT_SILENT_HOURS = 3
+# Janela para as falhas consecutivas: cobre 3 execucoes de 2 em 2 h (cada execucao que
+# falha ainda grava ate 3 scrape_runs de erro, um por tentativa).
+_DEFAULT_FAILURE_WINDOW_HOURS = 6
+_DEFAULT_FAILURE_THRESHOLD = 3
+# Dedup: o mesmo alerta (mesmas agencias sem execucao e com falhas) so e reenviado
+# depois deste intervalo.
+_DEFAULT_ALERT_REPEAT_HOURS = 24
+# Estado do ultimo alerta enviado, em JSON. Fica no metastore: com o Secret Manager como
+# backend de Variables, o secret inexistente cai no metastore.
+_ALERT_STATE_VARIABLE = "scraper_monitor_last_alert"
+_ALERT_TITLE = "Scraper: saúde das agências"
+_ALERT_SOURCE = "monitor_scraping_health (Airflow)"
+# Uma pane global (ex.: Composer sem acesso a API) poe as ~150 agencias numa secao.
 _MAX_LINES_PER_SECTION = 25
 # O Telegram recusa texto acima de 4096 caracteres e, sem Telegram, a linha
 # "Alert (log-only): ..." e cortada em 4096 no Cloud Logging (visto em out/2026,
@@ -56,7 +74,7 @@ def _sanitize(value) -> str:
 
 
 def _load_active_agencies(config_path: str = _AGENCIES_CONFIG_PATH) -> list[str]:
-    """Agencias ativas do site_urls.yaml, as mesmas que viram DAG em scrape_agencies.py."""
+    """Agencias ativas do site_urls.yaml, as mesmas que viram task mapeada em scrape_agencies.py."""
     with open(config_path) as f:
         agencies = yaml.safe_load(f)["agencies"]
     return sorted(key for key, data in agencies.items() if data.get("active", True))
@@ -69,6 +87,80 @@ def _get_silent_hours() -> int:
     hours = int(Variable.get("scraper_silent_hours", default_var=_DEFAULT_SILENT_HOURS))
     # Janela 0 marcaria todas as agencias como silenciosas.
     return max(1, hours)
+
+
+def _get_repeat_hours() -> int:
+    """Horas ate reenviar um alerta igual ao ultimo enviado (0 = sem dedup)."""
+    from airflow.models import Variable
+
+    raw = Variable.get("scraper_alert_repeat_hours", default_var=_DEFAULT_ALERT_REPEAT_HOURS)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "scraper_alert_repeat_hours invalida (%r); usando %dh", raw, _DEFAULT_ALERT_REPEAT_HOURS
+        )
+        return _DEFAULT_ALERT_REPEAT_HOURS
+
+
+def _alert_digest(failures: list[dict], silent: list[dict]) -> dict[str, list[str]]:
+    """Resumo do que dispara um envio: secao -> chaves de agencia ordenadas, sem horarios.
+
+    So entram as secoes acionaveis (sem execucao e falhas consecutivas). As agencias sem
+    noticias (~48 cronicas) vao na mensagem, mas mudanca so nelas nao reenvia o alerta.
+    """
+    return {
+        "silent": sorted({_sanitize(r["agency_key"]) for r in silent or []}),
+        "failures": sorted({_sanitize(r["agency_key"]) for r in failures or []}),
+    }
+
+
+def _should_send(
+    digest: dict, state: dict | None, now: datetime, repeat_hours: int = _DEFAULT_ALERT_REPEAT_HOURS
+) -> bool:
+    """Envia se o resumo mudou desde o ultimo envio ou se o ultimo envio tem repeat_hours+.
+
+    Estado ausente, vazio ou ilegivel conta como "nunca enviado".
+    """
+    if not state or state.get("digest") != digest:
+        return True
+    try:
+        sent_at = datetime.fromisoformat(state["sent_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    if sent_at.tzinfo is None:
+        sent_at = sent_at.replace(tzinfo=timezone.utc)  # noqa: UP017
+    return now - sent_at >= timedelta(hours=repeat_hours)
+
+
+def _read_alert_state() -> dict | None:
+    """Estado do ultimo alerta enviado ({"digest", "sent_at"}), ou None.
+
+    Erro de leitura nao pode impedir o alerta: loga e devolve None (envia).
+    """
+    from airflow.models import Variable
+
+    try:
+        raw = Variable.get(_ALERT_STATE_VARIABLE, default_var=None)
+        if not raw:
+            return None
+        state = json.loads(raw)
+        return state if isinstance(state, dict) else None
+    except Exception as e:
+        logger.warning(
+            "Falha ao ler %s (%s); o alerta sera enviado", _ALERT_STATE_VARIABLE, type(e).__name__
+        )
+        return None
+
+
+def _write_alert_state(state: dict) -> None:
+    """Grava o estado do ultimo alerta. Erro de escrita so e logado."""
+    from airflow.models import Variable
+
+    try:
+        Variable.set(_ALERT_STATE_VARIABLE, json.dumps(state, sort_keys=True))
+    except Exception as e:
+        logger.warning("Falha ao gravar %s (%s)", _ALERT_STATE_VARIABLE, type(e).__name__)
 
 
 def _capped(lines: list[str]) -> list[str]:
@@ -115,10 +207,10 @@ def _build_alert_message(
         header = (
             "<b>Alerta: Agencias Sem Execucao</b>\n"
             f"{len(silent)} agencia(s) ativa(s) sem nenhum scrape_run nas ultimas "
-            f"{silent_hours}h: a DAG scrape_* da agencia nao esta chamando a API "
-            "(DagRun travado em running, DAG pausada ou ausente) ou a chamada nao "
-            "chega a gravar o resultado. "
-            "Ver docs/runbook.md, secao 'DAG de Agencia Travada'."
+            f"{silent_hours}h: a task mapeada da agencia na DAG scrape_agencies nao "
+            "chamou a API (DAG pausada ou ausente, DagRun travado em running, task que "
+            "nao rodou ou falhou antes da chamada) ou a chamada nao chega a gravar o "
+            "resultado. Ver docs/runbook.md, secao 'Agencias Sem Execucao (scrape_agencies)'."
         )
         lines = []
         for r in silent:
@@ -157,7 +249,7 @@ def _build_alert_message(
         "Monitora saude do scraper: agencias sem execucao, falhas consecutivas "
         "e agencias sem noticias"
     ),
-    schedule="*/30 * * * *",
+    schedule="30 6-22/2 * * *",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -177,8 +269,14 @@ def monitor_scraping_health_dag():
         from airflow.models import Variable
         from psycopg2.extras import RealDictCursor
 
-        threshold = int(Variable.get("scraper_consecutive_failure_threshold", default_var=3))
-        window_hours = int(Variable.get("scraper_failure_window_hours", default_var=2))
+        threshold = int(
+            Variable.get(
+                "scraper_consecutive_failure_threshold", default_var=_DEFAULT_FAILURE_THRESHOLD
+            )
+        )
+        window_hours = int(
+            Variable.get("scraper_failure_window_hours", default_var=_DEFAULT_FAILURE_WINDOW_HOURS)
+        )
         database_url = Variable.get("scraper_database_url", default_var="")
         if not database_url:
             raise ValueError("Missing required Airflow Variable: scraper_database_url")
@@ -283,11 +381,13 @@ def monitor_scraping_health_dag():
         """Verifica agencias ativas sem nenhum scrape_run (sucesso ou erro) em X horas.
 
         Cada chamada da API grava um scrape_run por agencia, com sucesso ou erro.
-        Agencia ativa sem nenhum na janela => a DAG dela nao esta rodando. Caso real
-        (out/2026): DagRuns presos em 'running' sem task instances, numa DagVersion
-        sem serialized_dag, travaram scrape_inma, scrape_inpe, scrape_aids e
-        scrape_patrimonio por meses (max_active_runs=1). As outras checagens partem
-        de scrape_runs e nao enxergam esse caso.
+        Agencia ativa sem nenhum na janela => a task mapeada dela na scrape_agencies
+        nao esta chamando a API; todas as agencias de uma vez => a DAG inteira parou.
+        Caso real, ainda com uma DAG por agencia (out e nov/2026): DagRuns presos em
+        'running' sem task instances, numa DagVersion sem serialized_dag, travaram
+        scrape_inma, scrape_inpe, scrape_aids, scrape_patrimonio e scrape_esg
+        (max_active_runs=1). As outras checagens partem de scrape_runs e nao enxergam
+        esse caso.
         """
         import psycopg2
         from airflow.models import Variable
@@ -327,25 +427,55 @@ def monitor_scraping_health_dag():
 
     @task
     def send_alerts(failures: list[dict], stale: list[dict], silent: list[dict]):
-        """Envia alertas agregados via Telegram (ou loga)."""
+        """Envia o alerta agregado (Telegram > Pub/Sub > webhook > log), sem repetir.
+
+        Dedup: o resumo das secoes acionaveis (agencias sem execucao e com falhas
+        consecutivas, sem horarios) e comparado com o do ultimo envio, guardado na
+        Variable scraper_monitor_last_alert. Reenvia quando o resumo muda ou quando o
+        ultimo envio tem scraper_alert_repeat_hours (default 24h). Mudanca so nas agencias
+        sem noticias nao reenvia. O estado so e gravado quando algum canal entregou: no
+        modo log-only, o alerta continua indo para o log em toda execucao.
+        """
         from airflow.models import Variable
-        from scraper.notify import send_alert
+        from scraper.notify import default_alert_topic, send_alert
 
         message = _build_alert_message(failures, stale, silent, _get_silent_hours())
+        state = _read_alert_state()
         if message is None:
             logger.info("Sem alertas para enviar.")
+            if state:
+                # Problema resolvido: se voltar, o alerta sai na hora.
+                _write_alert_state({})
+            return
+
+        now = datetime.now(timezone.utc)  # noqa: UP017
+        digest = _alert_digest(failures, silent)
+        if not _should_send(digest, state, now, _get_repeat_hours()):
+            logger.info(
+                "Alerta igual ao enviado em %s (sem execucao: %d, falhas: %d); nao reenviado.",
+                state.get("sent_at"),
+                len(digest["silent"]),
+                len(digest["failures"]),
+            )
             return
 
         token = Variable.get("scraper_telegram_bot_token", default_var=None)
         chat_id = Variable.get("scraper_telegram_monitor_chat_id", default_var=None)
         webhook = Variable.get("scraper_alert_webhook_url", default_var=None)
+        pubsub_topic = Variable.get("scraper_alert_pubsub_topic", default_var=default_alert_topic())
 
-        send_alert(
+        delivered = send_alert(
             message=message,
             telegram_token=token,
             telegram_chat_id=chat_id,
             webhook_url=webhook,
+            pubsub_topic=pubsub_topic,
+            title=_ALERT_TITLE,
+            severity="warning",
+            source=_ALERT_SOURCE,
         )
+        if delivered:
+            _write_alert_state({"digest": digest, "sent_at": now.isoformat()})
 
     failures = check_consecutive_failures()
     stale = check_stale_agencies()

@@ -45,6 +45,12 @@ class TestFindConsecutiveFailures:
         assert len(result) == 1
         assert result[0]["agency_key"] == "mec"
 
+    def test_default_window_is_6_hours(self, mock_cursor_with_rows):
+        """Três execuções de 2 em 2 h da scrape_agencies."""
+        mock_conn, mock_cursor = mock_cursor_with_rows([])
+        find_consecutive_failures(mock_conn)
+        assert mock_cursor.execute.call_args[0][1] == {"threshold": 3, "window_hours": 6}
+
     def test_custom_window_hours(self, mock_cursor_with_rows):
         mock_conn, mock_cursor = mock_cursor_with_rows([])
         find_consecutive_failures(mock_conn, threshold=3, window_hours=6)
@@ -115,10 +121,11 @@ class TestFindSilentAgencies:
         assert sql == SILENT_AGENCIES_QUERY
         assert params == {"agencies": ["mec", "aids"], "silent_hours": 3}
 
-    def test_default_window_is_2_hours(self, mock_cursor_with_rows):
+    def test_default_window_is_3_hours(self, mock_cursor_with_rows):
+        """scrape_agencies roda de 2 em 2 h: 2 h + 1 h de folga."""
         mock_conn, mock_cursor = mock_cursor_with_rows([])
         find_silent_agencies(mock_conn, ["mec"])
-        assert mock_cursor.execute.call_args[0][1]["silent_hours"] == 2
+        assert mock_cursor.execute.call_args[0][1]["silent_hours"] == 3
 
     def test_empty_active_list_skips_query(self, mock_cursor_with_rows):
         mock_conn, mock_cursor = mock_cursor_with_rows([])
