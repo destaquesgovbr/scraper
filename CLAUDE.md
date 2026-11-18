@@ -173,7 +173,9 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `HTML_CHANGED` | no articles found (estrutura mudou) | permanente |
 | `UNKNOWN` | fallback | passageiro |
 
-O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `error_category` do `FallbackFailedError` ou o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+
+**Primário e fallback falharam** (`FallbackFailedError`, mensagem `Both scrapers failed. Primary: No articles found... Fallback: ...`): a mensagem leria sempre `html_changed`, então o `ScrapeManager` fixa a categoria. Falha de rede do Plone 6 (`network_error`: 5xx, 408/429 depois dos retries, timeout, DNS) vale como `network_error`, passageira, porque um retry pode raspar pelo fallback. Qualquer outra (404 da API, como a mec, ou resposta não-JSON, como a antaq: o site não serve a API do Plone 6) fica `html_changed`, permanente.
 
 `PERMANENT_ERROR_CATEGORIES` = `url_broken`, `access_denied`, `html_changed`, `anti_bot`; `is_retryable(categoria)` é False para elas e para `unknown_agency` (agência fora do YAML ou inativa, `UnknownAgencyError` do `yaml_config`; só existe na resposta da API, sem linha em `scrape_runs`), True para o resto e para erro sem categoria.
 
@@ -368,7 +370,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 
 ### DAGs de manutenção
 
-**`monitor_scraping_health`:** Roda 30 min depois de cada execução do scraping (`30 6-22/2 * * *`; nunca na madrugada). Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 3 h = cadência de 2 h + 1 h de folga: a task mapeada da agência na `scrape_agencies` não chamou a API, ex. DAG pausada ou DagRun preso em `running`; ver runbook, "Agências Sem Execução"), agências com N falhas consecutivas (threshold 3, janela `scraper_failure_window_hours` de 6 h) e agências sem notícia nova em X horas (stale: `COALESCE(articles_new, articles_saved) > 0`, para as linhas anteriores à migration 037 valerem pelo `articles_saved`). Envia alertas via `notify.send_alert()`, sem repetir: o resumo das seções sem execução e falhas consecutivas (só as siglas) é comparado com o do último envio, na Variable `scraper_monitor_last_alert`; reenvia se mudou ou se passaram `scraper_alert_repeat_hours` (default 24 h). Mudança só nas agências stale não reenvia. As queries de agências silenciosas, stale e de falhas consecutivas, e seus defaults, ficam duplicados em `health_checks.py`, e testes garantem que não divergem.
+**`monitor_scraping_health`:** Roda 30 min depois de cada execução do scraping (`30 6-22/2 * * *`; nunca na madrugada). Verifica agências ativas (no `dags/config/site_urls.yaml`) sem nenhum `scrape_run` em X horas (`scraper_silent_hours`, default 3 h = cadência de 2 h + 1 h de folga: a task mapeada da agência na `scrape_agencies` não chamou a API, ex. DAG pausada ou DagRun preso em `running`; ver runbook, "Agências Sem Execução"), agências com N falhas consecutivas (threshold 3, janela `scraper_failure_window_hours` de 6 h) ou com erro permanente no `scrape_run` mais recente (a task falha sem retry e grava 1 linha por execução; sem esse critério a agência quebrada levaria 3 execuções para entrar e sairia da seção toda manhã) e agências sem notícia nova em X horas (stale: `COALESCE(articles_new, articles_saved) > 0`, para as linhas anteriores à migration 037 valerem pelo `articles_saved`). Envia alertas via `notify.send_alert()`, sem repetir: o resumo das seções sem execução e falhas consecutivas (só as siglas) é comparado com o do último envio, na Variable `scraper_monitor_last_alert`; reenvia se mudou ou se passaram `scraper_alert_repeat_hours` (default 24 h). Mudança só nas agências stale não reenvia. As queries de agências silenciosas, stale e de falhas consecutivas, e seus defaults, ficam duplicados em `health_checks.py`, e testes garantem que não divergem.
 
 **`cleanup_old_scrape_runs`:** Deleta registros da tabela `scrape_runs` mais antigos que `scraper_retention_days` (default 90). Com ~150 agências em 9 execuções por dia, mais retries e EBC, são ~1,4 mil rows/dia (eram ~22 mil com as execuções de 10 em 10 min).
 
@@ -567,7 +569,9 @@ Quando o Composer for desligado, a lista de buckets muda só na reusable workflo
 
 ### Ordem de deploy (Passo 1 da rearquitetura da ingestão, `_plan/rearquitetura-ingestao.md`)
 
-1. Migration 037 do data-platform (`scrape_runs.articles_new`) aplicada em produção (workflow `db-migrate`). As queries de stale e de cobertura das DAGs referenciam a coluna; o INSERT do scraper-api tolera a falta dela.
+1. Migration 037 do data-platform (`scrape_runs.articles_new`) aplicada em produção (workflow `db-migrate`). Conferir antes do merge (somente leitura): `SELECT 1 FROM information_schema.columns WHERE table_name = 'scrape_runs' AND column_name = 'articles_new'` devolve uma linha. Só o INSERT do scraper-api tolera a falta da coluna. As DAGs a referenciam sem fallback e sobem no mesmo merge; sem a 037:
+   - `check_stale_agencies` falha com `UndefinedColumn` (depois do retry) e a `send_alerts` (`trigger_rule` padrão `all_success`) fica `upstream_failed`: o **monitor inteiro fica mudo**, inclusive "Agências Sem Execução" e "Falhas consecutivas", não só a seção de stale;
+   - o `scraper_coverage_report` falha (a query de cobertura soma `articles_new`).
 2. Tag `v3` do reusable-workflows publicada.
 3. Merge do scraper: a API (Cloud Run) e as DAGs sobem juntas. As DAGs novas também funcionam com a API antiga (sem `retryable`, tudo repete, como antes).
 

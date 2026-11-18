@@ -114,12 +114,12 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria. A col
 
 | Categoria | Na DAG | Ação recomendada |
 |-----------|--------|-----------------|
-| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries e o "Erro de rede ao acessar API" do Plone 6 |
+| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries, o "Erro de rede ao acessar API" do Plone 6 e o `Both scrapers failed` em que o fallback Plone 6 falhou por rede |
 | `ANTI_BOT` | permanente: falha sem retry | Desativar temporariamente se persistir (ver seção abaixo) |
 | `EMPTY_CONTENT` | passageiro: repete | Normal se agência publica pouco (hoje nenhuma exceção gera esta categoria) |
 | `URL_BROKEN` | permanente: falha sem retry | 404/410 e outros 4xx permanentes (400, 405...): verificar nova URL no site; atualizar YAML ou desativar |
 | `ACCESS_DENIED` | permanente: falha sem retry | 401/403 ou redirect para login: procurar listagem pública; senão desativar (`active: false`) |
-| `HTML_CHANGED` | permanente: falha sem retry | Verificar site manualmente; fix no parser |
+| `HTML_CHANGED` | permanente: falha sem retry | Verificar site manualmente; fix no parser. Inclui o `Both scrapers failed` em que o fallback Plone 6 falhou por outro motivo (404 ou resposta não-JSON da API: o site não serve o Plone 6) |
 | `UNKNOWN` | passageiro: repete | Ver `error_message` para detalhes |
 | `unknown_agency` (só na resposta da API) | permanente: falha sem retry | Agência fora do `site_urls.yaml` da API ou inativa nele: YAMLs dessincronizados ou imagem da API antiga |
 
@@ -166,6 +166,8 @@ Ela só falha (`AirflowFailException`, execução vermelha) se:
 - **a fração de agências com falha passou de `scraper_max_failed_ratio`** (Airflow Variable, fração entre 0 e 1, padrão `0.10`; valor inválido vale 0,10). Mensagem: `N de M agências falharam (X%, acima do limite de Y%): <siglas>`.
 
 Vermelho, portanto, quer dizer problema de plataforma: comece pelo scraper-api (logs do Cloud Run) e pela taxa de `network_error` em `scrape_runs`. Para mudar o limite, edite a Variable (ex.: `0.15` num período de instabilidade conhecida do gov.br) e volte ao padrão depois.
+
+**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa a janela de 9 h e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`). Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
 
 As falhas são deduzidas pela ausência: cada `scrape` com sucesso devolve `{agency, articles_new, articles_saved}` por XCom, e a `summarize` compara com a lista de agências ativas do parse. Uma agência que falhou não deixa XCom (o Airflow só grava o retorno de task com sucesso).
 
@@ -226,20 +228,28 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
 
 **Correção.** Todas as ações abaixo mudam estado no Airflow e precisam de aprovação humana.
 
-- **Task mapeada que falhou (algumas agências):** limpe só as tasks com falha da execução, para rodarem de novo. Na UI: Mapped Tasks → selecione as tasks `failed` → **Clear**. Pela CLI, todas as tasks com falha das execuções do intervalo:
+- **Task mapeada que falhou (algumas agências):** limpe só as tasks com falha da execução, para rodarem de novo, e a `summarize` junto quando a execução ficou vermelha (ver "Execução Vermelha"). Na UI: Mapped Tasks → selecione as tasks `failed` → **Clear**; depois, se a `summarize` falhou, Clear nela. Pela CLI, todas as tasks com falha das execuções do intervalo; `-d` inclui a `summarize` (downstream), que com `--only-failed` só é limpa se falhou:
 
   ```bash
   gcloud composer environments run "${COMPOSER[@]}" tasks clear -- scrape_agencies \
-    -t '^scrape$' --only-failed -s <AAAA-MM-DDTHH:MM> -e <AAAA-MM-DDTHH:MM> --yes
+    -t scrape -d --only-failed -s <AAAA-MM-DDTHH:MM> -e <AAAA-MM-DDTHH:MM> --yes
   ```
 
-  Pela REST API, uma agência só (`task_ids` com `[task_id, map_index]`):
+  Apesar do nome `--task-regex`, no Airflow 3.1 (3.1.0 e 3.1.8) o `tasks clear` usa a DAG serializada, cujo `partial_subset` compara `-t` como **substring** do task_id: `-t '^scrape$'` não casa com nada e o comando não limpa nada. `-t scrape` casa só com a `scrape` (não é substring de `summarize`).
+
+  Pela REST API, uma agência só (`task_ids` com `[task_id, map_index]`) e, numa segunda chamada, a `summarize`, que recalcula o resumo e a cor do DagRun (nessa ordem):
 
   ```bash
-  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-    "$AIRFLOW_URI/api/v2/dags/scrape_agencies/clearTaskInstances" \
-    -d '{"dag_run_id": "<run_id>", "task_ids": [["scrape", <map_index>]], "only_failed": false, "dry_run": false}'
+  clear_tis() {  # $1 = task_ids em JSON
+    curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      "$AIRFLOW_URI/api/v2/dags/scrape_agencies/clearTaskInstances" \
+      -d "{\"dag_run_id\": \"<run_id>\", \"task_ids\": $1, \"only_failed\": false, \"dry_run\": false}"
+  }
+  clear_tis '[["scrape", <map_index>]]'
+  clear_tis '["summarize"]'
   ```
+
+  Não junte as duas numa chamada nem use `"include_downstream": true` com `[task_id, map_index]`: no Airflow 3.1.0 (Composer), quando a seleção tem mais de uma task, o `clearTaskInstances` acrescenta `"scrape"` sem map index à lista e, com `only_failed: false`, limpa as ~147 agências da execução. O 3.1.8 corrigiu (`exclude_original=True`). Na dúvida, rode antes com `"dry_run": true` e confira as task instances devolvidas.
 
   Se a falha é da agência (site fora, 4xx permanente: a task falhou numa tentativa só, com `erro permanente` na mensagem), limpar não adianta: ver "Debugar Scraper em Falha".
 - **DAG pausada:** `gcloud composer environments run "${COMPOSER[@]}" dags unpause -- scrape_agencies`.
@@ -315,7 +325,7 @@ curl -X POST https://{API_URL}/scrape/agencies \
 ### Tipos
 
 - **Agências sem execução:** agência ativa sem nenhum `scrape_run` (sucesso ou erro) em X horas (`scraper_silent_hours`, default 3 h). A task mapeada da agência na `scrape_agencies` não chamou a API; ver "Agências Sem Execução (DAG `scrape_agencies`)". Vem primeiro na mensagem.
-- **Falhas consecutivas:** agência com N+ erros seguidos (`scraper_consecutive_failure_threshold`, default 3) na janela `scraper_failure_window_hours` (default 6 h). Cada execução que falha grava até 3 erros, um por tentativa.
+- **Falhas consecutivas:** agência com N+ erros seguidos (`scraper_consecutive_failure_threshold`, default 3) na janela `scraper_failure_window_hours` (default 6 h), **ou** cujo `scrape_run` mais recente é um erro permanente (`url_broken`, `access_denied`, `html_changed`, `anti_bot`). Erro passageiro grava até 3 erros por execução, um por tentativa, e 3 seguidos bastam. Erro permanente falha a task sem retry e grava 1 por execução: sem o segundo critério, a agência quebrada só entraria depois de 3 execuções (4 h ou mais) e sairia da seção toda manhã (às 06h30 a janela só tem a execução das 06h, às 08h30 as das 06h e 08h), mudando o resumo do alerta e reenviando-o duas vezes por dia.
 - **Agências stale:** sem notícia **nova** em X horas (`scraper_stale_hours`, default 24). Conta `articles_new` (linhas de fato inseridas; migration 037 do data-platform); linhas anteriores à 037 (`articles_new` NULL) usam `articles_saved`. Antes valia `articles_saved`, que soma as linhas atualizadas por re-scrape: a EBC e as agências em fallback Plone 6 relêem a janela inteira e nunca apareciam.
 - **Cobertura baixa** (`scraper_coverage_report`, 08h): menos de 80% das agências com sucesso em 24 h. O "Total artigos" do relatório soma `COALESCE(articles_new, articles_saved)` (notícias novas, ~242/dia em nov/2026).
 
