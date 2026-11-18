@@ -29,12 +29,13 @@ AGENCIES_PAYLOAD = {"start_date": "2025-01-01", "agencies": ["mec"], "sequential
 
 
 def _mock_run_scraper(
-    *, articles_scraped=0, articles_saved=0, agencies_processed=None, errors=None
+    *, articles_scraped=0, articles_saved=0, articles_new=0, agencies_processed=None, errors=None
 ):
     """Helper to create a mock ScrapeManager.run_scraper return value."""
     return {
         "articles_scraped": articles_scraped,
         "articles_saved": articles_saved,
+        "articles_new": articles_new,
         "agencies_processed": agencies_processed or [],
         "errors": errors or [],
     }
@@ -46,7 +47,7 @@ def test_scrape_agencies_completed_returns_200(mock_storage_cls, mock_manager_cl
     """Successful scraping should return HTTP 200."""
     mock_manager = MagicMock()
     mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=10, articles_saved=8, agencies_processed=["mec"]
+        articles_scraped=10, articles_saved=8, articles_new=3, agencies_processed=["mec"]
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -57,6 +58,7 @@ def test_scrape_agencies_completed_returns_200(mock_storage_cls, mock_manager_cl
     assert data["status"] == "completed"
     assert data["articles_scraped"] == 10
     assert data["articles_saved"] == 8
+    assert data["articles_new"] == 3
     assert data["agencies_processed"] == ["mec"]
     assert data["errors"] == []
 
@@ -162,7 +164,10 @@ EBC_PAYLOAD = {"start_date": "2025-01-01", "sequential": True}
 def test_scrape_ebc_completed_returns_200(mock_storage_cls, mock_manager_cls):
     mock_manager = MagicMock()
     mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=20, articles_saved=18, agencies_processed=["agencia_brasil", "tvbrasil"]
+        articles_scraped=20,
+        articles_saved=18,
+        articles_new=4,
+        agencies_processed=["agencia_brasil", "tvbrasil"],
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -170,6 +175,7 @@ def test_scrape_ebc_completed_returns_200(mock_storage_cls, mock_manager_cls):
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["articles_new"] == 4
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
@@ -217,6 +223,134 @@ def test_scrape_ebc_exception_returns_500(mock_storage_cls, mock_manager_cls):
 
     assert response.status_code == 500
     assert "DB connection failed" in response.json()["detail"]
+
+
+# =============================================================================
+# Contrato de errors[]: category e retryable (DAG decide se repete)
+# =============================================================================
+
+
+@patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_agencies_errors_carry_category_and_retryable(mock_storage_cls, mock_manager_cls):
+    """O status HTTP não muda (500 se todas falharam); o corpo diz se vale repetir."""
+    mock_manager = MagicMock()
+    mock_manager.run_scraper.return_value = _mock_run_scraper(
+        errors=[
+            {
+                "agency": "mec",
+                "error": "No articles found on first page of mec",
+                "category": "html_changed",
+                "retryable": False,
+            }
+        ],
+    )
+    mock_manager_cls.return_value = mock_manager
+
+    response = client.post("/scrape/agencies", json=AGENCIES_PAYLOAD)
+
+    assert response.status_code == 500
+    assert response.json()["errors"] == [
+        {
+            "agency": "mec",
+            "error": "No articles found on first page of mec",
+            "category": "html_changed",
+            "retryable": False,
+        }
+    ]
+
+
+@patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_agencies_error_without_category_defaults_to_retryable(
+    mock_storage_cls, mock_manager_cls
+):
+    mock_manager = MagicMock()
+    mock_manager.run_scraper.return_value = _mock_run_scraper(
+        errors=[{"agency": "mec", "error": "Site down"}],
+    )
+    mock_manager_cls.return_value = mock_manager
+
+    response = client.post("/scrape/agencies", json=AGENCIES_PAYLOAD)
+
+    (error,) = response.json()["errors"]
+    assert error["category"] is None
+    assert error["retryable"] is True
+
+
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_agencies_unknown_agency_is_permanent(mock_storage_cls):
+    """ScrapeManager real com o site_urls.yaml real: agência fora do YAML."""
+    payload = {**AGENCIES_PAYLOAD, "agencies": ["nao_existe_xyz"]}
+    response = client.post("/scrape/agencies", json=payload)
+
+    assert response.status_code == 500  # inalterado: compatível com as DAGs antigas
+    data = response.json()
+    assert data["status"] == "failed"
+    assert data["articles_new"] == 0
+    (error,) = data["errors"]
+    assert error["agency"] == "nao_existe_xyz"
+    assert error["category"] == "unknown_agency"
+    assert error["retryable"] is False
+
+
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_ebc_unknown_agency_is_permanent(mock_storage_cls):
+    response = client.post("/scrape/ebc", json={**EBC_PAYLOAD, "agencies": ["memoria-ebc"]})
+
+    assert response.status_code == 500
+    (error,) = response.json()["errors"]
+    assert error["category"] == "unknown_agency"
+    assert error["retryable"] is False
+
+
+@patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_ebc_partial_keeps_207_with_categories(mock_storage_cls, mock_manager_cls):
+    mock_manager = MagicMock()
+    mock_manager.run_scraper.return_value = _mock_run_scraper(
+        articles_scraped=10,
+        articles_saved=10,
+        articles_new=2,
+        agencies_processed=["agencia_brasil"],
+        errors=[
+            {
+                "agency": "tvbrasil",
+                "error": "Read timed out",
+                "category": "network_error",
+                "retryable": True,
+            }
+        ],
+    )
+    mock_manager_cls.return_value = mock_manager
+
+    response = client.post("/scrape/ebc", json=EBC_PAYLOAD)
+
+    assert response.status_code == 207
+    data = response.json()
+    assert data["articles_new"] == 2
+    assert data["errors"][0]["retryable"] is True
+    assert data["errors"][0]["category"] == "network_error"
+
+
+@patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+def test_scrape_agencies_old_manager_metrics_without_articles_new(
+    mock_storage_cls, mock_manager_cls
+):
+    """articles_new ausente nas métricas vira 0 (resposta sempre tem o campo)."""
+    mock_manager = MagicMock()
+    mock_manager.run_scraper.return_value = {
+        "articles_scraped": 1,
+        "articles_saved": 1,
+        "agencies_processed": ["mec"],
+        "errors": [],
+    }
+    mock_manager_cls.return_value = mock_manager
+
+    response = client.post("/scrape/agencies", json=AGENCIES_PAYLOAD)
+
+    assert response.json()["articles_new"] == 0
 
 
 # =============================================================================

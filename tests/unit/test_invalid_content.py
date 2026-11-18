@@ -16,6 +16,7 @@ from govbr_scraper.scrapers.content_validation import (
     LOGIN_REQUIRED_CONTENT,
     invalid_content_reason,
 )
+from govbr_scraper.storage.storage_adapter import InsertCounts
 
 LOGIN_TEXT = (
     "É necessário autenticar para visualizar essa página. Se você acredita que está "
@@ -65,7 +66,7 @@ class TestScrapeManagerSkipsInvalidContent:
 
         storage = MagicMock()
         storage.get_recent_urls.return_value = set()
-        storage.insert.return_value = 1
+        storage.insert.return_value = InsertCounts(saved=1, new=1)
         return ScrapeManager(storage), storage
 
     @pytest.mark.parametrize("sequential", [True, False])

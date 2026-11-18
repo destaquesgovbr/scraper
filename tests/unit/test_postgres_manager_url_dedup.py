@@ -51,7 +51,7 @@ class TestUrlBasedDedup:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert mock_exec.call_count == 1
         sql = mock_exec.call_args[0][1]
@@ -60,6 +60,7 @@ class TestUrlBasedDedup:
         assert rows[0][0] == "Titulo editado"
         assert rows[0][-1] == "existing-uid-123"
         assert count == 1
+        assert new == 0  # só a Phase 1 (UPDATE): nenhuma linha nova
         assert articles[0]["unique_id"] == "existing-uid-123"
 
     def test_same_url_different_agency_inserts_both(self, pg_manager, mock_pool):
@@ -75,12 +76,13 @@ class TestUrlBasedDedup:
             "govbr_scraper.storage.postgres_manager.execute_values",
             return_value=[("uid-ebc",), ("uid-mec",)],
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         insert_call = mock_exec.call_args
         values = insert_call[0][2]
         assert len(values) == 2
         assert count == 2
+        assert new == 2
 
     def test_null_url_not_deduped_by_url(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
@@ -94,7 +96,7 @@ class TestUrlBasedDedup:
             "govbr_scraper.storage.postgres_manager.execute_values",
             return_value=[("uid-1",), ("uid-2",)],
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         values = mock_exec.call_args[0][2]
         assert len(values) == 2
@@ -110,7 +112,7 @@ class TestUrlBasedDedup:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert articles[0]["unique_id"] == "original-uid"
 
@@ -200,7 +202,7 @@ class TestUrlBasedDedup:
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[None, [("brand-new-uid",)]],
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert mock_exec.call_count == 2
         update_sql = mock_exec.call_args_list[0][0][1]
@@ -209,6 +211,7 @@ class TestUrlBasedDedup:
         assert len(insert_values) == 1
         assert insert_values[0][0] == "brand-new-uid"
         assert count == 2
+        assert new == 1
         assert len(articles) == 2
 
     def test_returns_metadata_for_updated_articles(self, pg_manager, mock_pool):
@@ -222,7 +225,7 @@ class TestUrlBasedDedup:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert len(articles) == 1
         assert articles[0]["unique_id"] == "existing-uid"
@@ -262,7 +265,7 @@ class TestUrlBasedDedup:
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[violation, None],
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         savepoint_calls = [
             c
@@ -271,7 +274,31 @@ class TestUrlBasedDedup:
         ]
         assert any("ROLLBACK TO SAVEPOINT" in c[0][0] for c in savepoint_calls)
         assert count == 1
+        assert new == 0  # o worker concorrente inseriu; aqui foi UPDATE
         assert articles[0]["unique_id"] == "race-uid"
+
+    def test_race_retry_counts_new_rows_inserted_in_retry(self, pg_manager, mock_pool):
+        """No retry do UniqueViolation, a parte que ainda não existia é inserida e conta
+        em articles_new; a casada por URL (worker concorrente) só em articles_saved."""
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.side_effect = [
+            [],
+            [("race-uid", "ebc", "https://example.com/race", STORED_HASH, STORED_THEME_ID)],
+        ]
+        news = [
+            _make_news("new-uid-1", url="https://example.com/race"),
+            _make_news("new-uid-2", url="https://example.com/nova"),
+        ]
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            side_effect=[errors.UniqueViolation(), None, [("new-uid-2",)]],
+        ):
+            count, articles, new = pg_manager.insert(news)
+
+        assert count == 2
+        assert new == 1
+        assert sorted(a["unique_id"] for a in articles) == ["new-uid-2", "race-uid"]
 
 
 class TestRepublishOnlyChangedContent:
@@ -309,10 +336,11 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert "UPDATE news SET" in mock_exec.call_args[0][1]  # a Phase 1 rodou
         assert count == 1  # articles_saved não muda de semântica
+        assert new == 0  # articles_new: re-scrape não é notícia nova
         assert articles == []
 
     def test_unchanged_content_without_theme_is_returned(self, pg_manager, mock_pool):
@@ -329,7 +357,7 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ) as mock_exec:
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert "UPDATE news SET" in mock_exec.call_args[0][1]
         assert count == 1
@@ -346,7 +374,7 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert count == 1
         assert [a["unique_id"] for a in articles] == ["existing-uid"]
@@ -363,7 +391,7 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
         ):
-            _, articles = pg_manager.insert(news)
+            _, articles, _ = pg_manager.insert(news)
 
         assert [a["unique_id"] for a in articles] == ["existing-uid"]
 
@@ -386,9 +414,10 @@ class TestRepublishOnlyChangedContent:
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[None, [("uid-nova",)]],
         ):
-            count, articles = pg_manager.insert([igual, sem_tema, mudou, nova])
+            count, articles, new = pg_manager.insert([igual, sem_tema, mudou, nova])
 
         assert count == 4
+        assert new == 1
         assert sorted(a["unique_id"] for a in articles) == [
             "uid-mudou",
             "uid-nova",
@@ -410,7 +439,7 @@ class TestRepublishOnlyChangedContent:
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[errors.UniqueViolation(), None],
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert count == 1
         assert articles == []
@@ -430,7 +459,7 @@ class TestRepublishOnlyChangedContent:
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[errors.UniqueViolation(), None],
         ):
-            count, articles = pg_manager.insert(news)
+            count, articles, new = pg_manager.insert(news)
 
         assert count == 1
         assert [a["unique_id"] for a in articles] == ["race-uid"]

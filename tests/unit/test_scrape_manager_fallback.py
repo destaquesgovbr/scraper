@@ -13,6 +13,7 @@ import pytest
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
 from govbr_scraper.scrapers.scrape_manager import ScrapeManager
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
+from govbr_scraper.storage.storage_adapter import InsertCounts
 
 
 def _config(url, scraper_type="html"):
@@ -22,7 +23,7 @@ def _config(url, scraper_type="html"):
 def _make_manager():
     storage = MagicMock()
     storage.get_recent_urls.return_value = set()
-    storage.insert.return_value = 0
+    storage.insert.return_value = InsertCounts(saved=0, new=0)
     storage.record_scrape_run = MagicMock()
     return ScrapeManager(storage), storage
 

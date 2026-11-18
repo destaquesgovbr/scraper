@@ -1,7 +1,7 @@
 """
 Unit tests for PostgresManager.insert() return type and behavior.
 
-Tests the tuple return (count, inserted_articles), RETURNING clause,
+Tests the InsertResult return (saved, articles, new), RETURNING clause,
 metadata correctness, deduplication, and ON CONFLICT modes.
 """
 
@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from govbr_scraper.models.news import NewsInsert
+from govbr_scraper.storage.postgres_manager import InsertResult
 
 # mock_pool and pg_manager fixtures provided by tests/unit/conftest.py
 
@@ -58,7 +59,7 @@ class TestInsertReturnType:
     def test_return_value_structure_and_count(
         self, pg_manager, mock_pool, sample_news, returned_ids, expected_count
     ):
-        """insert() returns (int, list[dict]) with count matching RETURNING rows."""
+        """insert() returns InsertResult(saved, articles, new) matching RETURNING rows."""
         _, _, mock_cursor = mock_pool
 
         with patch(
@@ -68,15 +69,15 @@ class TestInsertReturnType:
             result = pg_manager.insert(sample_news)
 
         # Verify structure
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-        assert isinstance(result[0], int)
-        assert isinstance(result[1], list)
+        assert isinstance(result, InsertResult)
+        assert isinstance(result.saved, int)
+        assert isinstance(result.articles, list)
+        assert isinstance(result.new, int)
 
-        # Verify count matches RETURNING rows
-        count, articles = result
-        assert count == expected_count
-        assert len(articles) == expected_count
+        # Verify count matches RETURNING rows (DO NOTHING: tudo que volta é novo)
+        assert result.saved == expected_count
+        assert result.new == expected_count
+        assert len(result.articles) == expected_count
 
 
 # =============================================================================
@@ -119,13 +120,24 @@ class TestInsertQuery:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
+            return_value=[("mec-2026-01-01-noticia-1", True)],
         ) as mock_exec:
             pg_manager.insert(sample_news, allow_update=True)
 
         query = mock_exec.call_args[0][1]
         assert "DO UPDATE SET" in query
-        assert "RETURNING unique_id" in query
+        assert "RETURNING unique_id, (xmax = 0) AS inserted" in query
+
+    def test_do_nothing_query_returns_only_unique_id(self, pg_manager, mock_pool, sample_news):
+        """Sem allow_update o RETURNING só traz as inseridas: não precisa do xmax."""
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[],
+        ) as mock_exec:
+            pg_manager.insert(sample_news, allow_update=False)
+
+        query = mock_exec.call_args[0][1]
+        assert query.endswith("ON CONFLICT (unique_id) DO NOTHING RETURNING unique_id")
 
     @pytest.mark.parametrize(
         "column",
@@ -140,7 +152,7 @@ class TestInsertQuery:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
+            return_value=[("mec-2026-01-01-noticia-1", True)],
         ) as mock_exec:
             pg_manager.insert(sample_news, allow_update=True)
 
@@ -157,7 +169,7 @@ class TestInsertQuery:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
+            return_value=[("mec-2026-01-01-noticia-1", True)],
         ) as mock_exec:
             pg_manager.insert(sample_news, allow_update=True)
 
@@ -173,7 +185,7 @@ class TestInsertQuery:
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-            return_value=[("mec-2026-01-01-noticia-1",)],
+            return_value=[("mec-2026-01-01-noticia-1", True)],
         ) as mock_exec:
             pg_manager.insert(sample_news, allow_update=True)
 
@@ -212,7 +224,7 @@ class TestInsertedArticlesMetadata:
             "govbr_scraper.storage.postgres_manager.execute_values",
             return_value=[("mec-2026-01-01-noticia-1",)],
         ):
-            _, articles = pg_manager.insert(sample_news)
+            _, articles, _ = pg_manager.insert(sample_news)
 
         article = articles[0]
         # Has required keys
@@ -233,9 +245,10 @@ class TestInsertedArticlesMetadata:
             "govbr_scraper.storage.postgres_manager.execute_values",
             return_value=[("mds-2026-01-02-noticia-2",)],
         ):
-            count, articles = pg_manager.insert(sample_news)
+            count, articles, new = pg_manager.insert(sample_news)
 
         assert count == 1
+        assert new == 1
         assert len(articles) == 1
         assert articles[0]["unique_id"] == "mds-2026-01-02-noticia-2"
         assert articles[0]["agency_key"] == "mds"
@@ -316,3 +329,42 @@ class TestInsertErrorHandling:
                 pg_manager.insert(sample_news)
 
         pool_obj.putconn.assert_called_once_with(mock_conn)
+
+
+# =============================================================================
+# articles_new com allow_update=True (xmax = 0)
+# =============================================================================
+
+
+class TestAllowUpdateNewCount:
+    """No DO UPDATE o RETURNING traz inseridas e atualizadas; xmax = 0 separa as novas."""
+
+    def test_counts_only_rows_with_xmax_zero(self, pg_manager, mock_pool, sample_news):
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[
+                ("mec-2026-01-01-noticia-1", True),  # inserida
+                ("mds-2026-01-02-noticia-2", False),  # ON CONFLICT DO UPDATE
+            ],
+        ):
+            result = pg_manager.insert(sample_news, allow_update=True)
+
+        assert result.saved == 2  # articles_saved: inseridas + atualizadas
+        assert result.new == 1
+        # As duas continuam publicadas em dgb.news.scraped, como antes.
+        assert [a["unique_id"] for a in result.articles] == [
+            "mec-2026-01-01-noticia-1",
+            "mds-2026-01-02-noticia-2",
+        ]
+
+    def test_all_updated_counts_zero_new(self, pg_manager, mock_pool, sample_news):
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            return_value=[
+                ("mec-2026-01-01-noticia-1", False),
+                ("mds-2026-01-02-noticia-2", False),
+            ],
+        ):
+            result = pg_manager.insert(sample_news, allow_update=True)
+
+        assert (result.saved, result.new) == (2, 0)

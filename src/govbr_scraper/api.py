@@ -56,6 +56,12 @@ class ScrapeEBCRequest(BaseModel):
 class AgencyError(BaseModel):
     agency: str
     error: str
+    # Mesma categoria gravada em scrape_runs.error_category (ou "unknown_agency": agência
+    # fora do YAML ou inativa, sem linha em scrape_runs). None em erro sem classificação.
+    category: str | None = None
+    # False em erro permanente (url_broken, access_denied, html_changed, anti_bot,
+    # unknown_agency): repetir não adianta e a DAG falha sem retry.
+    retryable: bool = True
 
 
 class ScrapeResponse(BaseModel):
@@ -63,7 +69,8 @@ class ScrapeResponse(BaseModel):
     start_date: str
     end_date: str
     articles_scraped: int = 0
-    articles_saved: int = 0
+    articles_saved: int = 0  # linhas gravadas: inseridas + atualizadas (re-scrape)
+    articles_new: int = 0  # só as inseridas (notícias novas)
     articles_skipped: int = 0  # conteúdo inválido (scraper#65) ou redatado: não gravados
     agencies_processed: list[str] = []
     errors: list[AgencyError] = []
@@ -117,6 +124,7 @@ def scrape_agencies(req: ScrapeAgenciesRequest):
         end_date=end,
         articles_scraped=metrics["articles_scraped"],
         articles_saved=metrics["articles_saved"],
+        articles_new=metrics.get("articles_new", 0),
         articles_skipped=metrics.get("articles_skipped", 0),
         agencies_processed=metrics["agencies_processed"],
         errors=errors,
@@ -225,6 +233,7 @@ def scrape_ebc(req: ScrapeEBCRequest):
         end_date=end,
         articles_scraped=metrics["articles_scraped"],
         articles_saved=metrics["articles_saved"],
+        articles_new=metrics.get("articles_new", 0),
         articles_skipped=metrics.get("articles_skipped", 0),
         agencies_processed=metrics["agencies_processed"],
         errors=errors,

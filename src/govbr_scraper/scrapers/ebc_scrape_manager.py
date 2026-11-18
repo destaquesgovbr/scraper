@@ -2,14 +2,25 @@ import logging
 import time
 from collections import OrderedDict
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from govbr_scraper.models.monitoring import classify_error
+from govbr_scraper.models.monitoring import (
+    UNKNOWN_AGENCY,
+    agency_error,
+    classify_exception,
+)
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
 from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
-from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
+from govbr_scraper.scrapers.yaml_config import (
+    UnknownAgencyError,
+    get_config_dir,
+    load_urls_from_yaml,
+)
+
+if TYPE_CHECKING:
+    from govbr_scraper.storage.storage_adapter import InsertCounts
 
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -56,10 +67,13 @@ class EBCScrapeManager:
         :param sequential: Whether to scrape sequentially (True) or in bulk (False).
         :param allow_update: If True, overwrite existing entries in the dataset.
         :param agencies: A list of agency names to scrape news from. If None, all active agencies are scraped.
-        :return: Dict with metrics: articles_scraped, articles_saved, agencies_processed, errors.
+        :return: Dict with metrics: articles_scraped, articles_saved (inserted + updated),
+            articles_new (inserted only), agencies_processed and errors (agency, error,
+            category, retryable; category is the one written to scrape_runs).
         """
         articles_scraped = 0
         articles_saved = 0
+        articles_new = 0
         agencies_processed = []
         errors = []
 
@@ -72,8 +86,8 @@ class EBCScrapeManager:
                     try:
                         loaded = load_urls_from_yaml(config_dir, "ebc_urls.yaml", agency)
                         agency_urls.update(loaded)
-                    except ValueError as e:
-                        errors.append({"agency": agency, "error": str(e)})
+                    except UnknownAgencyError as e:
+                        errors.append(agency_error(agency, str(e), UNKNOWN_AGENCY))
                         logging.warning(f"Skipping agency '{agency}': {e}")
             else:
                 # Load all agency URLs if agencies list is None or empty
@@ -91,13 +105,16 @@ class EBCScrapeManager:
                     try:
                         scraped_data = scraper.scrape_news()
                         elapsed = time.monotonic() - start_time
+                        saved = new = 0
                         if scraped_data:
                             logging.info(
                                 f"Appending {len(scraped_data)} news from {agency_name} to dataset."
                             )
                             articles_scraped += len(scraped_data)
-                            saved = self._process_and_upload_data(scraped_data, allow_update) or 0
+                            counts = self._process_and_upload_data(scraped_data, allow_update)
+                            saved, new = counts.saved, counts.new
                             articles_saved += saved
+                            articles_new += new
                             agencies_processed.append(agency_name)
                         else:
                             logging.info(f"No news found for {agency_name}.")
@@ -106,17 +123,19 @@ class EBCScrapeManager:
                             agency_key=agency_name,
                             status="success",
                             articles_scraped=len(scraped_data) if scraped_data else 0,
-                            articles_saved=saved if scraped_data else 0,
+                            articles_saved=saved,
+                            articles_new=new,
                             execution_time_seconds=elapsed,
                         )
                     except Exception as e:
                         elapsed = time.monotonic() - start_time
-                        errors.append({"agency": agency_name, "error": str(e)})
+                        category = classify_exception(e)
+                        errors.append(agency_error(agency_name, str(e), category))
                         logging.error(f"Error scraping {agency_name}: {e}")
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=category,
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
@@ -143,40 +162,47 @@ class EBCScrapeManager:
                         )
                     except Exception as e:
                         elapsed = time.monotonic() - start_time
-                        errors.append({"agency": agency_name, "error": str(e)})
+                        category = classify_exception(e)
+                        errors.append(agency_error(agency_name, str(e), category))
                         logging.error(f"Error scraping {agency_name}: {e}")
                         run = log_scrape_result(
                             agency_key=agency_name,
                             status="error",
-                            error_category=classify_error(str(e)),
+                            error_category=category,
                             error_message=str(e),
                             execution_time_seconds=elapsed,
                         )
                     record_scrape_run_safe(self.dataset_manager, run, agency_name)
 
                 if all_news_data:
+                    # Gravação única no fim: scrape_runs de cada fonte fica sem articles_new
+                    # (None); a resposta da API leva o total do lote.
                     logging.info("Appending all collected news to dataset.")
                     articles_scraped = len(all_news_data)
-                    articles_saved = self._process_and_upload_data(all_news_data, allow_update) or 0
+                    counts = self._process_and_upload_data(all_news_data, allow_update)
+                    articles_saved = counts.saved
+                    articles_new = counts.new
                 else:
                     logging.info("No news found for any EBC source.")
         except ValueError as e:
             logging.error(e)
-            errors.append({"agency": "config", "error": str(e)})
+            errors.append(agency_error("config", str(e), None))
 
         return {
             "articles_scraped": articles_scraped,
             "articles_saved": articles_saved,
+            "articles_new": articles_new,
             "agencies_processed": agencies_processed,
             "errors": errors,
         }
 
-    def _process_and_upload_data(self, new_data: list[dict], allow_update: bool):
+    def _process_and_upload_data(self, new_data: list[dict], allow_update: bool) -> "InsertCounts":
         """
         Process the EBC news data and upload it to the dataset, with the option to update existing entries.
 
         :param new_data: The list of EBC news items to process.
         :param allow_update: If True, overwrite existing entries in the dataset.
+        :return: InsertCounts(saved, new) from the storage backend.
         """
         # Convert EBC data format to govbrnews format
         processed_data = self._convert_ebc_to_govbr_format(new_data)

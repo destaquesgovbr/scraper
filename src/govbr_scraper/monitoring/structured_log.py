@@ -14,6 +14,7 @@ def log_scrape_result(
     status: str,
     articles_scraped: int = 0,
     articles_saved: int = 0,
+    articles_new: int | None = None,
     error_category: ErrorCategory | None = None,
     error_message: str | None = None,
     execution_time_seconds: float | None = None,
@@ -28,7 +29,8 @@ def log_scrape_result(
         agency_key: The agency identifier.
         status: "success" or "error".
         articles_scraped: Number of articles found.
-        articles_saved: Number of articles persisted.
+        articles_saved: Number of articles persisted (inserted + updated).
+        articles_new: Number of articles actually inserted (None when not measured).
         error_category: Classified error category (if error).
         error_message: Error description (if error).
         execution_time_seconds: How long the scrape took.
@@ -43,6 +45,7 @@ def log_scrape_result(
         error_message=error_message,
         articles_scraped=articles_scraped,
         articles_saved=articles_saved,
+        articles_new=articles_new,
         execution_time_seconds=execution_time_seconds,
         scraped_at=datetime.now(UTC),
         primary_scraper=primary_scraper,
@@ -56,6 +59,7 @@ def log_scrape_result(
         status=status,
         articles_scraped=articles_scraped,
         articles_saved=articles_saved,
+        articles_new=articles_new,
         error_category=str(error_category) if error_category else None,
         execution_time_seconds=execution_time_seconds,
         primary_scraper=primary_scraper,
@@ -69,18 +73,21 @@ def log_scrape_result(
     else:
         if fallback_triggered and fallback_success:
             bound.info(
-                "Scrape completed for {agency} via {fallback} fallback: {scraped} scraped, {saved} saved",
+                "Scrape completed for {agency} via {fallback} fallback: "
+                "{scraped} scraped, {saved} saved, {new} new",
                 agency=agency_key,
                 fallback=fallback_scraper,
                 scraped=articles_scraped,
                 saved=articles_saved,
+                new=articles_new,
             )
         else:
             bound.info(
-                "Scrape completed for {agency}: {scraped} scraped, {saved} saved",
+                "Scrape completed for {agency}: {scraped} scraped, {saved} saved, {new} new",
                 agency=agency_key,
                 scraped=articles_scraped,
                 saved=articles_saved,
+                new=articles_new,
             )
 
     return result

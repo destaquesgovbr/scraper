@@ -13,7 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from govbr_scraper.models.news import Agency
-from govbr_scraper.storage.storage_adapter import StorageAdapter
+from govbr_scraper.storage.postgres_manager import InsertResult
+from govbr_scraper.storage.storage_adapter import InsertCounts, StorageAdapter
 
 # =============================================================================
 # Fixtures
@@ -86,7 +87,7 @@ class TestPublishAfterInsert:
                 "published_at": datetime(2026, 1, 1),
             },
         ]
-        mock_postgres.insert.return_value = (1, inserted_articles)
+        mock_postgres.insert.return_value = InsertResult(1, inserted_articles, 1)
 
         adapter.insert(sample_data)
 
@@ -108,23 +109,23 @@ class TestPublishAfterInsert:
                 "published_at": datetime(2026, 1, 2),
             },
         ]
-        mock_postgres.insert.return_value = (2, inserted_articles)
+        mock_postgres.insert.return_value = InsertResult(2, inserted_articles, 2)
 
         adapter.insert(sample_data)
 
         args = mock_event_publisher.publish_scraped.call_args[0][0]
         assert len(args) == 2
 
-    def test_insert_returns_count_only(
+    def test_insert_returns_counts_only(
         self, adapter, mock_postgres, mock_event_publisher, sample_data
     ):
-        """StorageAdapter.insert() still returns just the count (int)."""
-        mock_postgres.insert.return_value = (3, [{"unique_id": "x"}] * 3)
+        """StorageAdapter.insert() returns only the counts (saved, new), not the articles."""
+        mock_postgres.insert.return_value = InsertResult(3, [{"unique_id": "x"}] * 3, 1)
 
         result = adapter.insert(sample_data)
 
-        assert result == 3
-        assert isinstance(result, int)
+        assert result == InsertCounts(saved=3, new=1)
+        assert isinstance(result, InsertCounts)
 
 
 # =============================================================================
@@ -139,7 +140,7 @@ class TestNoPublishOnEmpty:
         self, adapter, mock_postgres, mock_event_publisher, sample_data
     ):
         """publish_scraped not called when insert returns empty list."""
-        mock_postgres.insert.return_value = (0, [])
+        mock_postgres.insert.return_value = InsertResult(0, [], 0)
 
         adapter.insert(sample_data)
 
@@ -158,7 +159,7 @@ class TestNoPublishOnEmpty:
 
         result = adapter.insert(bad_data)
 
-        assert result == 0
+        assert result == InsertCounts(saved=0, new=0)
         mock_event_publisher.publish_scraped.assert_not_called()
 
 

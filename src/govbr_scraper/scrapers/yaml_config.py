@@ -9,6 +9,10 @@ from typing import Any
 import yaml
 
 
+class UnknownAgencyError(ValueError):
+    """Agência fora do YAML ou inativa: erro permanente (a API devolve ``unknown_agency``)."""
+
+
 def get_config_dir(module_file: str) -> str:
     """
     Get the config directory path relative to a module file.
@@ -36,7 +40,7 @@ def load_urls_from_yaml(config_dir: str, file_name: str, agency: str = None) -> 
     :param file_name: The name of the YAML file.
     :param agency: Specific agency key to filter URLs. If None, load all active URLs.
     :return: A dict mapping agency_name to a config dict with 'url', 'scraper_type', 'active'.
-    :raises ValueError: If agency not found or is inactive.
+    :raises UnknownAgencyError: If agency not found or is inactive (a ValueError).
     """
     file_path = os.path.join(config_dir, file_name)
 
@@ -45,10 +49,10 @@ def load_urls_from_yaml(config_dir: str, file_name: str, agency: str = None) -> 
 
     if agency:
         if agency not in agencies:
-            raise ValueError(f"Agency '{agency}' not found in the YAML file.")
+            raise UnknownAgencyError(f"Agency '{agency}' not found in the YAML file.")
         agency_data = agencies[agency]
         if is_agency_inactive(agency, agency_data):
-            raise ValueError(f"Agency '{agency}' is inactive.")
+            raise UnknownAgencyError(f"Agency '{agency}' is inactive.")
         return {
             agency: {
                 "url": extract_url(agency_data),
