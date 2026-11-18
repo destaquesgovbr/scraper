@@ -4,8 +4,12 @@ Mesma agenda e mesma janela da ``scrape_agencies``: a cada 2 horas, das 06h às 
 horário de Brasília (``0 6-22/2 * * *``), com 9 h para trás. Params opcionais
 ``start_date``/``end_date`` (YYYY-MM-DD) para recuperar um período depois de uma queda.
 
-As funções de janela são cópia das de ``scrape_agencies.py`` de propósito: cada arquivo de
-DAG é autocontido (não importa outro módulo de DAG).
+Erro permanente (todos os ``errors[]`` com ``retryable: false``) falha sem retry
+(``AirflowFailException``); se algum erro é passageiro, o corpo não é JSON ou a API é antiga
+(sem ``retryable``), a task repete (2x, a cada 5 min), como antes.
+
+As funções de janela e de leitura da resposta são cópia das de ``scrape_agencies.py`` de
+propósito: cada arquivo de DAG é autocontido (não importa outro módulo de DAG).
 """
 
 import json
@@ -25,6 +29,9 @@ BRASILIA = ZoneInfo("America/Sao_Paulo")
 # A execução das 06h precisa cobrir a madrugada sem scraping, desde a execução das 22h do
 # dia anterior: 8 h de intervalo + 1 h de folga.
 SCRAPE_LOOKBACK_HOURS = 9
+
+# status do corpo de /scrape/ebc que indica falha (a API também responde 500/207).
+_FAILED_BODY_STATUSES = ("failed", "partial")
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -117,6 +124,88 @@ def _on_scrape_failure(context):
     )
 
 
+def _response_errors(body, agency_key: str | None = None) -> list[dict]:
+    """Itens de ``errors[]`` do corpo de /scrape/* (só os da agência, se informada).
+
+    Corpo que não é o JSON de /scrape/* (``{"detail": ...}`` de exceção, página de erro do
+    Cloud Run, texto) devolve [].
+    """
+    if not isinstance(body, dict):
+        return []
+    errors = body.get("errors")
+    if not isinstance(errors, list):
+        return []
+    items = [e for e in errors if isinstance(e, dict)]
+    if agency_key is not None:
+        items = [e for e in items if e.get("agency") == agency_key]
+    return items
+
+
+def _all_permanent(errors: list[dict]) -> bool:
+    """True se há erro e todos são permanentes (``retryable`` é False).
+
+    API antiga, sem ``retryable``: conta como passageiro e repete, como antes.
+    """
+    return bool(errors) and all(e.get("retryable") is False for e in errors)
+
+
+def _describe_errors(errors: list[dict]) -> str:
+    """Resumo legível dos erros para a mensagem da exceção (agência, categoria, mensagem)."""
+    return "; ".join(
+        f"{e.get('agency')} [{e.get('category') or 'sem categoria'}]: {e.get('error')}"
+        for e in errors
+    )
+
+
+def _check_scrape_response(status_code: int, body, agency_key: str | None) -> None:
+    """Levanta exceção se a resposta de /scrape/* indica falha; não faz nada no sucesso.
+
+    Falha: HTTP >= 400, corpo que não é JSON de objeto ou ``status`` failed/partial no corpo
+    (o corpo é lido antes do status HTTP: o 500 de "todas falharam" traz os erros).
+
+    - Todos os erros (da agência, se informada) permanentes: ``AirflowFailException``, sem
+      retry.
+    - O resto (erro passageiro, sem ``errors[]``, API antiga sem ``retryable``):
+      ``AirflowException``, que o Airflow repete.
+    """
+    from airflow.exceptions import AirflowException, AirflowFailException
+
+    body_status = body.get("status") if isinstance(body, dict) else None
+    if status_code < 400 and isinstance(body, dict) and body_status not in _FAILED_BODY_STATUSES:
+        return
+
+    label = body_status or f"HTTP {status_code}"
+    target = agency_key or "EBC"
+    errors = _response_errors(body, agency_key)
+    if _all_permanent(errors):
+        categories = ", ".join(sorted({str(e.get("category")) for e in errors}))
+        raise AirflowFailException(
+            f"Scraping {label} for {target}: erro permanente ({categories}), sem retry: "
+            f"{_describe_errors(errors)}"
+        )
+    if errors:
+        detail = _describe_errors(errors)
+    elif body is None:
+        detail = "resposta sem JSON (corpo no log da task)"
+    else:
+        detail = repr(body)[:500]
+    raise AirflowException(f"Scraping {label} for {target}: {detail}")
+
+
+def _scrape_result(agency_key: str, body: dict) -> dict:
+    """Resultado da task scrape (XCom) consumido pela summarize: pequeno, com a agência.
+
+    ``articles_new`` é None com uma API antiga, que não devolve o campo.
+    """
+    articles_new = body.get("articles_new")
+    articles_saved = body.get("articles_saved")
+    return {
+        "agency": agency_key,
+        "articles_new": articles_new if isinstance(articles_new, int) else None,
+        "articles_saved": articles_saved if isinstance(articles_saved, int) else 0,
+    }
+
+
 _DATE_PARAM_HELP = (
     "Opcional, YYYY-MM-DD, em datas de Brasília. Para recuperar um período depois de uma "
     "queda, informe start_date e end_date juntos: eles substituem a janela calculada. "
@@ -163,7 +252,7 @@ def scrape_ebc_dag():
         import google.auth.transport.requests
         import google.oauth2.id_token
         import httpx
-        from airflow.exceptions import AirflowException, AirflowFailException
+        from airflow.exceptions import AirflowFailException
         from airflow.models import Variable
 
         try:
@@ -181,6 +270,7 @@ def scrape_ebc_dag():
 
         logger.info(f"Calling scraper API for EBC: {min_date} to {max_date}")
 
+        # Erro de rede/timeout do httpx propaga e o Airflow repete.
         response = httpx.post(
             f"{scraper_api_url}/scrape/ebc",
             json={
@@ -192,14 +282,27 @@ def scrape_ebc_dag():
             headers={"Authorization": f"Bearer {token}"},
             timeout=900.0,
         )
-        response.raise_for_status()
-        result = response.json()
-        logger.info("Scraper API response:\n%s", json.dumps(result, indent=2, ensure_ascii=False))
+        # O corpo vem antes do status HTTP: o 500/207 traz os erros e se vale repetir.
+        try:
+            result = response.json()
+        except ValueError:
+            result = None
+            logger.warning(
+                "Scraper API respondeu HTTP %s sem JSON: %s",
+                response.status_code,
+                str(response.text)[:500],
+            )
+        else:
+            logger.info(
+                "Scraper API response (HTTP %s):\n%s",
+                response.status_code,
+                json.dumps(result, indent=2, ensure_ascii=False),
+            )
 
-        # Verificar status da resposta (API pode retornar 200 com falha lógica)
-        if result.get("status") in ("failed", "partial"):
-            errors = result.get("errors", [])
-            raise AirflowException(f"EBC scraping {result['status']}: {errors}")
+        # Duas fontes (agencia_brasil e tvbrasil): só falha sem retry se todos os erros
+        # forem permanentes; se algum for passageiro, repete a task.
+        _check_scrape_response(response.status_code, result, None)
+        return _scrape_result("ebc", result)
 
     scrape_ebc()
 

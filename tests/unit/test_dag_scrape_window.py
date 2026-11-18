@@ -289,7 +289,8 @@ def _run_ebc(module, context):
     variable = module._test_mocks["airflow.models"].Variable
     variable.get = MagicMock(return_value="https://scraper.run.app")
     response = MagicMock()
-    response.json.return_value = {"status": "completed"}
+    response.status_code = 200
+    response.json.return_value = {"status": "completed", "articles_saved": 0, "errors": []}
     with (
         patch.dict(sys.modules, module._test_mocks),
         patch("google.oauth2.id_token.fetch_id_token", return_value="tok"),
