@@ -212,8 +212,10 @@ class TestSingleDag:
         args = loaded.dag_kwargs["default_args"]
         assert args["retries"] == 2
         assert args["retry_delay"].total_seconds() == 5 * 60
-        assert args["retry_exponential_backoff"] is True
-        assert args["max_retry_delay"].total_seconds() == 15 * 60
+        # Backoff exponencial em task mapeada derruba o scheduler do Airflow 3.1.0
+        # (MappedOperator sem max_retry_delay): o intervalo tem de ser fixo.
+        assert not args.get("retry_exponential_backoff", False)
+        assert "max_retry_delay" not in args
         assert args["execution_timeout"].total_seconds() == 10 * 60
         assert args["on_failure_callback"] is loaded.mod._on_scrape_failure
 

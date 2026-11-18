@@ -328,9 +328,8 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 - No máximo 4 agências ao mesmo tempo (`max_active_tis_per_dag=4`): espalha a carga no scraper-api e a rajada de eventos no pipeline downstream; ~5 a 8 min por execução
 - `max_active_runs=1`, `catchup=False`
 - Cada task chama a API no Cloud Run via HTTP POST (`/scrape/agencies` com uma agência, `allow_update: false`, `sequential: true`), autenticada com ID token IAM (`google.oauth2.id_token`)
-- Retry: 2x com delay de 5min
-  - **Agências gov.br:** backoff exponencial (`retry_exponential_backoff=True`), max_retry_delay 15min
-  - **EBC:** flat 5min, sem exponencial
+- Retry: 2x com delay fixo de 5min (agências e EBC)
+  - **Nunca use `retry_exponential_backoff` em task mapeada:** no Airflow 3.1.0 do Composer, o scheduler lê `task.max_retry_delay` de uma task mapeada em retry, o `MappedOperator` não tem esse atributo e o `AttributeError` derruba o loop do scheduler inteiro (todas as DAGs paradas de 18/11/2026 02:00Z a 09:00Z)
 - Timeout: 10min por agência / 30min (EBC)
 - Janela: `_scrape_window(logical_date, lookback_hours=SCRAPE_LOOKBACK_HOURS)`, em datas de Brasília (`America/Sao_Paulo`), de 9 horas antes da execução até a execução. A execução das 06h precisa cobrir a madrugada sem scraping desde a das 22h do dia anterior (8 h + 1 h de folga): as das 06h e 08h incluem o dia anterior, as outras só o dia corrente. As listagens datam as notícias em BRT; com a janela em UTC, das 22:00 às 23:59 BRT a data já era o dia seguinte. No Airflow 3 o cron usa o `CronTriggerTimetable`, então a `logical_date` é o próprio horário agendado; disparo manual sem `logical_date` usa o `run_after` do DagRun.
 - Params opcionais `start_date`/`end_date` (YYYY-MM-DD, os dois juntos) substituem a janela num disparo manual, para recuperar dados depois de uma queda (runbook, "Agências Sem Execução"). Formato inválido é recusado no disparo (`Param` com `format: date`); só um dos dois ou início depois do fim falham a task sem retry (`AirflowFailException`).
