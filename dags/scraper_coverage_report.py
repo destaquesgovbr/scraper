@@ -5,7 +5,7 @@ Roda diariamente e reporta:
 1. Quantas agencias foram raspadas vs total ativas
 2. Ratio de cobertura
 3. Top erros por categoria
-4. Alerta se cobertura abaixo do threshold
+4. Alerta se cobertura abaixo do threshold (Telegram > Pub/Sub dgb.ops.alerts > webhook > log)
 """
 
 import logging
@@ -103,7 +103,7 @@ def scraper_coverage_report_dag():
     def alert_on_low_coverage(report: dict):
         """Alerta se cobertura abaixo do threshold."""
         from airflow.models import Variable
-        from scraper.notify import send_alert
+        from scraper.notify import default_alert_topic, send_alert
 
         min_ratio = float(Variable.get("scraper_min_coverage_ratio", default_var=0.8))
 
@@ -129,12 +129,17 @@ def scraper_coverage_report_dag():
         token = Variable.get("scraper_telegram_bot_token", default_var=None)
         chat_id = Variable.get("scraper_telegram_monitor_chat_id", default_var=None)
         webhook = Variable.get("scraper_alert_webhook_url", default_var=None)
+        pubsub_topic = Variable.get("scraper_alert_pubsub_topic", default_var=default_alert_topic())
 
         send_alert(
             message=message,
             telegram_token=token,
             telegram_chat_id=chat_id,
             webhook_url=webhook,
+            pubsub_topic=pubsub_topic,
+            title="Scraper: cobertura baixa",
+            severity="warning",
+            source="scraper_coverage_report (Airflow)",
         )
 
     report = generate_report()

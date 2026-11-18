@@ -9,8 +9,8 @@ Coleta automatizada de notícias de ~155 agências do governo brasileiro (sites 
 - Raspa notícias de sites gov.br usando parsing HTML, API Plone 6, ou scraper EBC especializado
 - Armazena artigos em PostgreSQL com deduplicação por content hash e URL
 - Publica eventos no Google Cloud Pub/Sub para processamento downstream
-- Monitora saúde do scraping com alertas automáticos via Telegram
-- Executa a cada 10 minutos via Airflow DAGs, cobrindo todas as agências
+- Monitora saúde do scraping com alertas automáticos no Telegram (via Pub/Sub `dgb.ops.alerts`)
+- Executa a cada 2 horas, das 06h às 22h (horário de Brasília), numa DAG Airflow com uma task por agência
 
 ## Arquitetura
 
@@ -117,7 +117,7 @@ Pre-commit will block commits if files are out of sync.
 - **Orquestração:** Apache Airflow (Cloud Composer)
 - **Banco:** PostgreSQL (Cloud SQL)
 - **Eventos:** Google Cloud Pub/Sub
-- **Alertas:** Telegram Bot API
+- **Alertas:** Pub/Sub `dgb.ops.alerts` → alert-relay → Telegram (ou Telegram Bot API direto)
 - **CI/CD:** GitHub Actions (testes, deploy API, deploy DAGs)
 
 ## Documentação

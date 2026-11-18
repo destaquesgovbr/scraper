@@ -1,17 +1,24 @@
 """Tests for dags/monitor_scraping_health.py — sanitize, alert formatting e agências silenciosas."""
 
+import inspect
+import json
 import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
-from govbr_scraper.monitoring.health_checks import SILENT_AGENCIES_QUERY
+from govbr_scraper.monitoring.health_checks import (
+    SILENT_AGENCIES_QUERY,
+    find_consecutive_failures,
+    find_silent_agencies,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TOPIC = "projects/inspire-7-finep/topics/dgb.ops.alerts"
 
 
 def _make_airflow_mocks():
@@ -24,10 +31,14 @@ def _make_airflow_mocks():
 
         return wrapper
 
-    def fake_task(fn):
-        mock_callable = MagicMock(name=f"task_{fn.__name__}")
-        mock_callable._original_fn = fn
-        return mock_callable
+    def fake_task(fn=None, **task_kwargs):
+        # Aceita @task e @task(...) (scrape_agencies usa map_index_template etc.).
+        def wrap(f):
+            mock_callable = MagicMock(name=f"task_{f.__name__}")
+            mock_callable._original_fn = f
+            return mock_callable
+
+        return wrap(fn) if callable(fn) else wrap
 
     mock_decorators = MagicMock()
     mock_decorators.dag = fake_dag
@@ -41,6 +52,7 @@ def _make_airflow_mocks():
 
     mock_notify = MagicMock()
     mock_notify.send_alert = MagicMock(return_value=True)
+    mock_notify.default_alert_topic = MagicMock(return_value=DEFAULT_TOPIC)
 
     mock_scraper_pkg = MagicMock()
     mock_scraper_pkg.notify = mock_notify
@@ -49,6 +61,7 @@ def _make_airflow_mocks():
         "airflow": MagicMock(),
         "airflow.decorators": mock_decorators,
         "airflow.models": mock_models,
+        "airflow.sdk": MagicMock(),
         "scraper": mock_scraper_pkg,
         "scraper.notify": mock_notify,
     }
@@ -224,7 +237,8 @@ class TestSendAlertsTask:
         # The fake_task decorator stores the original function
         # We need to find it among tasks created during module load
         source = inspect.getsource(mod.monitor_scraping_health_dag)
-        assert "from scraper.notify import send_alert" in source
+        assert "from scraper.notify import default_alert_topic, send_alert" in source
+        assert "from notify import" not in source
 
     def test_module_loads_with_scraper_notify_mock(self):
         """DAG module must load successfully when scraper.notify is available."""
@@ -255,11 +269,14 @@ def _load_module_with_registry():
     mocks = _make_airflow_mocks()
     registry: dict[str, MagicMock] = {}
 
-    def recording_task(fn):
-        mock_callable = MagicMock(name=f"task_{fn.__name__}")
-        mock_callable._original_fn = fn
-        registry[fn.__name__] = mock_callable
-        return mock_callable
+    def recording_task(fn=None, **task_kwargs):
+        def wrap(f):
+            mock_callable = MagicMock(name=f"task_{f.__name__}")
+            mock_callable._original_fn = f
+            registry[f.__name__] = mock_callable
+            return mock_callable
+
+        return wrap(fn) if callable(fn) else wrap
 
     mocks["airflow.decorators"].task = recording_task
 
@@ -314,8 +331,8 @@ class TestLoadActiveAgencies:
         )
         assert mod._load_active_agencies(str(config)) == ["aids", "mec"]
 
-    def test_matches_dags_generated_by_scrape_agencies(self):
-        """O monitor espera execução exatamente das agências que viram DAG scrape_*."""
+    def test_matches_tasks_mapped_by_scrape_agencies(self):
+        """O monitor espera execução exatamente das agências mapeadas na scrape_agencies."""
         monitor = _load_module()
         mocks = _make_airflow_mocks()
         mocks["airflow.exceptions"] = MagicMock()
@@ -326,7 +343,7 @@ class TestLoadActiveAgencies:
             with patch.dict(sys.modules, mocks):
                 import dags.scrape_agencies as scrape_agencies
 
-                generated = sorted(scrape_agencies._load_agencies_config())
+                generated = list(scrape_agencies.ACTIVE_AGENCY_KEYS)
         finally:
             for key in list(sys.modules):
                 if key.startswith("dags.scrape_agencies"):
@@ -363,12 +380,20 @@ class TestBuildAlertMessage:
 
     def test_silent_section_lists_agencies_and_last_run(self):
         mod = _load_module()
-        message = mod._build_alert_message([], [], SILENT_ROWS, silent_hours=2)
+        message = mod._build_alert_message([], [], SILENT_ROWS, silent_hours=3)
         assert "<b>Alerta: Agencias Sem Execucao</b>" in message
-        assert "2 agencia(s) ativa(s) sem nenhum scrape_run nas ultimas 2h" in message
+        assert "2 agencia(s) ativa(s) sem nenhum scrape_run nas ultimas 3h" in message
         assert "- <b>aids</b>: ultima execucao em 2026-08-21 11:32:46" in message
         assert "- <b>inma</b>: nenhuma execucao registrada em scrape_runs" in message
-        assert "docs/runbook.md" in message
+
+    def test_silent_header_points_to_single_dag_and_runbook(self):
+        """Não existe mais DAG scrape_<agencia>: o problema é a task mapeada da scrape_agencies."""
+        mod = _load_module()
+        message = mod._build_alert_message([], [], SILENT_ROWS)
+        assert "task mapeada da agencia na DAG scrape_agencies" in message
+        assert "scrape_*" not in message
+        assert "Ver docs/runbook.md, secao 'Agencias Sem Execucao (scrape_agencies)'" in message
+        assert "ultimas 3h" in message
 
     def test_silent_section_comes_first(self):
         """Hoje o alerta passa de 4096 caracteres e o Cloud Logging corta o fim da linha."""
@@ -481,9 +506,10 @@ class TestCheckSilentAgenciesTask:
         assert result == SILENT_ROWS
         conn.close.assert_called_once()
 
-    def test_default_window_is_2_hours(self):
+    def test_default_window_is_3_hours(self):
+        """Scraping de 2 em 2 h + 1 h de folga."""
         _, _, _, _, cursor = self._run({"scraper_database_url": "postgresql://monitor"}, rows=[])
-        assert cursor.execute.call_args[0][1]["silent_hours"] == 2
+        assert cursor.execute.call_args[0][1]["silent_hours"] == 3
 
     def test_window_below_one_hour_is_clamped(self):
         """Janela 0 marcaria todas as agências como silenciosas."""
@@ -525,3 +551,298 @@ class TestSendAlertsWithSilent:
     def test_skips_when_nothing_to_report(self):
         send_alert = self._run([], [], [])
         send_alert.assert_not_called()
+
+
+# =============================================================================
+# Agenda e limiares recalibrados para o scraping de 2 em 2 horas
+# =============================================================================
+
+
+class TestScheduleAndDefaults:
+    def test_runs_30_minutes_after_each_scrape_run(self):
+        """Scraping às 06h, 08h, ..., 22h BRT; o monitor às 06h30, ..., 22h30, nunca de madrugada."""
+        mod = _load_module()
+        assert mod.monitor_scraping_health_dag._dag_kwargs["schedule"] == "30 6-22/2 * * *"
+
+    def test_silent_hours_default_is_3(self):
+        assert _load_module()._DEFAULT_SILENT_HOURS == 3
+
+    def test_failure_window_default_is_6_hours_with_threshold_3(self):
+        mod = _load_module()
+        assert mod._DEFAULT_FAILURE_WINDOW_HOURS == 6
+        assert mod._DEFAULT_FAILURE_THRESHOLD == 3
+
+    def test_defaults_match_health_checks(self):
+        """health_checks.py duplica as queries e os defaults: não podem divergir."""
+        mod = _load_module()
+        failures = inspect.signature(find_consecutive_failures).parameters
+        silent = inspect.signature(find_silent_agencies).parameters
+        assert failures["window_hours"].default == mod._DEFAULT_FAILURE_WINDOW_HOURS
+        assert failures["threshold"].default == mod._DEFAULT_FAILURE_THRESHOLD
+        assert silent["silent_hours"].default == mod._DEFAULT_SILENT_HOURS
+
+
+class TestCheckConsecutiveFailuresTask:
+    def _run(self, variables):
+        _, registry, mocks = _load_module_with_registry()
+        mocks["airflow.models"].Variable.get = MagicMock(side_effect=_variables(variables))
+        conn, cursor = _mock_connection([])
+        with patch.dict(sys.modules, mocks), patch("psycopg2.connect", return_value=conn):
+            registry["check_consecutive_failures"]._original_fn()
+        return cursor.execute.call_args[0][1]
+
+    def test_default_window_6h_and_threshold_3(self):
+        params = self._run({"scraper_database_url": "postgresql://monitor"})
+        assert params == {"threshold": 3, "window_hours": 6}
+
+    def test_variables_override_defaults(self):
+        params = self._run(
+            {
+                "scraper_database_url": "postgresql://monitor",
+                "scraper_failure_window_hours": "12",
+                "scraper_consecutive_failure_threshold": "5",
+            }
+        )
+        assert params == {"threshold": 5, "window_hours": 12}
+
+
+# =============================================================================
+# Dedup do alerta (não repetir o mesmo alerta a cada execução)
+# =============================================================================
+
+FAILURE_ROWS = [
+    {
+        "agency_key": "mec",
+        "last_error": "network_error",
+        "last_failure_at": datetime(2026, 11, 17, 10, 0),
+    }
+]
+STALE_ROWS = [{"agency_key": "funai", "last_success_at": datetime(2026, 11, 10, 8, 0)}]
+
+
+class TestAlertDigest:
+    def test_lists_sorted_keys_of_silent_and_failures_only(self):
+        mod = _load_module()
+        digest = mod._alert_digest(FAILURE_ROWS, list(reversed(SILENT_ROWS)))
+        assert digest == {"silent": ["aids", "inma"], "failures": ["mec"]}
+
+    def test_ignores_timestamps(self):
+        mod = _load_module()
+        later = [{**SILENT_ROWS[0], "last_run_at": datetime(2026, 11, 17, 12, 0)}, SILENT_ROWS[1]]
+        assert mod._alert_digest([], SILENT_ROWS) == mod._alert_digest([], later)
+
+    def test_empty(self):
+        assert _load_module()._alert_digest([], []) == {"silent": [], "failures": []}
+
+
+class TestShouldSend:
+    NOW = datetime(2026, 11, 17, 12, 30, tzinfo=UTC)
+    DIGEST = {"silent": ["aids"], "failures": []}
+
+    def _state(self, hours_ago, digest=None):
+        return {
+            "digest": digest or self.DIGEST,
+            "sent_at": (self.NOW - timedelta(hours=hours_ago)).isoformat(),
+        }
+
+    def test_sends_without_state(self):
+        mod = _load_module()
+        assert mod._should_send(self.DIGEST, None, self.NOW) is True
+        assert mod._should_send(self.DIGEST, {}, self.NOW) is True
+
+    def test_same_digest_within_repeat_window_is_suppressed(self):
+        mod = _load_module()
+        assert mod._should_send(self.DIGEST, self._state(2), self.NOW, 24) is False
+        assert mod._should_send(self.DIGEST, self._state(23.9), self.NOW, 24) is False
+
+    def test_same_digest_after_repeat_window_is_sent(self):
+        mod = _load_module()
+        assert mod._should_send(self.DIGEST, self._state(24), self.NOW, 24) is True
+
+    def test_changed_digest_is_sent(self):
+        mod = _load_module()
+        state = self._state(1, digest={"silent": [], "failures": []})
+        assert mod._should_send(self.DIGEST, state, self.NOW, 24) is True
+
+    def test_unparseable_sent_at_is_sent(self):
+        mod = _load_module()
+        state = {"digest": self.DIGEST, "sent_at": "ontem"}
+        assert mod._should_send(self.DIGEST, state, self.NOW, 24) is True
+
+    def test_repeat_zero_disables_dedup(self):
+        mod = _load_module()
+        assert mod._should_send(self.DIGEST, self._state(0), self.NOW, 0) is True
+
+
+class _VariableStore:
+    """Variable.get/set em memória, com default_var e erros opcionais."""
+
+    def __init__(self, values=None, get_error=None, set_error=None):
+        self.values = dict(values or {})
+        self.get_error = get_error
+        self.set_error = set_error
+        self.set_calls = []
+
+    def get(self, key, default_var=None):
+        if self.get_error and key == "scraper_monitor_last_alert":
+            raise self.get_error
+        return self.values.get(key, default_var)
+
+    def set(self, key, value, *args, **kwargs):
+        self.set_calls.append((key, value))
+        if self.set_error:
+            raise self.set_error
+        self.values[key] = value
+
+    def state(self):
+        raw = self.values.get("scraper_monitor_last_alert")
+        return json.loads(raw) if raw else None
+
+
+def _state_json(digest, hours_ago):
+    sent_at = datetime.now(UTC) - timedelta(hours=hours_ago)
+    return json.dumps({"digest": digest, "sent_at": sent_at.isoformat()})
+
+
+class TestSendAlertsDedup:
+    def _run(self, failures, stale, silent, store=None, delivered=True):
+        store = store or _VariableStore()
+        _, registry, mocks = _load_module_with_registry()
+        variable = mocks["airflow.models"].Variable
+        variable.get = MagicMock(side_effect=store.get)
+        variable.set = MagicMock(side_effect=store.set)
+        send_alert = mocks["scraper.notify"].send_alert
+        send_alert.return_value = delivered
+        with patch.dict(sys.modules, mocks):
+            registry["send_alerts"]._original_fn(failures, stale, silent)
+        return send_alert, store
+
+    def test_first_alert_is_sent_and_state_saved(self):
+        send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS)
+        send_alert.assert_called_once()
+        state = store.state()
+        assert state["digest"] == {"silent": ["aids", "inma"], "failures": ["mec"]}
+        assert abs(datetime.now(UTC) - datetime.fromisoformat(state["sent_at"])) < timedelta(
+            minutes=1
+        )
+
+    def test_same_findings_within_24h_are_not_resent(self):
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 2)})
+        send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_not_called()
+        assert store.set_calls == []
+
+    def test_stale_only_change_does_not_trigger(self):
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 2)})
+        more_stale = STALE_ROWS + [{"agency_key": "ibama", "last_success_at": None}]
+        send_alert, _ = self._run(FAILURE_ROWS, more_stale, SILENT_ROWS, store)
+        send_alert.assert_not_called()
+
+    def test_new_silent_agency_triggers(self):
+        digest = {"silent": ["aids"], "failures": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
+        send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+        assert store.state()["digest"]["silent"] == ["aids", "inma"]
+
+    def test_failures_change_triggers(self):
+        digest = {"silent": ["aids", "inma"], "failures": []}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
+        send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_same_findings_are_resent_after_24h(self):
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 25)})
+        send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_repeat_hours_variable(self):
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        store = _VariableStore(
+            {
+                "scraper_monitor_last_alert": _state_json(digest, 7),
+                "scraper_alert_repeat_hours": "6",
+            }
+        )
+        send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_stale_only_findings_are_sent_once_then_daily(self):
+        send_alert, store = self._run([], STALE_ROWS, [])
+        send_alert.assert_called_once()
+        assert "Agencias Sem Noticias" in send_alert.call_args.kwargs["message"]
+        assert store.state()["digest"] == {"silent": [], "failures": []}
+
+        send_alert, _ = self._run([], STALE_ROWS + STALE_ROWS, [], store)
+        send_alert.assert_not_called()
+
+    def test_state_read_error_still_sends(self):
+        store = _VariableStore(get_error=RuntimeError("secret manager fora"))
+        send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_corrupt_state_still_sends(self):
+        store = _VariableStore({"scraper_monitor_last_alert": "{nao e json"})
+        send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_state_write_error_does_not_fail_task(self):
+        store = _VariableStore(set_error=RuntimeError("api server fora"))
+        send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
+        send_alert.assert_called_once()
+        assert len(store.set_calls) == 1
+
+    def test_state_not_saved_when_not_delivered(self):
+        """No modo log-only o alerta volta ao log na execução seguinte."""
+        send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, delivered=False)
+        send_alert.assert_called_once()
+        assert store.set_calls == []
+
+    def test_no_findings_resets_state(self):
+        digest = {"silent": ["aids"], "failures": []}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
+        send_alert, store = self._run([], [], [], store)
+        send_alert.assert_not_called()
+        assert store.set_calls == [("scraper_monitor_last_alert", "{}")]
+
+    def test_no_findings_without_state_writes_nothing(self):
+        send_alert, store = self._run([], [], [])
+        send_alert.assert_not_called()
+        assert store.set_calls == []
+
+
+class TestSendAlertsChannels:
+    def _run(self, variables=None):
+        store = _VariableStore(variables)
+        _, registry, mocks = _load_module_with_registry()
+        mocks["airflow.models"].Variable.get = MagicMock(side_effect=store.get)
+        mocks["airflow.models"].Variable.set = MagicMock(side_effect=store.set)
+        with patch.dict(sys.modules, mocks):
+            registry["send_alerts"]._original_fn(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS)
+        return mocks["scraper.notify"].send_alert.call_args.kwargs
+
+    def test_publishes_to_default_ops_alerts_topic(self):
+        kwargs = self._run()
+        assert kwargs["pubsub_topic"] == DEFAULT_TOPIC
+        assert kwargs["title"] == "Scraper: saúde das agências"
+        assert kwargs["severity"] == "warning"
+        assert kwargs["source"] == "monitor_scraping_health (Airflow)"
+
+    def test_topic_variable_overrides_default(self):
+        kwargs = self._run({"scraper_alert_pubsub_topic": "projects/outro-projeto/topics/x.y"})
+        assert kwargs["pubsub_topic"] == "projects/outro-projeto/topics/x.y"
+
+    def test_keeps_telegram_and_webhook_variables(self):
+        kwargs = self._run(
+            {
+                "scraper_telegram_bot_token": "123:ABC",
+                "scraper_telegram_monitor_chat_id": "-100",
+                "scraper_alert_webhook_url": "https://hooks.example.com",
+            }
+        )
+        assert kwargs["telegram_token"] == "123:ABC"
+        assert kwargs["telegram_chat_id"] == "-100"
+        assert kwargs["webhook_url"] == "https://hooks.example.com"
