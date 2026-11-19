@@ -111,7 +111,9 @@ class AgencyError(BaseModel):
 
 class SkippedAgency(BaseModel):
     agency: str
-    reason: str  # "circuit_open": circuito aberto e a sonda ainda não venceu
+    # "circuit_open": circuito aberto e a sonda ainda não venceu; "already_attempted"
+    # (só /scrape/agency): tarefa repetida de uma agência já tentada depois do despacho.
+    reason: str
     next_probe_at: str | None = None  # ISO 8601 (UTC)
 
 
@@ -141,6 +143,19 @@ def health():
 _TRIGGER_DAG = "dag"
 _TRIGGER_TASK = "task"
 _TRIGGER_BACKFILL = "backfill"
+
+_SKIP_CIRCUIT_OPEN = "circuit_open"
+_SKIP_ALREADY_ATTEMPTED = "already_attempted"
+
+
+def _attempted_since(state: AgencyState | None, since: datetime | None) -> bool:
+    """True se a última tentativa da agência começou em ``since`` ou depois."""
+    if since is None or state is None or state.last_attempt_at is None:
+        return False
+    last = state.last_attempt_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return last >= since
 
 
 def _tier_label(state: AgencyState | None, states_available: bool) -> str | None:
@@ -179,11 +194,15 @@ def _scrape_each_agency(
     *,
     trigger: str = _TRIGGER_DAG,
     log_extra: dict[str, Any] | None = None,
+    attempted_after: datetime | None = None,
 ) -> dict[str, Any]:
     """Raspa agência por agência, cada uma com a própria janela, passando pelo disjuntor.
 
     ``trigger`` e ``log_extra`` (ex.: cabeçalhos do Cloud Tasks) vão no ``scrape_attempt``.
-    Devolve as métricas somadas, a janela da resposta e as agências puladas.
+    Com ``attempted_after`` (o ``dispatched_at`` da tarefa do tick), a agência cuja última
+    tentativa começou nesse instante ou depois é pulada (``already_attempted``), sem raspar
+    nem gravar: é uma tarefa repetida. Devolve as métricas somadas, a janela da resposta e
+    as agências puladas.
     """
     from govbr_scraper.scrapers.yaml_config import active_agency_keys
 
@@ -205,11 +224,25 @@ def _scrape_each_agency(
         now = datetime.now(UTC)
         state = states.get(key) if states is not None else None
         tier = _tier_label(state, states is not None)
+        if _attempted_since(state, attempted_after):
+            totals["skipped"].append(SkippedAgency(agency=key, reason=_SKIP_ALREADY_ATTEMPTED))
+            log_scrape_attempt(
+                agency=key,
+                outcome=OUTCOME_SKIPPED,
+                tier=tier,
+                explicit_window=explicit,
+                trigger=trigger,
+                reason=_SKIP_ALREADY_ATTEMPTED,
+                **extra,
+                dispatched_at=iso_utc(attempted_after),
+                last_attempt_at=iso_utc(state.last_attempt_at),
+            )
+            continue
         decision = circuit_gate(state, now, force=req.force)
         if decision.skip:
             next_probe_at = iso_utc(decision.next_probe_at)
             totals["skipped"].append(
-                SkippedAgency(agency=key, reason="circuit_open", next_probe_at=next_probe_at)
+                SkippedAgency(agency=key, reason=_SKIP_CIRCUIT_OPEN, next_probe_at=next_probe_at)
             )
             log_scrape_attempt(
                 agency=key,
@@ -217,7 +250,7 @@ def _scrape_each_agency(
                 tier=tier,
                 explicit_window=explicit,
                 trigger=trigger,
-                reason="circuit_open",
+                reason=_SKIP_CIRCUIT_OPEN,
                 **extra,
                 next_probe_at=next_probe_at,
             )
@@ -495,6 +528,12 @@ class ScrapeAgencyRequest(BaseModel):
     ``start_date`` (``end_date`` padrão = ``start_date``), a janela é explícita (backfill) e
     não mexe no estado. ``trigger`` ausente vale ``backfill`` com janela explícita e
     ``task`` sem.
+
+    ``dispatched_at`` (o ``now`` do tick que criou a tarefa) torna a tarefa idempotente: na
+    primeira entrega (``X-CloudTasks-TaskRetryCount`` 0 ou ausente), sem janela explícita e
+    sem ``force``, a agência já tentada desde então é pulada (``already_attempted``). Cobre a
+    tarefa repetida pelo tick depois de 30 min na fila e a reentrega do Cloud Tasks; a
+    repetição depois de um 503 (contagem ≥ 1) raspa normalmente.
     """
 
     agency: str
@@ -503,6 +542,7 @@ class ScrapeAgencyRequest(BaseModel):
     force: bool = False
     allow_update: bool = False
     trigger: Literal["task", "backfill"] | None = None
+    dispatched_at: datetime | None = None
 
     @field_validator("agency")
     @classmethod
@@ -510,6 +550,13 @@ class ScrapeAgencyRequest(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("agency vazia")
+        return value
+
+    @field_validator("dispatched_at")
+    @classmethod
+    def _dispatched_at_utc(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
         return value
 
     @model_validator(mode="after")
@@ -605,6 +652,16 @@ def _scrape_single_agency(req: ScrapeAgencyRequest, task: dict[str, Any]) -> JSO
 
     explicit = req.start_date is not None
     trigger = req.trigger or (_TRIGGER_BACKFILL if explicit else _TRIGGER_TASK)
+    # Idempotência da tarefa do tick: só na primeira entrega (a repetição depois de um 503
+    # é legítima), sem janela explícita e sem force.
+    attempted_after = (
+        req.dispatched_at
+        if trigger == _TRIGGER_TASK
+        and not explicit
+        and not req.force
+        and task.get("task_retry") in (None, 0)
+        else None
+    )
     yaml_file = _agency_source(req.agency)
     if yaml_file is None:
         message = f"Agência '{req.agency}' fora do site_urls.yaml/ebc_urls.yaml ou inativa"
@@ -649,7 +706,13 @@ def _scrape_single_agency(req: ScrapeAgencyRequest, task: dict[str, Any]) -> JSO
         )
         manager_cls = ScrapeManager if yaml_file == "site_urls.yaml" else EBCScrapeManager
         totals = _scrape_each_agency(
-            scrape_req, storage, manager_cls(storage), yaml_file, trigger=trigger, log_extra=task
+            scrape_req,
+            storage,
+            manager_cls(storage),
+            yaml_file,
+            trigger=trigger,
+            log_extra=task,
+            attempted_after=attempted_after,
         )
     except Exception as e:
         # Banco fora, bug: passageiro. O 503 faz o Cloud Tasks repetir (até 3 tentativas).
@@ -680,7 +743,10 @@ def _scrape_agency_response(
     processed = totals["agencies_processed"]
     skipped = totals["skipped"]
     retryable: bool | None = None
-    if skipped:
+    if skipped and skipped[0].reason == _SKIP_ALREADY_ATTEMPTED:
+        status, http_status = "skipped", 200
+        message = f"{req.agency} pulada: já tentada depois do despacho (tarefa repetida)"
+    elif skipped:
         status, http_status = "skipped", 200
         message = f"{req.agency} pulada: circuito aberto (sonda em {skipped[0].next_probe_at})"
     elif processed:

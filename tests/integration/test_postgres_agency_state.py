@@ -323,3 +323,72 @@ class TestRepositorySql:
         finally:
             conn.close()
             drop()
+
+
+class TestScrapeAgencyIdempotency:
+    """/scrape/agency com o estado real: a tarefa repetida do tick (``dispatched_at`` anterior
+    à última tentativa) não raspa nem grava scrape_runs; a que ainda não foi atendida raspa."""
+
+    def _post(self, dsn, body, retry="0"):
+        from fastapi.testclient import TestClient
+
+        from govbr_scraper.api import app
+        from govbr_scraper.storage.storage_adapter import StorageAdapter
+
+        def storage(attempt_context=None):
+            return StorageAdapter(postgres_manager=_pg(dsn), attempt_context=attempt_context)
+
+        with (
+            patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager") as manager,
+            patch("govbr_scraper.storage.StorageAdapter", storage),
+        ):
+            manager.return_value.run_scraper.return_value = {
+                "articles_scraped": 0,
+                "articles_saved": 0,
+                "articles_new": 0,
+                "articles_skipped": 0,
+                "agencies_processed": ["mec"],
+                "errors": [],
+            }
+            response = TestClient(app).post(
+                "/scrape/agency", json=body, headers={"X-CloudTasks-TaskRetryCount": retry}
+            )
+        return response, manager.return_value.run_scraper
+
+    def test_repeated_task_is_a_no_op(self, dsn_038, monkeypatch):
+        monkeypatch.delenv("PUBSUB_TOPIC_NEWS_SCRAPED", raising=False)
+        pg = _pg(dsn_038)
+        try:
+            # Tentativa que começou 5 min depois do despacho (T0): scraped_at − 4 s.
+            pg.record_scrape_run(_run(hours=5 / 60 + 4 / 3600))
+        finally:
+            pg.close_all()
+        before = _query(dsn_038, "SELECT * FROM scrape_agency_state")
+
+        response, run_scraper = self._post(
+            dsn_038, {"agency": "mec", "trigger": "task", "dispatched_at": T0.isoformat()}
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["status"] == "skipped"
+        assert body["skipped"][0]["reason"] == "already_attempted"
+        run_scraper.assert_not_called()
+        assert len(_query(dsn_038, "SELECT id FROM scrape_runs")) == 1
+        assert _query(dsn_038, "SELECT * FROM scrape_agency_state") == before
+
+        # Despacho posterior à última tentativa: raspa.
+        later = (T0 + timedelta(minutes=30)).isoformat()
+        response, run_scraper = self._post(
+            dsn_038, {"agency": "mec", "trigger": "task", "dispatched_at": later}
+        )
+        assert response.json()["status"] == "completed", response.text
+        run_scraper.assert_called_once()
+
+        # Repetição da fila depois de um 503 (contagem 1): raspa mesmo já tentada.
+        response, run_scraper = self._post(
+            dsn_038,
+            {"agency": "mec", "trigger": "task", "dispatched_at": T0.isoformat()},
+            retry="1",
+        )
+        assert response.json()["status"] == "completed", response.text
+        run_scraper.assert_called_once()

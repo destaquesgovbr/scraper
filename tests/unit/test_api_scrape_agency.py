@@ -233,6 +233,100 @@ class TestCircuit:
         assert api.attempt()["probe"] is True
 
 
+FIRST_DELIVERY = {**TASK_HEADERS, "X-CloudTasks-TaskRetryCount": "0"}
+DISPATCHED_AT = NOW - timedelta(minutes=40)  # tick de 40 min atrás (fila parada ou lenta)
+
+
+class TestIdempotency:
+    """Tarefa do tick com ``dispatched_at``: a repetida (o tick recria depois de 30 min em
+    voo) e a reentrega do Cloud Tasks não raspam de novo nem gravam."""
+
+    def _attempted(self, minutes_ago):
+        return {"mec": _state(last_attempt_at=NOW - timedelta(minutes=minutes_ago))}
+
+    def test_agency_attempted_after_dispatch_is_skipped_without_scraping(self):
+        api = Api(states=self._attempted(5))
+        response = api.post(
+            {"agency": "mec", "trigger": "task", "dispatched_at": "2026-11-19T12:20:00Z"},
+            headers=FIRST_DELIVERY,
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "skipped"
+        assert body["skipped"] == [
+            {"agency": "mec", "reason": "already_attempted", "next_probe_at": None}
+        ]
+        assert "já tentada" in body["message"]
+        api.gov.run_scraper.assert_not_called()
+        api.storage.mark_agency_probe.assert_not_called()
+        attempt = api.attempt()
+        assert (attempt["outcome"], attempt["reason"]) == ("skipped", "already_attempted")
+        assert attempt["dispatched_at"] == "2026-11-19T12:20:00Z"
+        assert attempt["last_attempt_at"] == "2026-11-19T12:55:00Z"
+        api.storage.close.assert_called_once()
+
+    def test_without_retry_header_counts_as_first_delivery(self):
+        api = Api(states=self._attempted(5))
+        response = api.post({"agency": "mec", "dispatched_at": DISPATCHED_AT.isoformat()})
+        assert response.json()["status"] == "skipped"
+        api.gov.run_scraper.assert_not_called()
+
+    def test_naive_dispatched_at_is_utc(self):
+        api = Api(states=self._attempted(5))
+        response = api.post(
+            {"agency": "mec", "dispatched_at": "2026-11-19T12:20:00"}, headers=FIRST_DELIVERY
+        )
+        assert response.json()["status"] == "skipped"
+
+    def test_not_attempted_since_dispatch_is_scraped(self):
+        api = Api(states=self._attempted(60))  # última tentativa antes do despacho
+        response = api.post(
+            {"agency": "mec", "dispatched_at": DISPATCHED_AT.isoformat()}, headers=FIRST_DELIVERY
+        )
+        assert response.json()["status"] == "completed"
+        api.gov.run_scraper.assert_called_once()
+
+    def test_retry_after_503_is_scraped(self):
+        # A primeira entrega falhou (passageiro) e gravou last_attempt_at: a repetição da
+        # fila (contagem >= 1) é legítima.
+        api = Api(states=self._attempted(2))
+        response = api.post(
+            {"agency": "mec", "dispatched_at": DISPATCHED_AT.isoformat()}, headers=TASK_HEADERS
+        )
+        assert response.json()["status"] == "completed"
+        api.gov.run_scraper.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"force": True},
+            {"start_date": "2026-11-01", "end_date": "2026-11-03"},
+            {"trigger": "backfill"},
+        ],
+    )
+    def test_force_explicit_window_and_backfill_ignore_it(self, extra):
+        api = Api(states=self._attempted(5))
+        response = api.post(
+            {"agency": "mec", "dispatched_at": DISPATCHED_AT.isoformat(), **extra},
+            headers=FIRST_DELIVERY,
+        )
+        assert response.json()["status"] == "completed"
+        api.gov.run_scraper.assert_called_once()
+
+    def test_without_dispatched_at_is_scraped(self):
+        api = Api(states=self._attempted(1))
+        response = api.post({"agency": "mec"}, headers=FIRST_DELIVERY)
+        assert response.json()["status"] == "completed"
+
+    def test_state_unavailable_is_scraped(self):
+        api = Api()
+        api.storage.load_agency_states.return_value = None
+        response = api.post(
+            {"agency": "mec", "dispatched_at": DISPATCHED_AT.isoformat()}, headers=FIRST_DELIVERY
+        )
+        assert response.json()["status"] == "completed"
+
+
 class TestUnknownAgency:
     @pytest.mark.parametrize("agency", ["nao_existe", "memoria-ebc"])  # fora do YAML / inativa
     def test_unknown_or_inactive_is_200(self, agency):

@@ -201,10 +201,11 @@ class TestTickLive:
         out = dispatcher.tick()
         assert (out.due, out.dispatched, out.duplicates, out.failed) == (3, 1, 1, 1)
         # Mesmo vencimento: ordem da sigla.
+        at_iso = "2026-11-19T13:00:00Z"
         assert [c[1] for c in tasks.calls] == [
-            {"agency": "mds", "trigger": "task"},
-            {"agency": "mec", "trigger": "task"},
-            {"agency": "mme", "trigger": "task"},
+            {"agency": "mds", "trigger": "task", "dispatched_at": at_iso},
+            {"agency": "mec", "trigger": "task", "dispatched_at": at_iso},
+            {"agency": "mme", "trigger": "task", "dispatched_at": at_iso},
         ]
         ((marked, at),) = h.repo.dispatched
         assert sorted(marked) == ["mds", "mec"]  # a que falhou não é marcada
@@ -221,7 +222,12 @@ class TestTickLive:
             DispatchMode.LIVE, now=_brt(14, 7), keys=["mec"], tasks=tasks
         )
         dispatcher.tick()
-        assert tasks.calls == [("scrape-mec-202611191400", {"agency": "mec", "trigger": "task"})]
+        assert tasks.calls == [
+            (
+                "scrape-mec-202611191400",
+                {"agency": "mec", "trigger": "task", "dispatched_at": "2026-11-19T17:07:00Z"},
+            )
+        ]
 
     def test_inflight_agency_is_not_dispatched_again(self, env):
         env([_state("mec", last_dispatched_at=DAY - timedelta(minutes=5))])

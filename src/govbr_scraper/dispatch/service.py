@@ -7,7 +7,8 @@ Tick (Cloud Scheduler, ``{"reason": "tick"}``):
    BRT, reservado em ``scrape_dispatch_meta['tiers_recomputed_on']``;
 3. seleção (``select_due``: modo noturno, vencidas, em voo, disjuntor, teto de 200);
 4. criação das tarefas no Cloud Tasks (só ``live``) e ``mark_dispatched`` das criadas e
-   duplicadas;
+   duplicadas. O corpo leva ``dispatched_at`` (o ``now`` do tick): o ``/scrape/agency``
+   ignora a tarefa repetida de uma agência já tentada depois do despacho;
 5. frescor por faixa (evento ``freshness``, só nos ticks diurnos);
 6. reconciliador (só ``live``, 1× por dia a partir das 03:00, reservado em
    ``scrape_dispatch_meta['reconciled_on']``): republica em ``dgb.news.scraped`` até 20
@@ -256,11 +257,12 @@ class Dispatcher:
         out.skipped_inflight = len(selection.skipped_inflight)
         out.overflow = len(selection.overflow)
 
+        dispatched_at = iso_utc(self.now)
         items = [
             (
                 d.agency_key,
                 tick_task_id(d.agency_key, self.now),
-                {"agency": d.agency_key, "trigger": TRIGGER_TASK},
+                {"agency": d.agency_key, "trigger": TRIGGER_TASK, "dispatched_at": dispatched_at},
             )
             for d in selection.due
         ]
