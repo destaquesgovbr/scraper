@@ -65,6 +65,8 @@ class _ScrapeRequest(BaseModel):
     end_date: date | None = None
     agencies: list[str] | None = None
     allow_update: bool = False
+    # Aceito por compatibilidade e ignorado: a API raspa uma agência por vez, sempre em modo
+    # sequencial (o sucesso só é gravado depois das notícias).
     sequential: bool = True
     # Ignora o disjuntor: raspa mesmo com o circuito aberto.
     force: bool = False
@@ -209,11 +211,14 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
         totals["windows"].append((start, end))
         started = time.monotonic()
         try:
+            # Sempre sequencial: é uma agência por chamada, então o modo em lote não traz
+            # ganho, e nele o scrape_run de sucesso (que avança a marca d'água) é gravado
+            # antes do INSERT das notícias. Um erro no INSERT perderia a janela.
             metrics = manager.run_scraper(
                 agencies=[key],
                 min_date=start.isoformat(),
                 max_date=end.isoformat(),
-                sequential=req.sequential,
+                sequential=True,
                 allow_update=req.allow_update,
             )
         except Exception:

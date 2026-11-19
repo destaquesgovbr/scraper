@@ -314,6 +314,7 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 
 - **`start_date`/`end_date` opcionais**, validados como `date` (`YYYY-MM-DD`; inválido dá 422, e `end_date` sem `start_date` também). Sem datas, cada agência usa a janela da marca d'água; com `start_date` (`end_date` padrão = `start_date`), a janela é explícita e não mexe no estado da agência.
 - Sem `agencies`, todas as ativas do YAML. A API raspa **agência por agência**, cada uma com a própria janela e o próprio disjuntor.
+- **`sequential`** é aceito e ignorado: cada agência é raspada em modo sequencial. No modo em lote, o `scrape_run` de sucesso (que avança a marca d'água) era gravado antes do INSERT das notícias, e um erro no INSERT perderia a janela.
 - **`force`** (padrão `false`): ignora o disjuntor.
 
 ### Request: `/scrape/ebc`

@@ -137,6 +137,16 @@ class TestWatermarkWindow:
         api.post("/scrape/agencies", {"agencies": ["mec", "mec"]})
         assert api.manager.run_scraper.call_count == 1
 
+    @pytest.mark.parametrize("path", ["/scrape/agencies", "/scrape/ebc"])
+    def test_always_sequential_even_if_the_request_says_otherwise(self, path):
+        """No modo em lote o scrape_run de sucesso (marca d'água) sai antes do INSERT: um
+        erro no INSERT perderia a janela. Uma agência por chamada não ganha nada com o lote."""
+        api = Api(states={})
+        agency = "agencia_brasil" if path.endswith("ebc") else "mec"
+        response = api.post(path, {"agencies": [agency], "sequential": False})
+        assert response.status_code == 200
+        assert api.manager.run_scraper.call_args.kwargs["sequential"] is True
+
     def test_ebc_without_agencies_scrapes_both_sources_with_own_window(self):
         states = {
             "agencia_brasil": _state(
