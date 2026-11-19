@@ -585,6 +585,8 @@ class TestOutcome:
         ):
             assert name in fields
         assert fields["agencies"] == ["mec"]
+        # O runbook manda conferir o slo_ok_ratio no dispatch_run do dia a seco.
+        assert "slo_ok_ratio" in fields
 
     def test_response_has_the_contract_keys(self, env):
         env([_state("mec")])

@@ -143,6 +143,7 @@ class DispatchOutcome:
             "failed": self.failed,
             "overflow": self.overflow,
             "tiers_changed": self.tiers_changed,
+            "slo_ok_ratio": self.slo_ok_ratio,
             "agencies": [a["agency"] for a in self.agencies],
         }
         if self.reason == REASON_BACKFILL:
