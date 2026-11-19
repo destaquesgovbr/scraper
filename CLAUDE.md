@@ -135,7 +135,9 @@ O campo `scraper_type` no `site_urls.yaml` determina qual scraper é usado para 
 
 ### Known URL Fence
 
-Otimização que evita re-processar artigos já coletados. Antes de iniciar o scraping, o `ScrapeManager` consulta as últimas 200 URLs da agência via `get_recent_urls()`. Durante o scraping, URLs já conhecidas são contadas consecutivamente. Ao atingir **3 URLs conhecidas consecutivas**, o scraper para — assumindo que o restante já foi coletado em execuções anteriores.
+Otimização que evita re-processar artigos já coletados. Antes de iniciar o scraping, o `ScrapeManager` (e o `EBCScrapeManager`, para cada fonte) consulta as últimas 200 URLs da agência via `get_recent_urls()`. Durante o scraping, URLs já conhecidas são contadas consecutivamente e puladas sem baixar o artigo. Ao atingir **3 URLs conhecidas consecutivas** (`KNOWN_URL_STOP_THRESHOLD`, o mesmo nos três scrapers), o scraper para — assumindo que o restante já foi coletado em execuções anteriores. Se a consulta falhar, a raspagem segue sem cerca.
+
+**EBC** (Passo 2 da rearquitetura da ingestão): antes, cada execução baixava todos os artigos desde 00:00 BRT de `min_date` e regravava cada um. Agora a cerca vale antes do `sleep` e do download do artigo (`EBCWebScraper.process_news_urls`); áudio (`radios.ebc.com.br`) não é baixado nem conta. Na EBC a data do artigo só aparece depois do download (no gov.br ela vem na listagem, e o item mais novo que `max_date` é pulado antes da cerca), então num backfill os primeiros itens da listagem, os mais novos e já conhecidos, parariam a fonte antes da janela: a cerca é **desligada quando `max_date` é anterior a hoje (BRT)** (`known_url_fence_applies`), e a consulta nem é feita. A chave do `ebc_urls.yaml` é a mesma de `news.agency_key` (vem do host do artigo); um link da TV Brasil na listagem da Agência Brasil fica fora do conjunto da `agencia_brasil` e só seria baixado de novo.
 
 ### Itens pulados (não gravados)
 
