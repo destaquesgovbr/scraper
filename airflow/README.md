@@ -1,6 +1,6 @@
 # Ambiente Airflow Local — scraper
 
-> Desenvolva e teste DAGs localmente sem depender do Cloud Composer.
+> Desenvolva e teste DAGs localmente sem depender do Airflow de produção.
 
 ---
 
@@ -91,16 +91,18 @@ Consulte o `.env.example` para ver quais connections este projeto precisa.
 
 ---
 
-## Diferenças: Local vs Cloud Composer (Produção)
+## Diferenças: Local vs Produção (Airflow próprio)
 
-| Aspecto | Local (Astro CLI) | Produção (Cloud Composer) |
-|---------|-------------------|--------------------------|
-| Airflow version | 3.0-14 (Runtime) | Airflow 3.0.x |
-| Executor | Local | Celery / Kubernetes |
-| Connections | `.env` / variáveis de ambiente | Secret Manager |
-| Deploy | Automático (hot-reload) | GitHub Actions → GCS bucket |
-| Plugins | Symlink / volume mount | `gsutil rsync` para bucket |
-| Escala | Single worker | Multi-worker |
+Em produção, as DAGs rodam no Airflow próprio da VM `destaquesgovbr-airflow` (docker compose, repo `infra`), com a UI em `https://airflow.dgb.app.gov.br` (via IAP). O Cloud Composer foi desligado em 18/11/2026.
+
+| Aspecto | Local (Astro CLI) | Produção (VM `destaquesgovbr-airflow`) |
+|---------|-------------------|----------------------------------------|
+| Airflow version | 3.0-14 (Runtime) | Airflow 3.1.8 (imagem `infra/airflow/Dockerfile`) |
+| Executor | Local | LocalExecutor (`parallelism=8`) |
+| Connections | `.env` / variáveis de ambiente | Secret Manager (`CloudSecretManagerBackend`) |
+| Deploy | Automático (hot-reload) | GitHub Actions (`airflow-deploy-dags.yml@v3`) → `gs://destaquesgovbr-airflow` → `dag-sync` na VM (a cada 60 s) |
+| Plugins | Symlink / volume mount | `gcloud storage rsync` para `gs://destaquesgovbr-airflow/plugins/` |
+| Escala | Single worker | Uma VM e2-standard-2 |
 
 ---
 

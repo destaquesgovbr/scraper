@@ -167,7 +167,7 @@ Ela só falha (`AirflowFailException`, execução vermelha) se:
 
 Vermelho, portanto, quer dizer problema de plataforma: comece pelo scraper-api (logs do Cloud Run) e pela taxa de `network_error` em `scrape_runs`. Para mudar o limite, edite a Variable (ex.: `0.15` num período de instabilidade conhecida do gov.br) e volte ao padrão depois.
 
-**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa a janela de 9 h e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`). Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
+**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa a janela de 9 h e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`), na VM do Airflow. Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
 
 As falhas são deduzidas pela ausência: cada `scrape` com sucesso devolve `{agency, articles_new, articles_saved}` por XCom, e a `summarize` compara com a lista de agências ativas do parse. Uma agência que falhou não deixa XCom (o Airflow só grava o retorno de task com sucesso).
 
@@ -179,11 +179,13 @@ O número de agências raspadas ao mesmo tempo (`max_active_tis_per_dag` da task
 - inválido (`abc`, `2.5`): 4, com aviso no log do parse (um erro no import faria a DAG sumir);
 - 0 ou negativo: 1 (com 0 o scheduler nunca roda nenhuma task mapeada e, com `max_active_runs=1`, a DAG para).
 
-O limite existe para proteger o www.gov.br (as ~147 agências estão no mesmo host), não o scraper-api. Suba devagar, olhando a taxa de `network_error`. A variável vem do Terraform (repo `infra`: `env_variables` do Composer em `composer.tf`; Airflow próprio em `airflow.env.tftpl`); enquanto não for definida lá, vale o padrão 4. Mudar o valor exige um novo parse da DAG (no Composer, a atualização do ambiente reinicia os componentes) e cria uma DagVersion nova. Outros limites continuam valendo: `max_active_tasks` da DAG, pools e `parallelism` do Airflow.
+O limite existe para proteger o www.gov.br (as ~147 agências estão no mesmo host), não o scraper-api. Suba devagar, olhando a taxa de `network_error`. A variável vem do Terraform (repo `infra`: `terraform/templates/airflow/airflow.env.tftpl`, o env dos containers da VM); enquanto não for definida lá, vale o padrão 4. Mudar o valor exige um novo parse da DAG (na VM, mudar o env recria os containers do Airflow) e cria uma DagVersion nova. Outros limites continuam valendo: `max_active_tasks` da DAG, pools e `parallelism` do Airflow.
 
 ## Agências Sem Execução (DAG `scrape_agencies`)
 
-Desde nov/2026 (infra#223) o scraping gov.br é **uma DAG só**, `scrape_agencies`, com uma task mapeada (`scrape`) por agência ativa e a sigla como map index, e a task final `summarize`. Ela roda às 06h, 08h, ..., 22h (BRT, 9 execuções por dia), com no máximo `SCRAPE_MAX_CONCURRENT_AGENCIES` agências ao mesmo tempo (padrão 4, ~5 a 8 min por execução no Composer). A `scrape_ebc` segue a mesma agenda. Antes eram ~147 DAGs `scrape_<agencia>`, de 10 em 10 min.
+Desde nov/2026 (infra#223) o scraping gov.br é **uma DAG só**, `scrape_agencies`, com uma task mapeada (`scrape`) por agência ativa e a sigla como map index, e a task final `summarize`. Ela roda às 06h, 08h, ..., 22h (BRT, 9 execuções por dia), com no máximo `SCRAPE_MAX_CONCURRENT_AGENCIES` agências ao mesmo tempo (padrão 4, ~4 a 5 min por execução). A `scrape_ebc` segue a mesma agenda. Antes eram ~147 DAGs `scrape_<agencia>`, de 10 em 10 min.
+
+Desde 18/11/2026 tudo roda no Airflow próprio (3.1.8) da VM `destaquesgovbr-airflow`; o Cloud Composer foi desligado. UI em `https://airflow.dgb.app.gov.br` (via IAP). A VM não tem IP público: a CLI do Airflow e o banco de metadados só se alcançam por SSH via IAP, nos containers do docker compose em `/opt/airflow` (`airflow-airflow-scheduler-1`, `-apiserver-1`, `-dag-processor-1`, `airflow-postgres-1`, `airflow-dag-sync-1`).
 
 **Sintoma.** O `monitor_scraping_health` (às 06h30, 08h30, ..., 22h30) alerta "Agencias Sem Execucao": a agência está ativa no `site_urls.yaml`, mas não tem nenhum `scrape_run` (sucesso ou erro) nas últimas `scraper_silent_hours` (default 3 h). As outras checagens não veem o caso, porque partem de `scrape_runs`, e a chamada à API nem chegou a acontecer. Com o scraping de 2 em 2 h, o alerta sai quando a agência perde duas execuções seguidas, ou só a das 06h (a anterior é a das 22h do dia anterior).
 
@@ -195,43 +197,93 @@ Desde nov/2026 (infra#223) o scraping gov.br é **uma DAG só**, `scrape_agencie
 **Diagnóstico (somente leitura).**
 
 ```bash
-# array: funciona igual no bash e no zsh
-COMPOSER=(destaquesgovbr-composer --location southamerica-east1 --project inspire-7-finep)
+# SSH na VM (só via IAP)
+gcloud compute ssh destaquesgovbr-airflow --zone=southamerica-east1-a \
+  --project=inspire-7-finep --tunnel-through-iap
 
-# 1. Execuções recentes da DAG (estado e horário)
-gcloud composer environments run "${COMPOSER[@]}" dags list-runs -- scrape_agencies
+# --- daqui em diante, na VM ---
+# CLI do Airflow no container do scheduler. O stderr traz avisos do Python e logs de
+# info; 2>/dev/null limpa a saída, mas esconde erros (tire se o comando não mostrar nada).
+af() { sudo docker exec airflow-airflow-scheduler-1 airflow "$@"; }
+
+# 1. Execuções recentes da DAG (estado e horário; o run_id é em UTC)
+af dags list-runs scrape_agencies -o plain 2>/dev/null | head
 
 # 2. Estado de cada task mapeada de uma execução (uma linha por agência, com map_index)
-gcloud composer environments run "${COMPOSER[@]}" tasks states-for-dag-run -- scrape_agencies <run_id>
+af tasks states-for-dag-run scrape_agencies '<run_id>' -o plain 2>/dev/null
+
+# 3. A CLI não mostra a sigla. No banco de metadados (somente leitura), as tasks
+#    que não terminaram em sucesso, com a sigla (rendered_map_index):
+sudo docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on' airflow-postgres-1 \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT map_index, rendered_map_index AS agencia, state, try_number, end_date
+FROM task_instance
+WHERE dag_id = 'scrape_agencies' AND task_id = 'scrape' AND run_id = '<run_id>'
+  AND state IS DISTINCT FROM 'success'
+ORDER BY map_index;
+SQL
 ```
 
-Na UI do Airflow: DAG `scrape_agencies` → Grid → task `scrape` → aba **Mapped Tasks**. O map index aparece com a sigla da agência; filtre por estado `failed` e abra os **Logs** da tentativa. O `on_failure_callback` também loga `Scrape DAG failure: dag=scrape_agencies task=scrape agency=<sigla> map_index=<N> ...`.
+Na UI do Airflow (`https://airflow.dgb.app.gov.br`): DAG `scrape_agencies` → Grid → task `scrape` → aba **Mapped Tasks**. O map index aparece com a sigla da agência; filtre por estado `failed` e abra os **Logs** da tentativa. O `on_failure_callback` também loga `Scrape DAG failure: dag=scrape_agencies task=scrape agency=<sigla> map_index=<N> ...`.
 
-**DagRun zumbi (Composer 3, Airflow 3.1.0).** Logo depois de um deploy das DAGs, a DagVersion mais recente de algumas DAGs já ficou gravada sem `serialized_dag` e sem `dag_code`. O scheduler deixa o DagRun em `running` sem task instances e, com `max_active_runs=1`, não cria outro. No log do scheduler, o erro se repete em loop:
+Os logs das tasks ficam no GCS (30 dias), e dá para lê-los do notebook, sem SSH:
+
+```bash
+gcloud storage cat --project=inspire-7-finep \
+  "gs://destaquesgovbr-airflow/logs/dag_id=scrape_agencies/run_id=<run_id>/task_id=scrape/map_index=<N>/attempt=<K>.log"
+```
+
+Os logs dos containers (scheduler, dag-processor, api-server) vão para o Cloud Logging, no log `gcplogs-docker-driver` (recurso `gce_instance`):
+
+```bash
+gcloud logging read 'logName="projects/inspire-7-finep/logs/gcplogs-docker-driver"
+  AND jsonPayload.container.name="/airflow-airflow-scheduler-1"
+  AND jsonPayload.message:"scrape_agencies"' \
+  --project=inspire-7-finep --freshness=3h --limit=20 --format='value(timestamp,jsonPayload.message)'
+```
+
+**DagRun zumbi (visto no Composer 3, Airflow 3.1.0).** Logo depois de um deploy das DAGs, a DagVersion mais recente de algumas DAGs já ficou gravada sem `serialized_dag` e sem `dag_code`. O scheduler deixa o DagRun em `running` sem task instances e, com `max_active_runs=1`, não cria outro. Ainda não apareceu no Airflow 3.1.8 da VM, mas o procedimento vale igual. No log do scheduler (Cloud Logging, container `/airflow-airflow-scheduler-1`), o erro se repete em loop:
 
 ```
 DAG 'scrape_agencies' not found in serialized_dag table
 Couldn't find DAG scrape_agencies in DAG bag or database!
 ```
 
-Casos de 2026, ainda com uma DAG por agência: `scrape_inma` (13/04), `scrape_inpe` (11/06), `scrape_aids` e `scrape_patrimonio` (21/08) e `scrape_esg` (sem execução desde 11/11). Hoje um zumbi para **todas** as agências de uma vez, e o monitor acusa na execução seguinte. Para confirmar (somente leitura):
+Casos de 2026, ainda com uma DAG por agência: `scrape_inma` (13/04), `scrape_inpe` (11/06), `scrape_aids` e `scrape_patrimonio` (21/08) e `scrape_esg` (sem execução desde 11/11). Hoje um zumbi para **todas** as agências de uma vez, e o monitor acusa na execução seguinte. Para confirmar (somente leitura, na VM):
 
 ```bash
-# O run em 'running' há horas não tem task instances (resposta vazia no passo 2 acima)
-AIRFLOW_URI=$(gcloud composer environments describe "${COMPOSER[@]}" --format='value(config.airflowUri)')
-TOKEN=$(gcloud auth print-access-token)
+# O run em 'running' há horas não tem task instances (resposta vazia no passo 2 acima).
+# A REST API responde em localhost:8080 na VM; o GET /auth/token devolve um JWT de admin
+# (SimpleAuthManager com all_admins: o IAP é a única porta de entrada).
+TOKEN=$(curl -s http://localhost:8080/auth/token | jq -r .access_token)
+API=http://localhost:8080/api/v2
 curl -s -H "Authorization: Bearer $TOKEN" \
-  "$AIRFLOW_URI/api/v2/dags/scrape_agencies/dagVersions?order_by=-version_number&limit=1"
+  "$API/dags/scrape_agencies/dagVersions?order_by=-version_number&limit=1"
 curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  "$AIRFLOW_URI/api/v2/dagSources/scrape_agencies?version_number=<N>"  # 404 = versão órfã
+  "$API/dagSources/scrape_agencies?version_number=<N>"  # 404 = versão órfã
 ```
 
-**Correção.** Todas as ações abaixo mudam estado no Airflow e precisam de aprovação humana.
+Ou direto no banco de metadados: a versão mais recente com `tem_serialized_dag = f` é órfã.
+
+```bash
+sudo docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on' airflow-postgres-1 \
+  sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT dv.version_number, dv.created_at,
+       sd.id IS NOT NULL AS tem_serialized_dag, dc.id IS NOT NULL AS tem_dag_code
+FROM dag_version dv
+LEFT JOIN serialized_dag sd ON sd.dag_version_id = dv.id
+LEFT JOIN dag_code dc ON dc.dag_version_id = dv.id
+WHERE dv.dag_id = 'scrape_agencies'
+ORDER BY dv.version_number DESC LIMIT 3;
+SQL
+```
+
+**Correção.** Todas as ações abaixo mudam estado no Airflow e precisam de aprovação humana. Os comandos rodam na VM (SSH via IAP, função `af` e `TOKEN`/`API` definidos acima).
 
 - **Task mapeada que falhou (algumas agências):** limpe só as tasks com falha da execução, para rodarem de novo, e a `summarize` junto quando a execução ficou vermelha (ver "Execução Vermelha"). Na UI: Mapped Tasks → selecione as tasks `failed` → **Clear**; depois, se a `summarize` falhou, Clear nela. Pela CLI, todas as tasks com falha das execuções do intervalo; `-d` inclui a `summarize` (downstream), que com `--only-failed` só é limpa se falhou:
 
   ```bash
-  gcloud composer environments run "${COMPOSER[@]}" tasks clear -- scrape_agencies \
+  af tasks clear scrape_agencies \
     -t scrape -d --only-failed -s <AAAA-MM-DDTHH:MM> -e <AAAA-MM-DDTHH:MM> --yes
   ```
 
@@ -242,27 +294,27 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
   ```bash
   clear_tis() {  # $1 = task_ids em JSON
     curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-      "$AIRFLOW_URI/api/v2/dags/scrape_agencies/clearTaskInstances" \
+      "$API/dags/scrape_agencies/clearTaskInstances" \
       -d "{\"dag_run_id\": \"<run_id>\", \"task_ids\": $1, \"only_failed\": false, \"dry_run\": false}"
   }
   clear_tis '[["scrape", <map_index>]]'
   clear_tis '["summarize"]'
   ```
 
-  Não junte as duas numa chamada nem use `"include_downstream": true` com `[task_id, map_index]`: no Airflow 3.1.0 (Composer), quando a seleção tem mais de uma task, o `clearTaskInstances` acrescenta `"scrape"` sem map index à lista e, com `only_failed: false`, limpa as ~147 agências da execução. O 3.1.8 corrigiu (`exclude_original=True`). Na dúvida, rode antes com `"dry_run": true` e confira as task instances devolvidas.
+  Não junte as duas numa chamada nem use `"include_downstream": true` com `[task_id, map_index]`: no Airflow 3.1.0 (o do Composer), quando a seleção tem mais de uma task, o `clearTaskInstances` acrescentava `"scrape"` sem map index à lista e, com `only_failed: false`, limpava as ~147 agências da execução. O 3.1.8, que roda na VM, corrigiu (`exclude_original=True`), mas as duas chamadas separadas continuam sendo o caminho seguro. Na dúvida, rode antes com `"dry_run": true` e confira as task instances devolvidas.
 
   Se a falha é da agência (site fora, 4xx permanente: a task falhou numa tentativa só, com `erro permanente` na mensagem), limpar não adianta: ver "Debugar Scraper em Falha".
-- **DAG pausada:** `gcloud composer environments run "${COMPOSER[@]}" dags unpause -- scrape_agencies`.
+- **DAG pausada:** `af dags unpause scrape_agencies` (ou o botão de pausa na UI).
 - **DagRun zumbi:** marcar o run como `failed` **não resolve**, porque o run seguinte também é criado com a versão órfã e trava de novo. Apague os metadados da DAG. O `delete_dag` do Airflow 3.1 remove todas as linhas com o `dag_id`, inclusive `dag_version` e `serialized_dag`. Depois, o dag-processor reparseia `scraper/scrape_agencies.py` e cria uma v1 nova, já serializada:
 
   ```bash
-  gcloud composer environments run "${COMPOSER[@]}" dags delete -- scrape_agencies --yes
+  af dags delete scrape_agencies --yes
   ```
 
   Só se perde o histórico de runs da DAG no Airflow. A tabela `scrape_runs` e as notícias no Postgres não são afetadas. A DAG recriada pode nascer pausada: despause.
 
 **Validação.**
-1. `dags list-runs -- scrape_agencies` mostra uma execução nova, com task instances.
+1. `af dags list-runs scrape_agencies` mostra uma execução nova, com task instances.
 2. O erro `not found in serialized_dag table` some do log do scheduler (no caso do zumbi).
 3. O próximo `monitor_scraping_health` não lista mais as agências.
 
@@ -272,7 +324,7 @@ curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
 - **CLI:**
 
   ```bash
-  gcloud composer environments run "${COMPOSER[@]}" dags trigger -- scrape_agencies \
+  af dags trigger scrape_agencies \
     --conf '{"start_date": "2026-11-15", "end_date": "2026-11-17"}'
   ```
 
@@ -318,7 +370,7 @@ curl -X POST https://{API_URL}/scrape/agencies \
 `notify.send_alert()` tenta, nesta ordem, e para no primeiro que entregar:
 
 1. **Telegram direto**, se as Variables `scraper_telegram_bot_token` e `scraper_telegram_monitor_chat_id` existirem (hoje não existem).
-2. **Pub/Sub `dgb.ops.alerts`**: o alert-relay (data-platform) repassa ao Telegram da equipe. O tópico é a Variable `scraper_alert_pubsub_topic` ou, por padrão, `projects/$GCP_PROJECT_ID/topics/dgb.ops.alerts`; Variable vazia desliga o canal. A mensagem vai como texto puro (sem `<b>`, até 3400 caracteres, cortada em fim de linha), com título ("Scraper: saúde das agências" ou "Scraper: cobertura baixa"), severidade `warning` e a DAG de origem. A SA do Composer precisa de `roles/pubsub.publisher` no tópico (infra).
+2. **Pub/Sub `dgb.ops.alerts`**: o alert-relay (data-platform) repassa ao Telegram da equipe. O tópico é a Variable `scraper_alert_pubsub_topic` ou, por padrão, `projects/$GCP_PROJECT_ID/topics/dgb.ops.alerts`; Variable vazia desliga o canal. A mensagem vai como texto puro (sem `<b>`, até 3400 caracteres, cortada em fim de linha), com título ("Scraper: saúde das agências" ou "Scraper: cobertura baixa"), severidade `warning` e a DAG de origem. A SA do Airflow (`destaquesgovbr-composer`, nome herdado; hoje é a SA da VM) precisa de `roles/pubsub.publisher` no tópico (infra).
 3. **Webhook** (`scraper_alert_webhook_url`).
 4. **Só log** (`Alert (log-only): ...`).
 
@@ -337,10 +389,11 @@ O monitor roda 9 vezes por dia, mas só reenvia o alerta quando muda o conjunto 
 
 Cada seção lista no máximo 25 agências (`... e mais N`), e a mensagem é cortada em fim de linha para caber em 4000 caracteres: o Telegram recusa texto acima de 4096, e o Cloud Logging corta a linha `Alert (log-only): ...` em 4096. A lista completa fica nos logs das tasks `check_*`.
 
-Para ler os alertas que só foram logados (`Alert (log-only)`, task `send_alerts`):
+Para ler os alertas que só foram logados (`Alert (log-only)`, task `send_alerts`), leia os logs da task no GCS. O `run_id` é em UTC; o exemplo pega as execuções de um dia:
 ```bash
-gcloud logging read 'resource.type="cloud_composer_environment" AND textPayload:"Alert (log-only)"' \
-  --project=inspire-7-finep --freshness=6h --limit=5 --format='value(timestamp,textPayload)'
+gcloud storage cat --project=inspire-7-finep \
+  "gs://destaquesgovbr-airflow/logs/dag_id=monitor_scraping_health/run_id=scheduled__2026-11-18T*/task_id=send_alerts/attempt=*.log" \
+  | grep -E 'Alert \(log-only\)|Pub/Sub|reenviado'
 ```
 
 Falha do Pub/Sub aparece no log da task como `Failed to publish Pub/Sub alert: HTTP 403 ...` (ex.: falta o `roles/pubsub.publisher`), seguida do fallback.

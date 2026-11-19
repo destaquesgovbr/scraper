@@ -6,12 +6,12 @@ Scraper standalone para notícias de sites governamentais brasileiros (~155 agê
 
 O scraper coleta notícias publicadas em sites gov.br e da EBC (Agência Brasil, TV Brasil, etc.), extraindo título, conteúdo, data de publicação e metadados. Os dados são persistidos no PostgreSQL (upsert por unique_id, deduplicação por URL). Após persistência, eventos são publicados no Pub/Sub (`dgb.news.scraped`) para consumo downstream.
 
-A coleta é orquestrada por **DAGs Airflow** (Cloud Composer; em migração para um Airflow próprio, com deploy nos dois buckets) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
+A coleta é orquestrada por **DAGs Airflow** (Airflow 3.1.8 próprio, na VM `destaquesgovbr-airflow`; o Cloud Composer foi desligado em 18/11/2026) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
 
 ## Arquitetura
 
 ```
-DAGs Airflow (Cloud Composer + Airflow próprio, em migração)
+DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
 │   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência + summarize)
 │   ├── scrape_ebc (06h–22h de 2 em 2 h)
 │   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)
@@ -96,7 +96,7 @@ scraper/
 └── .github/workflows/
     ├── tests.yaml                     # pytest em PRs
     ├── scraper-api-deploy.yaml        # Build + deploy Cloud Run (push main)
-    └── composer-deploy-dags.yaml      # Deploy DAGs → buckets do Composer e do Airflow próprio (push main)
+    └── composer-deploy-dags.yaml      # Deploy DAGs → bucket do Airflow próprio (push main; nome antigo)
 ```
 
 ### ⚠️ Importante sobre site_urls.yaml
@@ -349,13 +349,13 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 | `scraper_coverage_report` | Diário 08h | Cobertura 24h + alerta se < threshold |
 | `notify.py` | (utilitário) | Telegram > Pub/Sub `dgb.ops.alerts` > webhook > log-only |
 
-Os crons são avaliados no fuso padrão do Airflow (`core.default_timezone = America/Sao_Paulo` no Composer; o Airflow que o substituir precisa da mesma configuração).
+Os crons são avaliados no fuso padrão do Airflow: `core.default_timezone = America/Sao_Paulo`, definido por `AIRFLOW__CORE__DEFAULT_TIMEZONE` no env da VM (repo `infra`, `terraform/templates/airflow/airflow.env.tftpl`), como era no Composer.
 
 ### DAGs de scraping
 
 Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% das task runs do Composer, infra#223). Agora é uma DAG só, `scrape_agencies`:
 - Uma task mapeada por agência ativa do `dags/config/site_urls.yaml` (lista calculada no parse: `_active_agencies(_read_agencies())`), com a sigla como map index na UI (`map_index_template="{{ agency_key }}"`, a task grava `agency_key` no contexto)
-- No máximo `MAX_CONCURRENT_AGENCIES` agências ao mesmo tempo (`max_active_tis_per_dag`), lido no parse do env `SCRAPE_MAX_CONCURRENT_AGENCIES`: padrão 4, inválido vale 4, mínimo 1 (0 pararia a DAG). O limite protege o www.gov.br (as agências estão todas no mesmo host) e espalha a rajada de eventos no pipeline downstream; ~5 a 8 min por execução no Composer
+- No máximo `MAX_CONCURRENT_AGENCIES` agências ao mesmo tempo (`max_active_tis_per_dag`), lido no parse do env `SCRAPE_MAX_CONCURRENT_AGENCIES`: padrão 4, inválido vale 4, mínimo 1 (0 pararia a DAG). O limite protege o www.gov.br (as agências estão todas no mesmo host) e espalha a rajada de eventos no pipeline downstream; ~4 a 5 min por execução na VM (eram ~5 a 8 min no Composer)
 - `max_active_runs=1`, `catchup=False`
 - Cada task chama a API no Cloud Run via HTTP POST (`/scrape/agencies` com uma agência, `allow_update: false`, `sequential: true`), autenticada com ID token IAM (`google.oauth2.id_token`)
 - A task lê o corpo antes do status HTTP (sem `raise_for_status`). Erro permanente (todos os `errors[]` da agência com `retryable: false`) levanta `AirflowFailException`: falha numa tentativa só, com agência e categoria na mensagem. Erro passageiro, corpo sem JSON, erro de rede do httpx e API antiga sem `retryable` levantam `AirflowException` e repetem. No sucesso a task devolve `{"agency", "articles_new", "articles_saved"}` (XCom)
@@ -470,7 +470,9 @@ PUBSUB_TOPIC_NEWS_SCRAPED=projects/{project}/topics/dgb.news.scraped  # Opcional
 
 **Fallback para DATABASE_URL:** Se não definido, tenta Secret Manager (`destaquesgovbr-postgres-connection-string`). Se falhar, detecta Cloud SQL Proxy local.
 
-## Airflow Variables (Cloud Composer)
+## Airflow Variables
+
+Vêm do secrets backend do Airflow (`CloudSecretManagerBackend`: secret `airflow-variables-<nome>` no Secret Manager) e, se não estiverem lá, do metastore (Postgres da VM). O `scraper_monitor_last_alert` é gravado pelo monitor no metastore.
 
 | Variable | Obrigatória | Default | Uso |
 |----------|-------------|---------|-----|
@@ -508,7 +510,7 @@ token = google.oauth2.id_token.fetch_id_token(auth_req, scraper_api_url)
 headers = {"Authorization": f"Bearer {token}"}
 ```
 
-O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cloud Run e, para os alertas via Pub/Sub, `roles/pubsub.publisher` no tópico `dgb.ops.alerts` (sem ela, o publish dá 403 e o alerta cai no webhook ou no log).
+A SA do Airflow (`destaquesgovbr-composer`, nome herdado do Composer; hoje é a SA da VM `destaquesgovbr-airflow`) deve ter a role `roles/run.invoker` no serviço Cloud Run e, para os alertas via Pub/Sub, `roles/pubsub.publisher` no tópico `dgb.ops.alerts` (sem ela, o publish dá 403 e o alerta cai no webhook ou no log).
 
 ## CI/CD
 
@@ -516,7 +518,7 @@ O Service Account do Composer deve ter a role `roles/run.invoker` no serviço Cl
 |----------|---------|------|
 | `tests.yaml` | PR | pytest com coverage (`-m "not integration"`) + testes `postgres` contra service container `pgvector/pgvector:pg16` (porta 55432) |
 | `scraper-api-deploy.yaml` | push main | Build Docker + deploy Cloud Run |
-| `composer-deploy-dags.yaml` | push main (`dags/**`) | `airflow-deploy-dags.yml@v3` (reusable-workflows): valida com Airflow 3.1.8 e sincroniza `dags/` → `gs://<bucket>/dags/scraper/` nos dois buckets |
+| `composer-deploy-dags.yaml` | push main (`dags/**`) | `airflow-deploy-dags.yml@v3` (reusable-workflows): valida com Airflow 3.1.8 e sincroniza `dags/` → `gs://destaquesgovbr-airflow/dags/scraper/` |
 
 ## Testes
 
@@ -550,7 +552,7 @@ poetry run pytest --cov=govbr_scraper --cov-report=term-missing
 | Componente | Destino | Workflow |
 |-----------|---------|----------|
 | **API** | Cloud Run (`destaquesgovbr-scraper-api`) | `scraper-api-deploy.yaml` |
-| **DAGs** | Bucket do Composer e bucket do Airflow próprio (`gs://<bucket>/dags/scraper/`) | `composer-deploy-dags.yaml` |
+| **DAGs** | Bucket do Airflow próprio (`gs://destaquesgovbr-airflow/dags/scraper/`) | `composer-deploy-dags.yaml` |
 | **Infra** | Terraform (repo `infra/`) | SA, Cloud Run, Artifact Registry, IAM |
 
 ### Deploy da API
@@ -559,13 +561,13 @@ O workflow `scraper-api-deploy.yaml` faz build da imagem Docker e deploy no Clou
 
 ### Deploy das DAGs
 
-O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3` com `dags_local_path: dags` e `dags_bucket_subdir: scraper`. Ela valida as DAGs com o Airflow 3.1.8 (o da imagem do Airflow próprio) e, para cada bucket da lista padrão (Fase 3 da migração do Composer: bucket do Cloud Composer e `destaquesgovbr-airflow`), faz:
+O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3` com `dags_local_path: dags` e `dags_bucket_subdir: scraper`. Ela valida as DAGs com o Airflow 3.1.8 (o da imagem da VM) e sincroniza no bucket do Airflow próprio:
 
 ```bash
-gcloud storage rsync --recursive --delete-unmatched-destination-objects dags/ gs://<bucket>/dags/scraper/
+gcloud storage rsync --recursive --delete-unmatched-destination-objects dags/ gs://destaquesgovbr-airflow/dags/scraper/
 ```
 
-Quando o Composer for desligado, a lista de buckets muda só na reusable workflow (tag `v3`); este repo não muda.
+Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor reparseia cada arquivo a cada 180 s: uma mudança numa DAG existente pode levar até ~4 min para valer. A lista de buckets é o default da reusable workflow (tag `v3`); este repo não a define. O bucket do Composer sai desse default na reusable-workflows#7: até a tag `v3` apontar para essa versão, o deploy também publica nele, e apagar o bucket antes disso faz o deploy falhar. O nome `composer-deploy-dags.yaml` ficou do Composer.
 
 ### Ordem de deploy (Passo 1 da rearquitetura da ingestão, `_plan/rearquitetura-ingestao.md`)
 
