@@ -153,7 +153,7 @@ Deduplicação por conteúdo via `compute_content_hash(title, content)`:
 2. Concatena `título\nconteúdo` normalizado
 3. SHA256 dos primeiros 16 caracteres hex
 
-Usado para detectar artigos duplicados com URLs diferentes e para verificação de integridade.
+Gravado em `news.content_hash`. Decide se o re-scrape de um artigo já gravado (mesmo `(agency_key, url)`) regrava a linha e a republica em `dgb.news.scraped` (ver "Nuance do `allow_update`" e "Pub/Sub Events"), e é usado na verificação de integridade.
 
 ### Unique ID
 
@@ -419,7 +419,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 
 **Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)` e não toca nos temas nem no embedding. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
 
-**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil, re-raspada a cada execução do dia). O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
+**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil). A proteção vale no UPDATE do re-scrape com conteúdo alterado ou com `allow_update=True`; com o mesmo conteúdo e `allow_update=False` a linha nem é regravada. O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
 
 **Edição de conteúdo não regera nada downstream:** quando o `content_hash` muda, o artigo é republicado, mas o enrichment-worker pula o já enriquecido (`skipped/already_enriched`, sem `dgb.news.enriched`), então resumo, temas e embedding ficam os da primeira versão. Por isso o embedding **não é zerado** na edição: o vetor é de título + resumo (`embeddings_client/text_prep.py`), o resumo é preservado, e zerar sem caminho de regeneração (o embeddings-api só assina `dgb.news.enriched`; a DAG `generate_embeddings` saiu) tiraria o artigo da busca semântica para sempre. Só uma edição de título deixa o vetor um pouco desatualizado. Regerar resumo e embedding em edições é evolução downstream (re-enriquecer quando o conteúdo muda), não do scraper.
 
