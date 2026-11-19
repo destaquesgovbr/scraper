@@ -30,6 +30,7 @@ from govbr_scraper.monitoring.health_checks import (
     find_stale_agencies,
 )
 from tests.integration import postgres_guard
+from tests.integration.migration_038 import MIGRATION_038
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -282,10 +283,8 @@ class TestOpenCircuitExclusionPostgres:
 
     @pytest.fixture
     def agency_state(self, db):
-        from tests.integration.test_postgres_agency_state import _MIGRATION_038
-
         with db.cursor() as cur:
-            cur.execute(_MIGRATION_038)
+            cur.execute(MIGRATION_038)
         yield
         with db.cursor() as cur:
             cur.execute("DROP TABLE IF EXISTS scrape_agency_state, scrape_dispatch_meta")

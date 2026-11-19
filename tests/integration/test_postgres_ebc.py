@@ -12,6 +12,12 @@ Provam, no banco, as correções de custo do Passo 2 da rearquitetura da ingest�
 - re-scrape sem mudança de conteúdo (backfill, cerca desligada) não grava nem conta em
   articles_saved; com o conteúdo alterado, atualiza a linha.
 
+E, pela rota POST /scrape/ebc (API real, com o schema na DATABASE_URL), que a falha da
+primeira página chega ao estado por agência (scrape_agency_state, migration 038) e ao evento
+scrape_attempt: html_changed duas vezes abre o disjuntor e a fonte passa a ser pulada;
+network_error é passageiro; o sucesso move a marca d'água e a janela explícita não mexe no
+estado.
+
 Mesma guarda e mesmo Postgres dos outros testes `postgres` (ver
 test_postgres_rescrape.py): requer SCRAPER_TEST_POSTGRES_URL apontando para um
 Postgres LOCAL e descartável, numa porta diferente de 5432. O schema
@@ -20,29 +26,34 @@ Postgres LOCAL e descartável, numa porta diferente de 5432. O schema
 
 import os
 import uuid
-from datetime import UTC, datetime
-from unittest.mock import patch
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import psycopg2
 import pytest
 import requests
+from fastapi.testclient import TestClient
 from psycopg2.extensions import make_dsn
 from psycopg2.extras import RealDictCursor
 
+from govbr_scraper.api import app
 from govbr_scraper.models.news import NewsInsert
+from govbr_scraper.monitoring import structured_log
 from govbr_scraper.scrapers.ebc_scrape_manager import EBCScrapeManager
 from govbr_scraper.scrapers.ebc_webscraper import today_brt
 from govbr_scraper.storage.postgres_manager import PostgresManager
 from govbr_scraper.storage.storage_adapter import StorageAdapter
 from tests.integration import postgres_guard
+from tests.integration.migration_038 import MIGRATION_038
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
 ENV_VAR = "SCRAPER_TEST_POSTGRES_URL"
 
 # Subconjunto do schema de produção (data-platform/scripts/create_schema.sql + migrações
-# 008, 009, 012, 026 e 037) que o caminho EBC usa. Sem pgvector: o scraper não lê nem
-# grava o embedding.
+# 008, 009, 012, 026 e 037) que o caminho EBC usa, mais a 038 (MIGRATION_038). Sem
+# pgvector: o scraper não lê nem grava o embedding.
 _DDL = """
 CREATE TABLE agencies (
     id SERIAL PRIMARY KEY,
@@ -194,6 +205,7 @@ def schema_dsn(base_dsn):
             cur.execute(f"CREATE SCHEMA {schema}")
             cur.execute(f"SET search_path TO {schema}")
             cur.execute(_DDL)
+            cur.execute(MIGRATION_038)
         yield make_dsn(base_dsn, options=f"-c search_path={schema}")
     finally:
         with admin.cursor() as cur:
@@ -220,13 +232,14 @@ def pg(schema_dsn):
 @pytest.fixture(autouse=True)
 def _clean(db):
     with db.cursor() as cur:
-        cur.execute("TRUNCATE news, scrape_runs RESTART IDENTITY")
+        cur.execute("TRUNCATE news, scrape_runs, scrape_agency_state RESTART IDENTITY")
     yield
 
 
 @pytest.fixture(autouse=True)
 def _no_sleep_no_pubsub(monkeypatch):
     monkeypatch.delenv("PUBSUB_TOPIC_NEWS_SCRAPED", raising=False)
+    monkeypatch.delenv("PUBSUB_TOPIC_OPS_ALERTS", raising=False)
     with patch("govbr_scraper.scrapers.ebc_webscraper.time.sleep"):
         yield
 
@@ -246,6 +259,13 @@ def _runs(db) -> list[dict]:
     with db.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM scrape_runs ORDER BY id")
         return [dict(r) for r in cur.fetchall()]
+
+
+def _state(db, agency_key: str = "agencia_brasil") -> dict | None:
+    with db.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT * FROM scrape_agency_state WHERE agency_key = %s", (agency_key,))
+        row = cur.fetchone()
+        return dict(row) if row is not None else None
 
 
 def _news(db) -> list[dict]:
@@ -284,6 +304,14 @@ class TestListingFailureIsRecorded:
         assert run["error_category"] == category
         assert run["articles_new"] is None
         assert _news(db) == []
+        # O estado por agência registra a falha (sem janela explícita no StorageAdapter).
+        state = _state(db)
+        assert state["last_error_category"] == category
+        assert state["last_success_at"] is None
+        counter = (
+            "consecutive_transient_failures" if retryable else "consecutive_permanent_failures"
+        )
+        assert state[counter] == 1
 
 
 # =============================================================================
@@ -363,3 +391,165 @@ class TestRescrapeCounts:
             (0, 0),
             (1, 0),
         ]
+
+
+# =============================================================================
+# POST /scrape/ebc: falha da 1ª página no estado por agência e no scrape_attempt
+# =============================================================================
+
+_CHANGED_LAYOUT = b"<html><body><div>layout novo</div></body></html>"
+
+
+@pytest.fixture
+def api(schema_dsn, monkeypatch):
+    """Cliente da API real com o schema de teste na DATABASE_URL, o scrape_attempt
+    espionado e o alerta do disjuntor interceptado."""
+    monkeypatch.setenv("DATABASE_URL", schema_dsn)
+    monkeypatch.setattr(PostgresManager, "_warned_missing_agency_state", False)
+    log = MagicMock(wraps=structured_log.log_scrape_attempt)
+    with (
+        patch("govbr_scraper.api.log_scrape_attempt", log),
+        patch("govbr_scraper.state.alerts.publish_ops_alert", return_value=True) as publish,
+        patch("retry.api.time.sleep"),
+    ):
+        yield SimpleNamespace(client=TestClient(app), log=log, publish=publish)
+
+
+def _post(api, site: _FakeSite, **payload):
+    body = {"agencies": ["agencia_brasil"], "sequential": True, **payload}
+    with patch("requests.get", side_effect=site.get):
+        return api.client.post("/scrape/ebc", json=body)
+
+
+def _today_article_html(title: str, content: str) -> bytes:
+    return _article_html(title, content, today_brt().strftime("%d/%m/%Y") + " - 00:05")
+
+
+class TestApiEbcAgencyState:
+    URL = _article_url("noticia-de-hoje")
+
+    def test_html_changed_twice_opens_the_circuit_and_then_skips(self, api, db):
+        site = _FakeSite(_response(200, _CHANGED_LAYOUT))
+        today = today_brt()
+
+        first = _post(api, site)
+        assert first.status_code == 500
+        body = first.json()
+        (error,) = body["errors"]
+        assert (error["agency"], error["category"], error["retryable"]) == (
+            "agencia_brasil",
+            "html_changed",
+            False,
+        )
+        # Sem histórico: janela de ontem a hoje (marca d'água).
+        assert (body["start_date"], body["end_date"]) == (
+            (today - timedelta(days=1)).isoformat(),
+            today.isoformat(),
+        )
+        state = _state(db)
+        assert state["consecutive_permanent_failures"] == 1
+        assert state["circuit_state"] == "closed"
+        assert state["last_error_category"] == "html_changed"
+        assert state["last_success_at"] is None
+        attempt = api.log.call_args.kwargs
+        assert (attempt["agency"], attempt["outcome"], attempt["category"]) == (
+            "agencia_brasil",
+            "failed",
+            "html_changed",
+        )
+        assert attempt["retryable"] is False
+        assert attempt["explicit_window"] is False
+        assert attempt["tier"] == "h2"
+
+        second = _post(api, site)
+        assert second.status_code == 500
+        state = _state(db)
+        assert state["circuit_state"] == "open"
+        assert state["consecutive_permanent_failures"] == 2
+        assert state["next_due_at"] == state["circuit_opened_at"] + timedelta(hours=2)
+        (alert,) = api.publish.call_args_list
+        assert alert.kwargs["text"].startswith("🔴 Disjuntor aberto: agencia_brasil")
+
+        calls = len(site.calls)
+        third = _post(api, site)
+        assert third.status_code == 200
+        assert third.json()["status"] == "skipped"
+        (skipped,) = third.json()["skipped"]
+        assert (skipped["agency"], skipped["reason"]) == ("agencia_brasil", "circuit_open")
+        assert skipped["next_probe_at"] is not None
+        assert len(site.calls) == calls  # não raspou
+        assert [r["status"] for r in _runs(db)] == ["error", "error"]  # nem gravou scrape_runs
+        assert api.log.call_args.kwargs["outcome"] == "skipped"
+
+    def test_network_error_is_transient(self, api, db):
+        response = _post(api, _FakeSite(_response(503)))
+
+        assert response.status_code == 500
+        (error,) = response.json()["errors"]
+        assert (error["category"], error["retryable"]) == ("network_error", True)
+        state = _state(db)
+        assert state["consecutive_transient_failures"] == 1
+        assert state["consecutive_permanent_failures"] == 0
+        assert state["failure_streak_started_at"] is not None
+        assert state["circuit_state"] == "closed"
+        attempt = api.log.call_args.kwargs
+        assert (attempt["outcome"], attempt["category"], attempt["retryable"]) == (
+            "failed",
+            "network_error",
+            True,
+        )
+
+    def test_success_moves_the_watermark_and_failure_keeps_it(self, api, db):
+        site = _FakeSite(
+            _response(200, _index_html([self.URL])),
+            {self.URL: _today_article_html("Notícia de hoje", "Conteúdo da notícia de hoje.")},
+        )
+
+        first = _post(api, site)
+        assert first.status_code == 200
+        assert (first.json()["articles_saved"], first.json()["articles_new"]) == (1, 1)
+        state = _state(db)
+        watermark = state["last_success_at"]
+        assert watermark is not None
+        assert state["boost_until"] == state["last_new_article_at"] + timedelta(hours=6)
+        assert api.log.call_args.kwargs["articles_new"] == 1
+
+        # De novo, sem mudança: a cerca para no artigo conhecido (sem baixá-lo) e nada é
+        # gravado nem contado; a marca d'água avança.
+        site.calls.clear()
+        again = _post(api, site)
+        assert again.status_code == 200
+        assert (again.json()["articles_saved"], again.json()["articles_new"]) == (0, 0)
+        assert self.URL not in site.calls
+        state = _state(db)
+        assert state["last_success_at"] > watermark
+        watermark = state["last_success_at"]
+
+        # Falha da 1ª página: a marca d'água fica, e a próxima janela começa nela.
+        failed = _post(api, _FakeSite(_response(503)))
+        assert failed.status_code == 500
+        state = _state(db)
+        assert state["last_success_at"] == watermark
+        assert state["consecutive_transient_failures"] == 1
+        assert [(r["status"], r["articles_saved"], r["articles_new"]) for r in _runs(db)] == [
+            ("success", 1, 1),
+            ("success", 0, 0),
+            ("error", 0, None),
+        ]
+
+    def test_explicit_window_failure_does_not_touch_the_state(self, api, db):
+        response = _post(
+            api,
+            _FakeSite(_response(200, _CHANGED_LAYOUT)),
+            start_date=BACKFILL_DAY,
+            end_date=BACKFILL_DAY,
+        )
+
+        assert response.status_code == 500
+        assert response.json()["errors"][0]["category"] == "html_changed"
+        (run,) = _runs(db)
+        assert (run["status"], run["error_category"]) == ("error", "html_changed")
+        state = _state(db)
+        assert state["consecutive_permanent_failures"] == 0
+        assert state["last_error_category"] is None
+        assert api.log.call_args.kwargs["explicit_window"] is True
