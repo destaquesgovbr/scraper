@@ -62,12 +62,21 @@ class Freshness:
 
 
 def compute_freshness(
-    states: Iterable[AgencyState], active_keys: Iterable[str], now: datetime
+    states: Iterable[AgencyState],
+    active_keys: Iterable[str],
+    now: datetime,
+    *,
+    min_interval_minutes: int = 0,
 ) -> Freshness:
     """Frescor por faixa das agências ativas de circuito fechado, sem a ``tvbrasil``.
 
     Agência sem nenhum sucesso conta em ``agencies`` e fora do SLO, mas não entra nos
     percentis (não tem atraso). Faixa sem agência fica de fora.
+
+    ``min_interval_minutes``: piso do intervalo no SLO (``slo_interval_floor`` do modo), o
+    mesmo do ``GET /agencies/state``. Fora de ``live`` as DAGs de 2 h ainda são o relógio, e
+    sem o piso as m30 e as agências com boost contariam como fora do SLO sem estar. Os
+    percentis de atraso não mudam.
     """
     active = set(active_keys) - FRESHNESS_EXCLUDED
     eligible = [
@@ -80,7 +89,11 @@ def compute_freshness(
         if not group:
             continue
         lags = [lag for s in group if (lag := lag_minutes(s, now)) is not None]
-        ok = sum(1 for s in group if within_slo(s, now) is True)
+        ok = sum(
+            1
+            for s in group
+            if within_slo(s, now, min_interval_minutes=min_interval_minutes) is True
+        )
         ok_total += ok
         tiers.append(
             TierFreshness(

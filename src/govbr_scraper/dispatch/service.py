@@ -47,7 +47,7 @@ from govbr_scraper.monitoring.structured_log import log_freshness
 from govbr_scraper.state import repository
 from govbr_scraper.state.model import AgencyState
 from govbr_scraper.state.policy import BRT
-from govbr_scraper.state.report import iso_utc
+from govbr_scraper.state.report import iso_utc, slo_interval_floor
 from govbr_scraper.state.repository import StateUnavailable
 from govbr_scraper.state.transitions import circuit_gate
 
@@ -352,8 +352,17 @@ class Dispatcher:
             logger.warning(f"Falha ao registrar o despacho de {len(keys)} agência(s): {e}")
 
     def _log_freshness(self, states: list[AgencyState]) -> float | None:
-        """Loga um evento ``freshness`` por faixa e devolve a fração geral dentro do SLO."""
-        fresh = compute_freshness(states, self.active_keys, self.now)
+        """Loga um evento ``freshness`` por faixa e devolve a fração geral dentro do SLO.
+
+        Em ``dry_run`` o SLO usa o piso da cadência das DAGs (``slo_interval_floor``), como o
+        ``GET /agencies/state``: elas ainda são o relógio. Em ``live``, sem piso.
+        """
+        fresh = compute_freshness(
+            states,
+            self.active_keys,
+            self.now,
+            min_interval_minutes=slo_interval_floor(self.mode.value),
+        )
         for t in fresh.tiers:
             if t.lag_p90_min is None:  # nenhuma agência da faixa com sucesso ainda
                 continue

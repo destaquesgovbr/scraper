@@ -77,6 +77,23 @@ class TestComputeFreshness:
         assert (h2.tier, h2.agencies, h2.lag_max_min) == ("h2", 1, 30.0)
         assert fresh.slo_ok_ratio == 1.0
 
+    def test_floor_of_the_dag_cadence_only_changes_the_slo(self):
+        # Fora de live (piso de 120 min, slo_interval_floor): m30 com 100 min e h2 com boost
+        # (intervalo efetivo de 60 min) com 200 min ainda estão dentro de 2 × 120.
+        states = [
+            _state("agencia_brasil", Tier.M30, lag_min=100),
+            _state("mec", Tier.H2, lag_min=200, boost_until=NOW + timedelta(hours=1)),
+        ]
+        keys = [s.agency_key for s in states]
+        no_floor = compute_freshness(states, keys, NOW)
+        floor = compute_freshness(states, keys, NOW, min_interval_minutes=120)
+        assert no_floor.slo_ok_ratio == 0.0
+        assert floor.slo_ok_ratio == 1.0
+        assert [t.tier_slo_ok_ratio for t in floor.tiers] == [1.0, 1.0]
+        assert [(t.lag_p50_min, t.lag_p90_min) for t in floor.tiers] == [
+            (t.lag_p50_min, t.lag_p90_min) for t in no_floor.tiers
+        ]
+
     def test_nothing_eligible(self):
         fresh = compute_freshness([], ["mec"], NOW)
         assert fresh.tiers == []

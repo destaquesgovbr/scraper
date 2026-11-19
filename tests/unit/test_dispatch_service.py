@@ -373,6 +373,31 @@ class TestNightAndFreshness:
         assert all(e["slo_ok_ratio"] == 1.0 for e in logged)
         assert out.slo_ok_ratio == 1.0
 
+    @pytest.mark.parametrize(
+        ("mode", "expected"), [(DispatchMode.DRY_RUN, 1.0), (DispatchMode.LIVE, 0.0)]
+    )
+    def test_slo_floor_of_the_dag_cadence_outside_live(self, env, monkeypatch, mode, expected):
+        # m30 com 100 min desde o sucesso: fora de 2 × 30, dentro de 2 × 120. Em dry_run as
+        # DAGs de 2 h ainda são o relógio (o mesmo piso do GET /agencies/state).
+        logged = []
+        monkeypatch.setattr(service_module, "log_freshness", lambda **kw: logged.append(kw))
+        h = env(
+            [
+                _state(
+                    "agencia_brasil",
+                    due_in_min=60,
+                    tier=Tier.M30,
+                    poll_interval_minutes=30,
+                    last_success_at=DAY - timedelta(minutes=100),
+                )
+            ]
+        )
+        h.repo.meta[TIERS_RECOMPUTED_KEY] = "2026-11-19"
+        dispatcher, _, _ = _dispatcher(mode, keys=["agencia_brasil"])
+        out = dispatcher.tick()
+        assert out.slo_ok_ratio == expected
+        assert [e["slo_ok_ratio"] for e in logged] == [expected]
+
     def test_three_am_pass_has_no_freshness(self, env, monkeypatch):
         logged = []
         monkeypatch.setattr(service_module, "log_freshness", lambda **kw: logged.append(kw))
