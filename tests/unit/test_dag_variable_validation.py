@@ -8,6 +8,7 @@ DAGS_DIR = Path(__file__).resolve().parent.parent.parent / "dags"
 SCRAPE_DAGS = [
     DAGS_DIR / "scrape_agencies.py",
     DAGS_DIR / "scrape_ebc.py",
+    DAGS_DIR / "scrape_backfill.py",
 ]
 
 
