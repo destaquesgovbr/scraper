@@ -561,13 +561,13 @@ O workflow `scraper-api-deploy.yaml` faz build da imagem Docker e deploy no Clou
 
 ### Deploy das DAGs
 
-O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3` com `dags_local_path: dags` e `dags_bucket_subdir: scraper`. Ela valida as DAGs com o Airflow 3.1.8 (o da imagem da VM) e, para cada bucket da lista padrão da reusable (hoje `destaquesgovbr-airflow`), faz:
+O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable-workflows/.github/workflows/airflow-deploy-dags.yml@v3` com `dags_local_path: dags` e `dags_bucket_subdir: scraper`. Ela valida as DAGs com o Airflow 3.1.8 (o da imagem da VM) e sincroniza no bucket do Airflow próprio:
 
 ```bash
 gcloud storage rsync --recursive --delete-unmatched-destination-objects dags/ gs://destaquesgovbr-airflow/dags/scraper/
 ```
 
-Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor reparseia cada arquivo a cada 180 s: uma mudança numa DAG existente pode levar até ~4 min para valer. A lista de buckets é o default da reusable workflow (tag `v3`); este repo não a define. O nome `composer-deploy-dags.yaml` ficou do Composer.
+Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor reparseia cada arquivo a cada 180 s: uma mudança numa DAG existente pode levar até ~4 min para valer. A lista de buckets é o default da reusable workflow (tag `v3`), e o bucket do Composer sai dela só lá; este repo não a define. O nome `composer-deploy-dags.yaml` ficou do Composer.
 
 ### Ordem de deploy (Passo 1 da rearquitetura da ingestão, `_plan/rearquitetura-ingestao.md`)
 
