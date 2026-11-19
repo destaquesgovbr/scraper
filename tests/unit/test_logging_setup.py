@@ -11,6 +11,7 @@ from loguru import logger
 from govbr_scraper.logging_setup import configure_logging
 from govbr_scraper.monitoring.structured_log import (
     log_circuit_transition,
+    log_dispatch_failed,
     log_dispatch_run,
     log_freshness,
     log_scrape_attempt,
@@ -286,6 +287,22 @@ class TestEvents:
         (line,) = json_logs()
         assert line["severity"] == "WARNING"
         assert line["failed"] == 2
+
+    def test_dispatch_failed_is_error_and_not_the_heartbeat(self, json_logs):
+        log_dispatch_failed(
+            error="o Cloud Tasks recusou 2 de 2 tarefa(s) e nenhuma foi criada: HTTP 403: x",
+            mode="live",
+            reason="tick",
+            due=2,
+            dispatched=0,
+            failed=2,
+            event="dispatch_run",  # não pode virar heartbeat
+        )
+        (line,) = json_logs()
+        assert line["event"] == "dispatch_failed"
+        assert line["severity"] == "ERROR"
+        assert (line["mode"], line["due"], line["failed"]) == ("live", 2, 2)
+        assert "HTTP 403" in line["error"]
 
     def test_freshness_fields(self, json_logs):
         log_freshness(

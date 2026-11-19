@@ -110,6 +110,7 @@ def record_scrape_run_safe(storage, run: ScrapeRunResult, agency_key: str) -> No
 EVENT_SCRAPE_ATTEMPT = "scrape_attempt"
 EVENT_CIRCUIT_TRANSITION = "circuit_transition"
 EVENT_DISPATCH_RUN = "dispatch_run"
+EVENT_DISPATCH_FAILED = "dispatch_failed"
 EVENT_FRESHNESS = "freshness"
 
 # outcome do scrape_attempt
@@ -230,6 +231,21 @@ def log_dispatch_run(
         bound.warning(message)
     else:
         bound.info(message)
+
+
+def log_dispatch_failed(*, error: str, **fields) -> None:
+    """Evento ``dispatch_failed``: tick que terminou sem conseguir despachar nada.
+
+    Sai no lugar do ``dispatch_run`` (que é o heartbeat), em nível ERROR, com as mesmas
+    contagens e o erro: o tick ``live`` em que o Cloud Tasks recusou todas as tarefas
+    (permissão, fila apagada ou desabilitada). Não entra na métrica ``scraper_dispatch_runs``,
+    então o alerta de ausência do heartbeat dispara.
+    """
+    payload = {**fields, "event": EVENT_DISPATCH_FAILED, "error": error}
+    logger.bind(**payload).error(
+        f"dispatch_failed mode={fields.get('mode')} reason={fields.get('reason')} "
+        f"due={fields.get('due')} failed={fields.get('failed')}: {error}"
+    )
 
 
 def log_freshness(

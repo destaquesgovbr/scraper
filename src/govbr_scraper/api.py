@@ -32,6 +32,7 @@ from govbr_scraper.monitoring.structured_log import (
     OUTCOME_FAILED,
     OUTCOME_SKIPPED,
     OUTCOME_SUCCESS,
+    log_dispatch_failed,
     log_dispatch_run,
     log_scrape_attempt,
 )
@@ -750,8 +751,9 @@ def dispatch(req: DispatchRequest | None = None):
 
     Modo em ``SCRAPE_DISPATCH_MODE``: ``off`` só loga ``dispatch_run`` e responde;
     ``dry_run`` calcula, loga e recalcula as faixas, sem criar tarefa; ``live`` cria as
-    tarefas e roda o reconciliador. 503 sem a tabela (038), 500 em outro erro (sem
-    ``dispatch_run``: o alerta de ausência do heartbeat acusa).
+    tarefas e roda o reconciliador. 503 sem a tabela (038), 500 em outro erro e no tick
+    ``live`` em que o Cloud Tasks recusou todas as tarefas (sem ``dispatch_run``: o alerta
+    de ausência do heartbeat acusa).
     """
     from govbr_scraper.dispatch.config import (
         DispatchConfigError,
@@ -759,7 +761,7 @@ def dispatch(req: DispatchRequest | None = None):
         TasksConfig,
         effective_mode,
     )
-    from govbr_scraper.dispatch.service import Dispatcher, DispatchOutcome
+    from govbr_scraper.dispatch.service import Dispatcher, DispatchFailed, DispatchOutcome
     from govbr_scraper.dispatch.tasks_client import CloudTasksClient
     from govbr_scraper.scrapers.yaml_config import active_agency_keys
     from govbr_scraper.state.repository import StateUnavailable
@@ -805,6 +807,10 @@ def dispatch(req: DispatchRequest | None = None):
     except StateUnavailable as e:
         logger.error(f"/dispatch ({req.reason}): {e}")
         return JSONResponse(status_code=503, content={"detail": "scrape_agency_state indisponível"})
+    except DispatchFailed as e:
+        # Nenhuma tarefa criada: sem dispatch_run, para o alerta de ausência do heartbeat.
+        log_dispatch_failed(error=str(e), **e.outcome.log_fields())
+        return JSONResponse(status_code=500, content={"detail": str(e), **e.outcome.response()})
     except Exception as e:
         logger.error(f"/dispatch ({req.reason}) falhou: {e}")
         return JSONResponse(status_code=500, content={"detail": str(e)})

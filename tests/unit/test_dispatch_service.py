@@ -17,6 +17,7 @@ from govbr_scraper.dispatch.service import (
     RECONCILED_KEY,
     TIERS_RECOMPUTED_KEY,
     Dispatcher,
+    DispatchFailed,
 )
 from govbr_scraper.dispatch.tasks_client import CREATED, DUPLICATE, FAILED, CreateResult
 from govbr_scraper.state.model import AgencyState, CircuitState, Tier
@@ -88,6 +89,8 @@ class FakeTasks:
     def create_task(self, task_id, body):
         self.calls.append((task_id, body))
         status = self.statuses.get(body["agency"], self.default)
+        if status == FAILED:
+            return CreateResult(status, task_id, http_status=403, error="PERMISSION_DENIED")
         return CreateResult(status, task_id, http_status=409 if status == DUPLICATE else 200)
 
 
@@ -208,6 +211,8 @@ class TestTickLive:
         assert at == DAY
         results = {a["agency"]: a["result"] for a in out.agencies}
         assert results == {"mec": CREATED, "mds": DUPLICATE, "mme": FAILED}
+        errors = {a["agency"]: a.get("error") for a in out.agencies}
+        assert errors == {"mec": None, "mds": None, "mme": "HTTP 403: PERMISSION_DENIED"}
 
     def test_task_body_and_name(self, env):
         env([_state("mec")])
@@ -231,9 +236,49 @@ class TestTickLive:
         env([_state(k, due_in_min=-i) for i, k in enumerate(keys)])
         tasks = FakeTasks(default=FAILED)
         dispatcher, _, _ = _dispatcher(DispatchMode.LIVE, keys=keys, tasks=tasks)
-        out = dispatcher.tick()
+        with pytest.raises(DispatchFailed) as excinfo:
+            dispatcher.tick()
+        out = excinfo.value.outcome
         assert len(tasks.calls) == MAX_CONSECUTIVE_CREATE_FAILURES
         assert (out.due, out.failed, out.dispatched) == (10, 10, 0)
+
+    def test_all_creations_failing_is_fatal_after_freshness_and_reconcile(self, env, monkeypatch):
+        # 403 em todas (actAs revogado, fila apagada): sem tarefa nenhuma agência é raspada.
+        # O tick não pode terminar como um heartbeat normal.
+        articles = [{"unique_id": "n1", "agency_key": "mec", "published_at": None}]
+        h = env([_state("mec"), _state("mds")], unthemed=articles)
+        logged = []
+        monkeypatch.setattr(service_module, "log_freshness", lambda **kw: logged.append(kw))
+        publisher = MagicMock()
+        publisher.publish_scraped.return_value = 1
+        tasks = FakeTasks(default=FAILED)
+        dispatcher, _, _ = _dispatcher(
+            DispatchMode.LIVE, keys=["mec", "mds"], tasks=tasks, publisher=publisher
+        )
+        with pytest.raises(DispatchFailed, match="recusou 2 de 2") as excinfo:
+            dispatcher.tick()
+        out = excinfo.value.outcome
+        assert (out.due, out.dispatched, out.duplicates, out.failed) == (2, 0, 0, 2)
+        assert "HTTP 403: PERMISSION_DENIED" in str(excinfo.value)
+        assert h.repo.dispatched == []
+        # O frescor e o reconciliador não dependem da fila: rodam antes da falha.
+        assert logged
+        assert out.reconciled == 1
+
+    def test_all_duplicates_is_not_fatal(self, env):
+        env([_state("mec")])
+        tasks = FakeTasks(default=DUPLICATE)
+        dispatcher, _, _ = _dispatcher(DispatchMode.LIVE, keys=["mec"], tasks=tasks)
+        out = dispatcher.tick()
+        assert (out.dispatched, out.duplicates, out.failed) == (0, 1, 0)
+
+    def test_nothing_due_is_not_fatal(self, env):
+        env([_state("mec", due_in_min=60)])
+        tasks = FakeTasks(default=FAILED)
+        dispatcher, _, _ = _dispatcher(DispatchMode.LIVE, keys=["mec"], tasks=tasks)
+        out = dispatcher.tick()
+        assert (out.due, out.failed) == (0, 0)
+        assert tasks.calls == []
 
     def test_a_success_resets_the_failure_streak(self, env):
         keys = [f"ag{i:02d}" for i in range(8)]
@@ -492,6 +537,17 @@ class TestBackfill:
             agencies=["mec"], start_date=date(2026, 11, 1), end_date=date(2026, 11, 1)
         )
         assert out.dispatched == 1
+
+    def test_all_creations_failing_is_not_fatal_in_backfill(self, env):
+        # A DAG lê failed e falha listando as siglas; o heartbeat é dos ticks.
+        env([])
+        tasks = FakeTasks(default=FAILED)
+        dispatcher, _, _ = _dispatcher(DispatchMode.LIVE, keys=["mec"], tasks=tasks)
+        out = dispatcher.backfill(
+            agencies=["mec"], start_date=date(2026, 11, 1), end_date=date(2026, 11, 1)
+        )
+        assert (out.dispatched, out.failed) == (0, 1)
+        assert out.agencies[0]["error"] == "HTTP 403: PERMISSION_DENIED"
 
 
 class TestOutcome:

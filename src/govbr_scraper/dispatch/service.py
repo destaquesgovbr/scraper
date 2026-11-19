@@ -13,6 +13,10 @@ Tick (Cloud Scheduler, ``{"reason": "tick"}``):
    ``scrape_dispatch_meta['reconciled_on']``): republica em ``dgb.news.scraped`` até 20
    notícias sem tema.
 
+Um tick ``live`` em que o Cloud Tasks recusou tarefas e nenhuma foi criada (nem duplicada)
+termina com ``DispatchFailed``: a API responde 500 sem o ``dispatch_run``, e o alerta de
+ausência do heartbeat acusa (permissão revogada, fila apagada ou desabilitada).
+
 Backfill (DAG ``scrape_backfill``, ``{"reason": "backfill", ...}``): uma tarefa por agência
 com a janela explícita, sem olhar o vencimento; o disjuntor vale, a não ser com ``force``.
 
@@ -150,6 +154,31 @@ class DispatchOutcome:
         return fields
 
 
+class DispatchFailed(RuntimeError):
+    """Tick ``live`` em que o Cloud Tasks recusou tarefas e nenhuma foi criada nem duplicada.
+
+    Não é um tick normal: sem tarefa nenhuma agência é raspada, e o heartbeat
+    (``dispatch_run``) esconderia isso dos alertas. A API responde 500 e loga
+    ``dispatch_failed`` no lugar. ``outcome`` traz as contagens e o resultado por agência.
+    """
+
+    def __init__(self, outcome: DispatchOutcome) -> None:
+        self.outcome = outcome
+        errors = sorted({a["error"] for a in outcome.agencies if a.get("error")})
+        detail = f": {errors[0]}" if errors else ""
+        super().__init__(
+            f"o Cloud Tasks recusou {outcome.failed} de {outcome.due} tarefa(s) e nenhuma foi "
+            f"criada{detail}"
+        )
+
+
+def _create_error(result: CreateResult) -> str | None:
+    """Erro de uma criação que falhou, para a resposta (``HTTP 403: ...``)."""
+    if result.http_status is not None:
+        return f"HTTP {result.http_status}: {result.error}"
+    return result.error
+
+
 def _default_publisher():
     from govbr_scraper.storage.event_publisher import EventPublisher
 
@@ -208,7 +237,12 @@ class Dispatcher:
     # ------------------------------------------------------------------ tick
 
     def tick(self) -> DispatchOutcome:
-        """Um tick do Scheduler. Erro ao ler ou criar o estado (inclusive sem a 038) sobe."""
+        """Um tick do Scheduler. Erro ao ler ou criar o estado (inclusive sem a 038) sobe.
+
+        Em ``live``, se o Cloud Tasks recusou tarefas e nenhuma foi criada nem duplicada,
+        levanta ``DispatchFailed`` no fim (depois do frescor e do reconciliador, que não
+        dependem da fila).
+        """
         out = DispatchOutcome(mode=self.mode.value, reason=REASON_TICK)
         with self._transaction():
             repository.ensure_rows(self.conn, self.active_keys, self.now)
@@ -232,16 +266,17 @@ class Dispatcher:
         ]
         results = self._create_tasks(items)
         for due, result in zip(selection.due, results, strict=True):
-            out.agencies.append(
-                {
-                    "agency": due.agency_key,
-                    "tier": due.state.tier.value,
-                    "next_due_at": iso_utc(due.state.next_due_at),
-                    "probe": due.probe,
-                    "task": result.task_id,
-                    "result": result.status,
-                }
-            )
+            entry = {
+                "agency": due.agency_key,
+                "tier": due.state.tier.value,
+                "next_due_at": iso_utc(due.state.next_due_at),
+                "probe": due.probe,
+                "task": result.task_id,
+                "result": result.status,
+            }
+            if result.status == FAILED:
+                entry["error"] = _create_error(result)
+            out.agencies.append(entry)
         self._count(out, results)
         if self.live:
             self._mark_dispatched(
@@ -252,6 +287,8 @@ class Dispatcher:
             out.slo_ok_ratio = self._log_freshness(states)
         if self.live:
             out.reconciled = self._reconcile()
+        if self.live and out.failed and not (out.dispatched + out.duplicates):
+            raise DispatchFailed(out)
         return out
 
     def _recompute_tiers(self) -> tuple[bool, int]:
@@ -467,7 +504,10 @@ class Dispatcher:
             items.append((key, backfill_task_id(key, start_date, end_date, self.now), body))
         results = self._create_tasks(items)
         for key, result in zip(selected, results, strict=True):
-            out.agencies.append({"agency": key, "task": result.task_id, "result": result.status})
+            entry = {"agency": key, "task": result.task_id, "result": result.status}
+            if result.status == FAILED:
+                entry["error"] = _create_error(result)
+            out.agencies.append(entry)
         self._count(out, results)
         return out
 

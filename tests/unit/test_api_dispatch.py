@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from govbr_scraper.api import app
 from govbr_scraper.dispatch.config import DispatchMode
-from govbr_scraper.dispatch.service import DispatchOutcome
+from govbr_scraper.dispatch.service import DispatchFailed, DispatchOutcome
 from govbr_scraper.state.repository import StateUnavailable
 
 client = TestClient(app)
@@ -51,6 +51,7 @@ class Api:
             )
         self.tasks_cls = MagicMock(name="CloudTasksClient")
         self.log = MagicMock(name="log_dispatch_run")
+        self.log_failed = MagicMock(name="log_dispatch_failed")
 
     def mode_used(self) -> str:
         return self.dispatcher_cls.call_args.kwargs["mode"].value
@@ -63,6 +64,7 @@ class Api:
             patch("govbr_scraper.dispatch.service.Dispatcher", self.dispatcher_cls),
             patch("govbr_scraper.dispatch.tasks_client.CloudTasksClient", self.tasks_cls),
             patch("govbr_scraper.api.log_dispatch_run", self.log),
+            patch("govbr_scraper.api.log_dispatch_failed", self.log_failed),
         ):
             if payload is None:
                 return client.post("/dispatch")
@@ -154,6 +156,28 @@ class TestErrors:
         assert response.json() == {"detail": "scrape_agency_state indisponível"}
         api.pg.close_all.assert_called_once()
         api.log.assert_not_called()
+
+    def test_live_tick_without_any_task_created_is_500_without_heartbeat(self, monkeypatch):
+        # Cloud Tasks recusou todas (403): o dispatch_run esconderia a ingestão parada.
+        outcome = DispatchOutcome(mode="live", reason="tick", due=3, failed=3)
+        outcome.agencies = [
+            {"agency": k, "result": "failed", "error": "HTTP 403: PERMISSION_DENIED"}
+            for k in ("mec", "mds", "mme")
+        ]
+        api = Api(monkeypatch, mode="live", error=DispatchFailed(outcome))
+        response = api.post({"reason": "tick"})
+        assert response.status_code == 500
+        body = response.json()
+        assert "recusou 3 de 3" in body["detail"]
+        assert "HTTP 403" in body["detail"]
+        assert (body["due"], body["dispatched"], body["failed"]) == (3, 0, 3)
+        api.log.assert_not_called()
+        api.log_failed.assert_called_once()
+        kwargs = api.log_failed.call_args.kwargs
+        assert (kwargs["mode"], kwargs["failed"]) == ("live", 3)
+        assert "recusou 3 de 3" in kwargs["error"]
+        api.pg.close_all.assert_called_once()
+        api.tasks_cls.from_config.return_value.close.assert_called_once()
 
     def test_other_error_is_500(self, monkeypatch):
         api = Api(monkeypatch, mode="live", error=RuntimeError("connection refused"))
