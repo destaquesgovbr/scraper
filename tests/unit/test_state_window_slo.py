@@ -8,7 +8,7 @@ import pytest
 from govbr_scraper.state.model import AgencyState, CircuitState, Tier
 from govbr_scraper.state.policy import BRT
 from govbr_scraper.state.slo import lag_minutes, night_minutes, within_slo
-from govbr_scraper.state.window import watermark_window
+from govbr_scraper.state.window import agency_window, watermark_max_days, watermark_window
 
 
 def _brt(day, hour, minute=0, month=11):
@@ -55,6 +55,53 @@ class TestWatermarkWindow:
     def test_naive_datetimes_are_utc(self):
         now = datetime(2026, 11, 19, 2, 30)  # 23:30 BRT de 18/11
         assert watermark_window(now, None) == (date(2026, 11, 17), date(2026, 11, 18))
+
+    def test_max_days_limits_the_start(self):
+        assert watermark_window(_brt(19, 10), _brt(12, 12), max_days=2) == (
+            date(2026, 11, 17),
+            date(2026, 11, 19),
+        )
+
+
+class TestWatermarkMaxDays:
+    """A janela automática cobre no máximo ~80 notícias da agência (taxa EWMA por dia)."""
+
+    @pytest.mark.parametrize(
+        ("rate", "days"),
+        [
+            (None, 7),  # agência nova
+            (0.0, 7),  # sem notícia nos 28 dias
+            (1.0, 7),
+            (9.69, 7),  # secom: 8 dias × 9,69 ≈ 78
+            (10.1, 6),
+            (15.37, 4),  # tvbrasil: 5 dias × 15,37 ≈ 77
+            (18.41, 3),  # pf: 4 dias × 18,41 ≈ 74
+            (40.04, 1),  # agencia_brasil: ontem e hoje
+            (500.0, 1),  # nunca menos que a janela antiga (ontem a hoje)
+        ],
+    )
+    def test_days_by_rate(self, rate, days):
+        assert watermark_max_days(rate) == days
+
+
+class TestAgencyWindow:
+    def test_without_state_or_history_is_yesterday_to_today(self):
+        expected = (date(2026, 11, 18), date(2026, 11, 19), False)
+        assert agency_window(_brt(19, 10), None) == expected
+        assert agency_window(_brt(19, 10), _state()) == expected
+
+    def test_high_volume_agency_is_truncated(self):
+        """agencia_brasil fora 3 dias: a janela automática vai de ontem a hoje (cortada)."""
+        state = _state(rate_ewma_per_day=40.04, last_success_at=_brt(16, 10))
+        assert agency_window(_brt(19, 10), state) == (date(2026, 11, 18), date(2026, 11, 19), True)
+
+    def test_within_the_limit_is_not_truncated(self):
+        state = _state(rate_ewma_per_day=40.04, last_success_at=_brt(18, 20))
+        assert agency_window(_brt(19, 10), state) == (date(2026, 11, 18), date(2026, 11, 19), False)
+
+    def test_seven_day_limit_also_counts_as_truncated(self):
+        state = _state(rate_ewma_per_day=0.5, last_success_at=_brt(28, 15, month=10))
+        assert agency_window(_brt(19, 10), state) == (date(2026, 11, 12), date(2026, 11, 19), True)
 
 
 def _state(**overrides) -> AgencyState:

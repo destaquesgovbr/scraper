@@ -112,6 +112,32 @@ class TestWatermarkWindow:
         assert (body["start_date"], body["end_date"]) == ("2026-11-12", "2026-11-19")
         api.storage_cls.assert_called_once_with(attempt_context=AttemptContext())
 
+    def test_high_volume_agency_window_is_limited_and_logged(self):
+        """agencia_brasil (~40/dia) sem sucesso há 3 dias: a janela automática cobre ontem e
+        hoje (~80 notícias), e o scrape_attempt marca window_truncated."""
+        states = {
+            "agencia_brasil": _state(
+                "agencia_brasil",
+                rate_ewma_per_day=40.0,
+                last_success_at=datetime(2026, 11, 16, 9, tzinfo=BRT),
+            ),
+            "tvbrasil": _state(
+                "tvbrasil",
+                rate_ewma_per_day=15.0,
+                last_success_at=datetime(2026, 11, 16, 9, tzinfo=BRT),
+            ),
+        }
+        api = Api(states=states)
+        response = api.post("/scrape/ebc", {"agencies": ["agencia_brasil", "tvbrasil"]})
+        assert response.status_code == 200
+        assert api.windows() == {
+            "agencia_brasil": ("2026-11-18", "2026-11-19"),
+            "tvbrasil": ("2026-11-16", "2026-11-19"),  # 4 dias × 15 cabem: sem corte
+        }
+        attempts = api.attempts()
+        assert attempts["agencia_brasil"]["window_truncated"] is True
+        assert attempts["tvbrasil"]["window_truncated"] is False
+
     def test_state_unavailable_uses_yesterday_to_today(self):
         api = Api(states=None)
         response = api.post("/scrape/agencies", {"agencies": ["mec"]})

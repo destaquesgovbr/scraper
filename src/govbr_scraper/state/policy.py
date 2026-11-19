@@ -41,6 +41,15 @@ DAG_CADENCE_MINUTES = 120
 # A janela pela marca d'água volta no máximo 7 dias (backfill maior: scrape_backfill).
 WATERMARK_MAX_DAYS = 7
 
+# Teto de notícias esperadas numa janela automática (marca d'água). Sete dias de uma agência
+# de muito volume não cabem numa requisição (900 s no Cloud Run, 10 min por task na
+# scrape_agencies: agencia_brasil ~2,6 s/artigo × ~40/dia) e viram uma rajada em
+# dgb.news.scraped (o enrichment-worker cai por liveness com ~40 mensagens de uma vez). Pela
+# taxa da agência (rate_ewma_per_day), a janela volta no máximo os dias que somam ~80 notícias
+# (watermark_max_days): agencia_brasil 1 dia antes de hoje, pf 3, tvbrasil 4; as outras, 7.
+# O que ficar de fora é recuperado com datas explícitas (runbook).
+WATERMARK_MAX_ARTICLES = 80
+
 # As listagens datam as notícias em horário de Brasília.
 BRT = ZoneInfo("America/Sao_Paulo")
 

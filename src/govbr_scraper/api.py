@@ -6,8 +6,8 @@ Designed to run on Cloud Run, called by Airflow DAGs.
 
 /scrape/agencies e /scrape/ebc raspam agência por agência, com o estado por agência
 (scrape_agency_state, migration 038): sem datas no corpo, a janela de cada agência vem da
-marca d'água (desde o último sucesso, até 7 dias); com o circuito aberto e a sonda ainda não
-vencida, a agência é pulada (``skipped``), a não ser com ``force``.
+marca d'água (desde o último sucesso, até 7 dias ou ~80 notícias da agência); com o circuito
+aberto e a sonda ainda não vencida, a agência é pulada (``skipped``), a não ser com ``force``.
 """
 
 import logging
@@ -30,7 +30,7 @@ from govbr_scraper.monitoring.structured_log import (
 from govbr_scraper.state.model import AgencyState, AttemptContext, Tier
 from govbr_scraper.state.report import iso_utc
 from govbr_scraper.state.transitions import circuit_gate
-from govbr_scraper.state.window import watermark_window
+from govbr_scraper.state.window import agency_window
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -203,11 +203,19 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
         # não mexe no estado, então o circuito também não é marcado.
         if decision.probe and not explicit:
             storage.mark_agency_probe(key, now)
+        truncated = False
         if explicit:
             start, end = req.start_date, req.end_date or req.start_date
         else:
-            # Estado indisponível ou agência sem linha: ontem a hoje.
-            start, end = watermark_window(now, state.last_success_at if state else None)
+            # Estado indisponível ou agência sem linha: ontem a hoje. Com a marca d'água, a
+            # janela volta no máximo os dias que cabem em ~80 notícias da agência.
+            start, end, truncated = agency_window(now, state)
+            if truncated:
+                logger.warning(
+                    f"{key}: janela automática limitada a {start}..{end} (marca d'água em "
+                    f"{iso_utc(state.last_success_at)}); os dias anteriores ficam para a "
+                    "recuperação com datas explícitas (runbook)"
+                )
         totals["windows"].append((start, end))
         started = time.monotonic()
         try:
@@ -242,6 +250,7 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
             probe=decision.probe,
             window_start=start.isoformat(),
             window_end=end.isoformat(),
+            window_truncated=truncated,
             **_attempt_fields(key, metrics),
         )
         for field in ("articles_scraped", "articles_saved", "articles_new", "articles_skipped"):
