@@ -71,7 +71,7 @@ agencies:
     url: https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias
     active: true
     scraper_type: plone6_api
-    notes: "2026-11-19: desde 16/11 a URL antiga redireciona (302) para central-de-conteudos/noticias, que é Plone 6 (Volto): o HTML não traz os itens e a API Plone na URL antiga segue o redirect e devolve HTML. A API na URL nova responde 200 (1.869 itens)."
+    notes: "2026-11-19: desde 16/11 a URL antiga redireciona (302) para central-de-conteudos/noticias, que é Plone 6 (Volto): o HTML não traz os itens e a API Plone na URL antiga segue o redirect e devolve HTML. A API na URL nova responde 200 (1.869 itens). Sem backfill antes de 05/11: as notícias até 03/11 mudaram para central-de-conteudos/noticias/AAAA/<slug> e a maioria está no banco sem o ano; só o unique_id (título + data em BRT) as reconhece, e não reconhece as de título ou horário editado depois (uma de 22/10 e uma de 23/10 entrariam de novo)."
   antt:
     # url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias
     url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias-antt
@@ -436,7 +436,7 @@ agencies:
     # url: https://www.gov.br/mec/pt-br/assuntos/noticias
     url: https://www.gov.br/mec/pt-br/assuntos/noticias/colecao-noticias-2026
     active: true
-    notes: "2026-11-19: assuntos/noticias virou capa em 28/10 (div.collection-item, só as 20 mais recentes, sem paginação); a coleção do link \"Mais notícias...\" lista em tileItem, 20 por página. A API Plone dá 404 (Plone 5). Trocar para colecao-noticias-2027 na virada do ano."
+    notes: "2026-11-19: assuntos/noticias virou capa em 28/10 (div.collection-item, só as 20 mais recentes, sem paginação); a coleção do link \"Mais notícias...\" lista em tileItem, 20 por página. A API Plone dá 404 (Plone 5). A coleção só lista as 1.000 mais recentes (50 páginas; em 19/11 ia até 12/06/2026): recuperação mais antiga não sai por ela. Trocar para colecao-noticias-2027 na virada do ano."
   memoriasreveladas:
     url: https://www.gov.br/memoriasreveladas/pt-br/centrais-de-conteudo/destaques
     active: true
