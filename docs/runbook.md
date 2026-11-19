@@ -176,7 +176,9 @@ Limpar (Clear) uma task que falhou por erro permanente não adianta: corrija o Y
 
 Desde o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o scraper-api guarda o estado de cada agência na tabela `scrape_agency_state` (migration 038 do data-platform), atualizado na mesma transação do `scrape_runs`.
 
-**Janela pela marca d'água.** As DAGs não mandam mais datas. Cada agência raspa desde `(last_success_at − 1 h)` (em datas de Brasília), limitado a 7 dias, até hoje. Uma queda de até 7 dias se recupera sozinha na execução seguinte; antes, a janela fixa de 9 h perdia o que caísse fora dela. Sem a tabela (038 não aplicada) ou sem histórico da agência, a janela é de ontem a hoje.
+**Janela pela marca d'água.** As DAGs não mandam mais datas. Cada agência raspa desde `(last_success_at − 1 h)` (em datas de Brasília) até hoje, limitado a 7 dias ou aos dias que somam ~80 notícias da agência (pela `rate_ewma_per_day`), o que for menor: a `agencia_brasil` (~40/dia) volta no máximo 1 dia antes de hoje, a `pf` 3, a `tvbrasil` 4, as outras 7. Dentro desse limite, a queda se recupera sozinha na execução seguinte; antes, a janela fixa de 9 h perdia o que caísse fora dela. Sem a tabela (038 não aplicada) ou sem histórico da agência, a janela é de ontem a hoje.
+
+O limite existe porque a raspagem de uma agência tem de caber numa requisição (900 s no Cloud Run, 10 min por task na `scrape_agencies`, 15 min por fonte na `scrape_ebc`) e porque o enrichment-worker cai com ~40 mensagens de uma vez (as notícias são publicadas em lotes de 20, com 30 s entre eles). **Janela cortada** sai no log: `jsonPayload.event="scrape_attempt" AND jsonPayload.window_truncated=true` (e o warning `janela automática limitada`). Os dias de fora não são raspados sozinhos e, depois do sucesso, a marca d'água passa por cima deles: recupere com datas ("Recuperar o período perdido", em "Agências Sem Execução").
 
 **Disjuntor.**
 
@@ -229,7 +231,7 @@ Ela só falha (`AirflowFailException`, execução vermelha) se:
 
 Vermelho, portanto, quer dizer problema de plataforma: comece pelo scraper-api (logs do Cloud Run) e pela taxa de `network_error` em `scrape_runs`. Para mudar o limite, edite a Variable (ex.: `0.15` num período de instabilidade conhecida do gov.br) e volte ao padrão depois.
 
-**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa cada agência desde o último sucesso dela (marca d'água, até 7 dias) e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`), na VM do Airflow. Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
+**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa cada agência desde o último sucesso dela (marca d'água, até 7 dias ou ~80 notícias da agência) e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`), na VM do Airflow. Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
 
 As falhas são deduzidas pela ausência: cada `scrape` com sucesso devolve `{agency, articles_new, articles_saved}` por XCom, e a `summarize` compara com a lista de agências ativas do parse. Uma agência que falhou não deixa XCom (o Airflow só grava o retorno de task com sucesso); a pulada deixa só a XCom `skipped`.
 
@@ -380,7 +382,7 @@ SQL
 2. O erro `not found in serialized_dag table` some do log do scheduler (no caso do zumbi).
 3. O próximo `monitor_scraping_health` não lista mais as agências.
 
-**Recuperar o período perdido.** Quedas de até 7 dias se recuperam sozinhas: a execução normal raspa cada agência desde o último sucesso dela (marca d'água). Para um período mais antigo, ou para forçar uma janela, dispare a DAG com os params opcionais `start_date` e `end_date` (YYYY-MM-DD, datas de Brasília, os dois juntos). Eles mandam a mesma janela explícita para todas as agências, que **não mexe no estado** (marca d'água e disjuntor); agência com o circuito aberto continua pulada, a não ser com `force: true`:
+**Recuperar o período perdido.** A execução normal raspa cada agência desde o último sucesso dela (marca d'água), até 7 dias ou os dias que somam ~80 notícias da agência ("Disjuntor e Marca d'Água"): numa queda de 3 dias, só a `agencia_brasil` e a `pf` ficam com dias de fora. Para o que ficou de fora (`window_truncated` no log), um período mais antigo, ou para forçar uma janela, dispare a DAG com os params opcionais `start_date` e `end_date` (YYYY-MM-DD, datas de Brasília, os dois juntos). Eles mandam a mesma janela explícita para todas as agências, que **não mexe no estado** (marca d'água e disjuntor); agência com o circuito aberto continua pulada, a não ser com `force: true`:
 
 - **UI:** DAG `scrape_agencies` → **Trigger** → preencha "Data inicial (recuperação)" e "Data final (recuperação)".
 - **CLI:**
@@ -390,7 +392,7 @@ SQL
     --conf '{"start_date": "2026-11-15", "end_date": "2026-11-17"}'
   ```
 
-Data em outro formato é recusada no disparo (e a API recusa data inválida com 422). Só uma das duas ou início depois do fim falham as tasks na hora, sem retry e sem chamar a API. Com `max_active_runs=1`, o run manual espera a execução agendada em andamento terminar. Sem `allow_update`, o re-scrape só insere o que falta. Cada task tem timeout de 10 min, então em quedas longas (mais de ~3 dias) divida em várias execuções, ou use o re-scrape dirigido por agência ("Forçar Re-scrape Completo"). A `scrape_ebc` aceita os mesmos params.
+Data em outro formato é recusada no disparo (e a API recusa data inválida com 422). Só uma das duas ou início depois do fim falham as tasks na hora, sem retry e sem chamar a API. Com `max_active_runs=1`, o run manual espera a execução agendada em andamento terminar. Sem `allow_update`, o re-scrape só insere o que falta. A janela explícita não tem o limite de ~80 notícias: cada task tem timeout de 10 min (15 min por fonte na `scrape_ebc`, e 900 s no Cloud Run), a raspagem leva ~2 s por notícia no gov.br e ~3–4 s na EBC, e a publicação, 30 s a cada 20 notícias. Mantenha cada execução em até ~100 notícias por agência: para a `agencia_brasil`, fatias de 2 dias; para a `pf` e a `tvbrasil`, de 4; para as outras, a semana inteira cabe. Para recuperar só uma agência, use o re-scrape dirigido ("Forçar Re-scrape Completo"). A `scrape_ebc` aceita os mesmos params.
 
 **Depois de deploys que mudam as DAGs** (`site_urls.yaml`, schedule, `default_args`): confira que a próxima execução da `scrape_agencies` criou task instances e acompanhe o monitor seguinte.
 
