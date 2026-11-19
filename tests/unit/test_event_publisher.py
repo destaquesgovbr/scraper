@@ -193,6 +193,52 @@ class TestEventPublisherPublish:
 
 
 # =============================================================================
+# Publicação em lotes (liveness do enrichment-worker)
+# =============================================================================
+
+
+def _articles(n: int) -> list[dict]:
+    return [
+        {"unique_id": f"agencia_brasil-{i}", "agency_key": "agencia_brasil", "published_at": None}
+        for i in range(n)
+    ]
+
+
+class TestEventPublisherBatches:
+    """Rajada máxima de 20 mensagens, com 30 s entre os lotes."""
+
+    @pytest.fixture(autouse=True)
+    def setup_publisher(self, mock_pubsub_client):
+        self.publisher = EventPublisher.__new__(EventPublisher)
+        self.publisher._topic = "projects/test/topics/dgb.news.scraped"
+        self.publisher._client = mock_pubsub_client
+        self.publisher._enabled = True
+        self.client = mock_pubsub_client
+
+    def test_up_to_one_batch_does_not_pause(self):
+        with patch("govbr_scraper.storage.event_publisher.time.sleep") as sleep:
+            assert self.publisher.publish_scraped(_articles(20)) == 20
+        sleep.assert_not_called()
+
+    def test_pauses_between_batches(self):
+        published_before_each_pause = []
+        with patch(
+            "govbr_scraper.storage.event_publisher.time.sleep",
+            side_effect=lambda _: published_before_each_pause.append(
+                self.client.publish.call_count
+            ),
+        ) as sleep:
+            assert self.publisher.publish_scraped(_articles(45)) == 45
+
+        assert [c.args[0] for c in sleep.call_args_list] == [30.0, 30.0]
+        assert published_before_each_pause == [20, 40]
+        assert self.client.publish.call_count == 45
+
+    def test_batch_size_and_pause_are_the_documented_ones(self):
+        assert (EventPublisher.BATCH_SIZE, EventPublisher.BATCH_PAUSE_SECONDS) == (20, 30.0)
+
+
+# =============================================================================
 # Graceful degradation
 # =============================================================================
 

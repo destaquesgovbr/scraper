@@ -8,6 +8,7 @@ fail the scrape — articles are already persisted in PostgreSQL.
 
 import json
 import os
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +23,15 @@ class EventPublisher:
     Requires PUBSUB_TOPIC_NEWS_SCRAPED env var.
     If not set or Pub/Sub client unavailable, all publishes are no-ops.
     """
+
+    # Publicação em lotes de BATCH_SIZE, com BATCH_PAUSE_SECONDS entre eles. O
+    # enrichment-worker (concorrência 10, CPU com throttling) cai por liveness com ~40
+    # mensagens de uma vez e perde em silêncio o dgb.news.enriched (artigo sem embedding e
+    # fora do Typesense). A recuperação pela marca d'água (dias de notícias de uma agência)
+    # ou um disparo com datas grava dezenas de artigos num INSERT só. Na execução normal
+    # (poucas notícias novas por agência) não há pausa.
+    BATCH_SIZE = 20
+    BATCH_PAUSE_SECONDS = 30.0
 
     def __init__(self) -> None:
         self._topic: str | None = os.getenv("PUBSUB_TOPIC_NEWS_SCRAPED")
@@ -64,7 +74,14 @@ class EventPublisher:
         published = 0
         trace_id = str(uuid.uuid4())
 
-        for article in inserted_ids:
+        for index, article in enumerate(inserted_ids):
+            if index and index % self.BATCH_SIZE == 0:
+                logger.info(
+                    f"Publicados {index}/{len(inserted_ids)} eventos; pausa de "
+                    f"{self.BATCH_PAUSE_SECONDS:.0f} s antes do próximo lote de "
+                    f"{self.BATCH_SIZE} (liveness do enrichment-worker)"
+                )
+                time.sleep(self.BATCH_PAUSE_SECONDS)
             try:
                 published_at = article.get("published_at")
                 if isinstance(published_at, datetime):
