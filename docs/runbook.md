@@ -4,7 +4,7 @@ Procedimentos para operar e manter os ~155 scrapers em produção.
 
 ## Adicionar Nova Agência Gov.br
 
-1. Identifique a URL da página de notícias da agência (ex: `https://www.gov.br/mec/pt-br/assuntos/noticias`)
+1. Identifique a URL da página de notícias da agência (ex: `https://www.gov.br/mme/pt-br/assuntos/noticias`). Use a URL final (depois dos redirects) e uma listagem paginada (`?b_start:int=N` traz outros itens). Uma capa (collective.cover: tiles com `div.collection-item`, só as notícias mais recentes, sem paginação, como a `mec/pt-br/assuntos/noticias` desde 28/10/2026) não serve: use a coleção do link "Mais notícias..." do tile
 
 2. Determine o `scraper_type`:
    - Se a página renderiza a lista de notícias em HTML estático → `html` (omitir campo, é o default)
@@ -85,7 +85,7 @@ Se uma agência aparece consistentemente (>10x em 7 dias), ela é candidata para
 
 **Procedimento de migração:**
 
-1. Verifique que a API REST está acessível: `curl https://www.gov.br/{agencia}/++api++/pt-br/assuntos/noticias/@search?portal_type=News+Item`
+1. Verifique que a API REST está acessível: `curl https://www.gov.br/{agencia}/++api++/pt-br/assuntos/noticias/@search?portal_type=News+Item` (de um IP do Brasil, como a VM do Airflow: de fora o gov.br responde vazio). A resposta tem de ser JSON: a API não acompanha o redirect da página, então use no YAML a URL final da listagem (a `antaq/pt-br/noticias` redireciona para `central-de-conteudos/noticias` desde 16/11/2026, e a API na antiga devolve HTML)
 2. Altere `scraper_type` no YAML:
    ```yaml
    agencia_migrada:
@@ -94,6 +94,17 @@ Se uma agência aparece consistentemente (>10x em 7 dias), ela é candidata para
      scraper_type: plone6_api
    ```
 3. Sincronize e abra PR.
+
+## URLs com Ano (Virada do Ano)
+
+Algumas agências só listam as notícias numa pasta ou coleção do ano. Na virada, a do ano novo começa vazia ou nem existe, e a do ano anterior para de receber notícias: a agência segue com sucesso e 0 notícias novas (só o alerta de agência stale do monitor acusa). Em janeiro, confira e troque a URL (com a antiga comentada e o `notes` atualizado):
+
+| Agência | URL atual |
+|---------|-----------|
+| `casaruibarbosa` | `.../centrais-de-conteudo/noticias/2026` |
+| `gsi` | `.../centrais-de-conteudo/noticias/2026` |
+| `ibama` | `.../assuntos/noticias/2026` |
+| `mec` | `.../assuntos/noticias/colecao-noticias-2026` (a coleção do link "Mais notícias..." da capa `assuntos/noticias`) |
 
 ## Debugar Scraper em Falha
 
@@ -327,6 +338,8 @@ af dags trigger scrape_backfill --conf '{"agencies": ["mec"], "start_date": "202
 A task falha **sem retry** com params inválidos, com o despacho em `off` ou em `dry_run` (sem o param `dry_run`, nada é criado: use a recuperação pelos params `start_date`/`end_date` da `scrape_agencies` enquanto ela existir) e quando o Cloud Tasks recusa tarefas (a mensagem lista as siglas: dispare de novo só com elas). Erro de rede, timeout (300 s) e 5xx repetem uma vez, 5 min depois. Como o nome das tarefas vem do `run_id`, a repetição não raspa de novo o que a primeira chamada já criou: essas voltam 409 e contam como `duplicates`. Um disparo novo (outro `run_id`) cria tudo de novo.
 
 **Tamanho da janela.** Cada tarefa raspa a janela inteira da agência numa requisição só: 900 s (`dispatchDeadline` da tarefa e timeout do Cloud Run), sem o limite de ~80 notícias da marca d'água. A raspagem leva ~2 s por notícia no gov.br e ~3–4 s na EBC, e a publicação, 30 s a cada 20 notícias (lotes do `dgb.news.scraped`). As notícias só são gravadas depois de raspada a janela inteira. Estourado o prazo, o Cloud Run responde 504 e o Cloud Tasks repete a tarefa, mas a requisição original **continua rodando** no Cloud Run e pode terminar e gravar enquanto a repetição raspa a mesma janela em paralelo (até 3 tentativas). O `ON CONFLICT` evita notícia duplicada, mas o trabalho (e a carga no gov.br) dobra ou triplica. Mantenha cada disparo em até ~100 notícias por agência, como na recuperação pela `scrape_agencies`: para a `agencia_brasil`, fatias de 2 dias; para a `pf` e a `tvbrasil`, de 4; para as outras, a semana inteira cabe. Um disparo com `agencies` vazio manda a mesma janela para todas: com mais de 2 dias, a tarefa da `agencia_brasil` pode estourar o prazo (e as da `pf` e da `tvbrasil`, com mais de 4), gastar as 3 tentativas e falhar. Refaça só elas em fatias; sem `allow_update`, o que já foi gravado não é regravado.
+
+**Paginação funda no HTML do gov.br.** O gov.br responde por vários Varnish, cada um com a sua cópia de cada página da listagem (`?b_start:int=N`), de idades diferentes: em 19/11/2026 a página 0 da coleção da `mec` veio numa cópia de 2 h antes (cabeçalho `Date`; o `Age` vem sempre 0), e `Cache-Control: no-cache` não muda isso. Com notícias publicadas entre as cópias de duas páginas seguidas, a fronteira repete itens (deduplicados no INSERT) ou pula itens: num passeio de 9 páginas da `mec` (28/10 a 19/11), 5 e 12 das 173 notícias ficaram de fora em duas passadas. A janela regular (1 a 7 dias, quase sempre na página 0) quase não sente; o backfill de uma agência HTML com muitas páginas sente. Por isso: dispare a recuperação longe das publicações (à noite, horas depois da última notícia do dia, as cópias tendem a coincidir), em fatias de **um dia** (`start_date` = `end_date`) e confira depois a contagem por dia contra a listagem. A cerca de URLs conhecidas vale também na janela explícita: uma repetição do mesmo dia para depois de 3 notícias já gravadas seguidas, então só recupera a notícia pulada que não tiver 3 conhecidas acima dela no mesmo dia. Como as janelas são de dias inteiros, a fatia de um dia fica inteira dentro ou inteira fora de qualquer outra raspagem (inclusive a da marca d'água), e a ordem dos disparos não importa; já uma fatia de vários dias cujo último dia foi raspado antes para no topo (cerca) e perde os dias mais antigos dela. Notícia antiga, fora do cache do gov.br, leva ~7–10 s por artigo (contra ~2–3 s nas recentes).
 
 Uso típico depois da virada: recuperar os dias que a janela automática deixou de fora (`window_truncated` no `scrape_attempt`; "Disjuntor e Marca d'Água"). O resultado de cada agência sai no log do scraper-api (`jsonPayload.event="scrape_attempt" AND jsonPayload.trigger="backfill"`) e em `scrape_runs`.
 
