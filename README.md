@@ -15,9 +15,9 @@ Coleta automatizada de notícias de ~155 agências do governo brasileiro (sites 
 ## Arquitetura
 
 ```
-Airflow (Cloud Composer)  →  API (Cloud Run)  →  PostgreSQL
-                                    │
-                                    └──→  Pub/Sub (dgb.news.scraped)
+Airflow (VM própria)  →  API (Cloud Run)  →  PostgreSQL
+                                │
+                                └──→  Pub/Sub (dgb.news.scraped)
 ```
 
 ## Quick Start
@@ -114,7 +114,7 @@ Pre-commit will block commits if files are out of sync.
 ## Stack
 
 - **API:** FastAPI + Uvicorn (Cloud Run)
-- **Orquestração:** Apache Airflow (Cloud Composer)
+- **Orquestração:** Apache Airflow 3.1 próprio, numa VM do GCE (`destaquesgovbr-airflow`; UI em `airflow.dgb.app.gov.br`, via IAP)
 - **Banco:** PostgreSQL (Cloud SQL)
 - **Eventos:** Google Cloud Pub/Sub
 - **Alertas:** Pub/Sub `dgb.ops.alerts` → alert-relay → Telegram (ou Telegram Bot API direto)
