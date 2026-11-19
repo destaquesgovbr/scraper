@@ -173,7 +173,9 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `HTML_CHANGED` | no articles found (estrutura mudou) | permanente |
 | `UNKNOWN` | fallback | passageiro |
 
-O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `error_category` do `FallbackFailedError` ou o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `error_category` do `FallbackFailedError` e do `ListingPageError` ou o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+
+**EBC, primeira página do índice** (`EBCWebScraper._scrape_first_index_page`): a falha não é mais engolida. Página não baixada depois dos retries (5xx, 408, 429, timeout, conexão) levanta `ListingPageError` com `network_error` (passageiro); página sem nenhum link de artigo, `ListingPageError` com `html_changed` (permanente); 4xx permanente sobe como `PermanentHTTPError` (`url_broken`/`access_denied`, como no gov.br). Antes, a EBC fora do ar ou com o HTML mudado saía como `success` com 0 artigos, e o disjuntor e a marca d'água do estado por agência não atuariam para ela. Nas páginas seguintes (`scrape_index_page`), a falha só encerra a paginação e mantém o que já foi coletado. Um artigo que falha continua sendo só pulado.
 
 **Primário e fallback falharam** (`FallbackFailedError`, mensagem `Both scrapers failed. Primary: No articles found... Fallback: ...`): a mensagem leria sempre `html_changed`, então o `ScrapeManager` fixa a categoria. Falha de rede do Plone 6 (`network_error`: 5xx, 408/429 depois dos retries, timeout, DNS) vale como `network_error`, passageira, porque um retry pode raspar pelo fallback. Qualquer outra (404 da API, como a mec, ou resposta não-JSON, como a antaq: o site não serve a API do Plone 6) fica `html_changed`, permanente.
 
@@ -188,7 +190,7 @@ O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e 
 - 5xx, 408, 429, timeout e conexão: até 3 tentativas (`tries=3, delay=1, backoff=2`, jitter de 0 a 1 s; ~3,5 s de espera no total).
 - `timeout=(5, 15)` (connect, read).
 
-Antes, todo `RequestException` era repetido 5 vezes (`delay=2, backoff=3`, jitter de 1 a 3 s), inclusive 404 e 401: ~116 s de espera por chamada, 86% do tempo faturável do Cloud Run. No EBC o `@retry` envolvia um `try/except` que devolvia None, então nunca repetia; agora `fetch_page` ainda devolve None na falha, mas repete o erro transitório.
+Antes, todo `RequestException` era repetido 5 vezes (`delay=2, backoff=3`, jitter de 1 a 3 s), inclusive 404 e 401: ~116 s de espera por chamada, 86% do tempo faturável do Cloud Run. No EBC o `@retry` envolvia um `try/except` que devolvia None, então nunca repetia; agora `fetch_page` ainda devolve None na falha, mas repete o erro transitório. A primeira página do índice não usa `fetch_page`: a falha vira erro classificado (ver "Classificação de Erros").
 
 ### Fallback Automático (HTML_CHANGED)
 

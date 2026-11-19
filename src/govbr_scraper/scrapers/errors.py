@@ -46,3 +46,20 @@ class FallbackFailedError(ScrapingError):
     def __init__(self, message: str, error_category: str | None = None):
         super().__init__(message)
         self.error_category = error_category
+
+
+class ListingPageError(ScrapingError):
+    """A primeira página da listagem (índice) falhou, com a categoria já decidida.
+
+    O ``EBCWebScraper`` a levanta quando a página 0 do índice não é baixada depois dos
+    retries (``network_error``) ou vem sem nenhum link de artigo (``html_changed``). Sem
+    ela a EBC fora do ar ou com o HTML mudado saía como ``success`` com 0 artigos, e nem
+    o disjuntor nem a marca d'água do estado por agência funcionariam para ela.
+    ``classify_exception`` usa ``error_category`` no lugar da mensagem.
+
+    :param error_category: categoria do erro (``ErrorCategory``).
+    """
+
+    def __init__(self, message: str, error_category: str | None = None):
+        super().__init__(message)
+        self.error_category = error_category

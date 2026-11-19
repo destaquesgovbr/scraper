@@ -8,7 +8,8 @@ import requests
 from bs4 import BeautifulSoup
 from scipy.stats import truncnorm
 
-from govbr_scraper.scrapers.errors import PermanentHTTPError
+from govbr_scraper.models.monitoring import ErrorCategory
+from govbr_scraper.scrapers.errors import ListingPageError, PermanentHTTPError
 from govbr_scraper.scrapers.http_policy import (
     REQUEST_TIMEOUT,
     raise_for_http_status,
@@ -184,18 +185,30 @@ class EBCWebScraper:
         """
         Scrape news from EBC website until the min_date is reached.
 
+        A primeira página do índice não pode falhar em silêncio: sem ela a fonte sairia
+        como sucesso com 0 artigos. Nas páginas seguintes, uma falha só encerra a
+        paginação e mantém o que já foi coletado.
+
         :return: A list of dictionaries containing news data.
+        :raises ListingPageError: a primeira página do índice não foi baixada depois dos
+            retries (``network_error``) ou veio sem nenhum link de artigo (``html_changed``).
+        :raises PermanentHTTPError: 4xx permanente na primeira página do índice
+            (``url_broken`` ou ``access_denied``, como no gov.br).
         """
         page = 0
 
         while True:
             current_page_url = f"{self.base_url}?page={page}"
+            is_first_page = page == 0
             page += 1
 
             logging.info(f"Fetching latest news from index page: {current_page_url}")
 
             try:
-                news_urls = self.scrape_index_page(current_page_url)
+                if is_first_page:
+                    news_urls = self._scrape_first_index_page(current_page_url)
+                else:
+                    news_urls = self.scrape_index_page(current_page_url)
 
                 if not news_urls:
                     logging.info("No more news URLs found. Stopping.")
@@ -224,7 +237,35 @@ class EBCWebScraper:
         response = self.fetch_page(url)
         if not response:
             return []
+        return self._extract_index_urls(response)
 
+    def _scrape_first_index_page(self, url: str) -> list[str]:
+        """Primeira página do índice: falha vira exceção classificada, em vez de ``[]``.
+
+        :raises ListingPageError: ``network_error`` se a página não foi baixada depois dos
+            retries (5xx, 408, 429, timeout, conexão); ``html_changed`` se veio sem nenhum
+            link de artigo.
+        :raises PermanentHTTPError: 4xx permanente, sem retry.
+        """
+        try:
+            response = self._get(url)
+        except requests.exceptions.RequestException as e:
+            raise ListingPageError(
+                f"Failed to fetch page after retries for EBC index {url}: {e}",
+                error_category=ErrorCategory.NETWORK_ERROR,
+            ) from e
+
+        news_urls = self._extract_index_urls(response)
+        if not news_urls:
+            raise ListingPageError(
+                f"No articles found on first page of EBC index {url} but response was "
+                f"{len(response.content)} bytes. The page structure may have changed.",
+                error_category=ErrorCategory.HTML_CHANGED,
+            )
+        return news_urls
+
+    def _extract_index_urls(self, response: requests.Response) -> list[str]:
+        """Links de artigo de uma página do índice (lista vazia se não achar nenhum)."""
         soup = BeautifulSoup(response.content, "html.parser")
         news_urls = []
 
