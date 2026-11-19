@@ -169,7 +169,7 @@ O `ScrapeManager` descarta antes de persistir, loga cada item e soma em `article
 - **Disjuntor:** abre com 2 erros permanentes (`PERMANENT_ERROR_CATEGORIES`) desde o último sucesso, ou com 24 h de falhas seguidas de qualquer tipo (`failure_streak_started_at`). Aberto, a agência é testada por sondas (`next_due_at`): a primeira 2 h depois da abertura; depois de cada sonda que falha, 6 h, 24 h e daí em diante a cada 24 h. A primeira sonda com sucesso fecha. Sonda que falha não gera alerta. `unknown` e erro sem categoria são passageiros.
 - **Skip na API:** em `/scrape/agencies` e `/scrape/ebc`, circuito `open`/`half_open` cujo `next_due_at` passa de `now + 7 min` (meio tick do futuro `/dispatch`) não é raspado nem grava `scrape_runs`: vai para `skipped` na resposta. Vencido, vira `half_open` (`mark_probe`) e é a sonda. `force: true` ignora o circuito (um sucesso fecha com o motivo `forced_success`).
 - **Intervalo e encurtamento:** `next_due_at = início + intervalo efetivo − 5 min`; notícia nova (`articles_new > 0`) põe `boost_until = fim + 6 h`, e o intervalo efetivo cai pela metade nas faixas h2, h6 e d1 (a m30 fica no piso de 30 min). No Passo 2 as DAGs ainda são o relógio; `tier`, `poll_interval_minutes` e `next_due_at` passam a mandar no `/dispatch` (Passos 3 e 4).
-- **SLO** (`state/slo.py`, painel): dentro de 2× o intervalo efetivo desde o último sucesso, sem contar a noite (23:00–06:00 BRT); circuito aberto fica fora (`within_slo = None`).
+- **SLO** (`state/slo.py`, painel): dentro de 2× o intervalo efetivo desde o último sucesso, sem contar a noite (23:00–06:00 BRT); circuito aberto fica fora (`within_slo = None`). Enquanto o `/dispatch` não está em `live` (Passo 2, `off` e `dry_run`), o intervalo do SLO tem piso de 120 min (`DAG_CADENCE_MINUTES`, `slo_interval_floor`): as DAGs de 2 h ainda são o relógio, e sem o piso as m30 e as agências com boost apareceriam como atrasadas sem estar.
 
 ### Logs estruturados (JSON no Cloud Logging)
 
@@ -396,7 +396,7 @@ Mesmos campos. Sem `agencies`, as duas fontes ativas do `ebc_urls.yaml`, cada um
 Só leitura, para o painel "Ingestão" do streamlit-infra-health (que chama com ID token). Devolve `{"generated_at", "dispatch_mode", "agencies": [...], "summary": {...}}`:
 
 - `agencies`: uma entrada por linha de `scrape_agency_state`, com as colunas, `active` (ativa no `site_urls.yaml` ou no `ebc_urls.yaml`), `effective_interval_minutes`, `lag_minutes` e `within_slo`;
-- `summary` (só ativas): `total`, `active`, `by_tier`, `circuit_open`, `overdue` (circuito fechado e fora do SLO) e `slo_ok_ratio`;
+- `summary` (só ativas): `total`, `active`, `by_tier`, `circuit_open`, `overdue` (circuito fechado e fora do SLO) e `slo_ok_ratio`. Fora do modo `live`, `within_slo` usa o piso de 120 min da cadência das DAGs;
 - `dispatch_mode`: env `SCRAPE_DISPATCH_MODE` (padrão `off`);
 - 503 `{"detail": "scrape_agency_state indisponível"}` sem a tabela (038 não aplicada).
 

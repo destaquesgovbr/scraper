@@ -10,7 +10,7 @@ from psycopg2 import errors
 
 from govbr_scraper.state import repository
 from govbr_scraper.state.model import AgencyState, CircuitState, Tier
-from govbr_scraper.state.report import build_state_report, iso_utc
+from govbr_scraper.state.report import build_state_report, iso_utc, slo_interval_floor
 from govbr_scraper.state.repository import StateUnavailable
 
 T0 = datetime(2026, 11, 19, 13, 0, tzinfo=UTC)
@@ -161,7 +161,8 @@ class TestBuildStateReport:
                 "pf",
                 tier=Tier.M30,
                 poll_interval_minutes=30,
-                last_success_at=T0 - timedelta(hours=5),
+                # 14:00 BRT de ontem: fora do SLO mesmo com o piso de 2 h das DAGs.
+                last_success_at=T0 - timedelta(hours=20),
             ),
             _st("sri", last_success_at=T0 - timedelta(days=9)),  # inativa
         ]
@@ -207,6 +208,38 @@ class TestBuildStateReport:
             "overdue": 1,
             "slo_ok_ratio": 0.5,
         }
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"), [("off", True), ("dry_run", True), ("live", False)]
+    )
+    def test_slo_floor_is_the_dag_cadence_until_live(self, mode, expected):
+        """Até a virada as DAGs raspam a cada 2 h: a m30 com sucesso há 70 min e a h2 com
+        boost há 130 min não estão atrasadas. Em live vale o intervalo efetivo da faixa
+        (2 × 30 e 2 × 60 min)."""
+        states = [
+            _st(
+                "pf",
+                tier=Tier.M30,
+                poll_interval_minutes=30,
+                last_success_at=T0 - timedelta(minutes=70),
+            ),
+            _st(
+                "mec",
+                boost_until=T0 + timedelta(hours=2),
+                last_success_at=T0 - timedelta(minutes=130),
+            ),
+        ]
+        report = build_state_report(states, ["pf", "mec"], T0, mode)
+        by_key = {a["agency_key"]: a for a in report["agencies"]}
+        assert by_key["pf"]["within_slo"] is expected
+        assert by_key["mec"]["within_slo"] is expected
+        assert report["summary"]["overdue"] == (0 if expected else 2)
+        assert by_key["pf"]["effective_interval_minutes"] == 30
+        assert by_key["mec"]["effective_interval_minutes"] == 60
+
+    def test_slo_interval_floor(self):
+        assert slo_interval_floor("live") == 0
+        assert slo_interval_floor("off") == slo_interval_floor("dry_run") == 120
 
     def test_empty(self):
         report = build_state_report([], ["mec"], T0, "dry_run")

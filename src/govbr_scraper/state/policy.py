@@ -33,6 +33,11 @@ DUE_LOOKAHEAD = timedelta(minutes=7)
 BOOST_DURATION = timedelta(hours=6)
 BOOST_TIERS = frozenset({Tier.H2, Tier.H6, Tier.D1})
 
+# Cadência das DAGs scrape_agencies/scrape_ebc (0 6-22/2): enquanto elas são o relógio
+# (Passo 2 e /dispatch fora de "live"), toda agência é raspada a cada 2 h, então o SLO não
+# pode exigir um intervalo menor que esse (m30 e boost só valem com o /dispatch em live).
+DAG_CADENCE_MINUTES = 120
+
 # A janela pela marca d'água volta no máximo 7 dias (backfill maior: scrape_backfill).
 WATERMARK_MAX_DAYS = 7
 

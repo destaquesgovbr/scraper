@@ -46,18 +46,23 @@ def night_minutes(start: datetime, end: datetime) -> float:
     return total.total_seconds() / 60
 
 
-def within_slo(state: AgencyState, now: datetime) -> bool | None:
+def within_slo(
+    state: AgencyState, now: datetime, *, min_interval_minutes: int = 0
+) -> bool | None:
     """True se o último sucesso está dentro da tolerância do SLO.
 
-    Tolerância = 2 × intervalo efetivo + os minutos de noite entre ``last_success_at`` e
-    ``now``. Circuito aberto (open/half_open) devolve None: fica fora do SLO (o alerta do
-    disjuntor já cobre). Sem nenhum sucesso registrado: False.
+    Tolerância = 2 × max(intervalo efetivo, ``min_interval_minutes``) + os minutos de noite
+    entre ``last_success_at`` e ``now``. O piso serve enquanto as DAGs de 2 h são o relógio
+    (``DAG_CADENCE_MINUTES``): sem ele, as m30 e as agências com boost apareceriam como
+    atrasadas sem estar. Circuito aberto (open/half_open) devolve None: fica fora do SLO (o
+    alerta do disjuntor já cobre). Sem nenhum sucesso registrado: False.
     """
     if state.circuit_state != CircuitState.CLOSED:
         return None
     lag = lag_minutes(state, now)
     if lag is None:
         return False
-    tolerance = SLO_INTERVAL_MULTIPLIER * effective_interval_minutes(state, _aware(now))
+    interval = max(effective_interval_minutes(state, _aware(now)), min_interval_minutes)
+    tolerance = SLO_INTERVAL_MULTIPLIER * interval
     tolerance += night_minutes(state.last_success_at, now)
     return lag <= tolerance

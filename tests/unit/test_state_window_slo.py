@@ -95,6 +95,15 @@ class TestLagAndSlo:
         assert within_slo(state, _brt(19, 10)) is True  # 2 × 60
         assert within_slo(state, _brt(19, 10, 1)) is False
 
+    def test_min_interval_is_a_floor(self):
+        """Piso da cadência das DAGs (2 h): vale para m30 e boost, não reduz a d1."""
+        m30 = _state(tier=Tier.M30, poll_interval_minutes=30, last_success_at=_brt(19, 8))
+        assert within_slo(m30, _brt(19, 9, 10)) is False  # 2 × 30
+        assert within_slo(m30, _brt(19, 9, 10), min_interval_minutes=120) is True
+        assert within_slo(m30, _brt(19, 12, 1), min_interval_minutes=120) is False
+        d1 = _state(tier=Tier.D1, poll_interval_minutes=1440, last_success_at=_brt(18, 12))
+        assert within_slo(d1, _brt(19, 12), min_interval_minutes=120) is True
+
     def test_night_does_not_count(self):
         """m30 com último sucesso às 22:30: às 06:30 o atraso fora da noite é 60 min."""
         state = _state(tier=Tier.M30, poll_interval_minutes=30, last_success_at=_brt(18, 22, 30))
