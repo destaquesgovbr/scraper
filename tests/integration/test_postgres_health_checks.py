@@ -316,10 +316,14 @@ class TestOpenCircuitExclusionPostgres:
         )
         assert {r["agency_key"] for r in all_failures} == {"mec", "antaq", "mds"}
 
-    def test_dag_query_runs_in_a_transaction_without_table(self, db):
+    def test_dag_query_runs_in_a_transaction_without_table(self, db, base_dsn):
         """No monitor a conexão não é autocommit: o rollback libera a transação abortada."""
-        dsn = db.dsn
-        conn = psycopg2.connect(dsn)
+        # A DSN vem do base_dsn, não de db.dsn: o psycopg2 mascara a senha em
+        # connection.dsn ("password=xxx"), e a reconexão só passaria com auth trust.
+        with db.cursor() as cur:
+            cur.execute("SELECT current_schema()")
+            schema = cur.fetchone()[0]
+        conn = psycopg2.connect(make_dsn(base_dsn, options=f"-c search_path={schema}"))
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
