@@ -242,6 +242,76 @@ class TestTransformNewsItem:
         result = scraper._transform_news_item(item, None)
         assert "Texto em HTML" in result["content"]
 
+    def test_extracts_content_from_html_block(self):
+        """Bloco html do Volto (conteúdo migrado do Plone 5) vira Markdown."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "b1": {
+                    "@type": "html",
+                    "html": "<p><span>Parágrafo</span> <strong>forte</strong></p>",
+                },
+                "b2": {"@type": "html", "html": "<script>var x = 1;</script>"},
+                "b3": {"@type": "html", "html": "   "},
+                "b4": {"@type": "html"},
+            },
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Parágrafo **forte**"
+
+    def test_blocks_follow_blocks_layout_order(self):
+        """A ordem vem de blocks_layout.items, não da ordem do objeto blocks da API."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "c": {"@type": "slate", "plaintext": "Terceiro"},
+                "t": {"@type": "title"},
+                "a": {"@type": "slate", "plaintext": "Primeiro"},
+                "b": {"@type": "html", "html": "<p>Segundo</p>"},
+            },
+            "blocks_layout": {"items": ["t", "a", "b", "c"]},
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Primeiro\n\nSegundo\n\nTerceiro"
+
+    def test_blocks_outside_layout_are_ignored(self):
+        """Bloco fora do layout não é exibido na página (sobra de edição) e fica de fora."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "orfao": {"@type": "slate", "plaintext": "Versão antiga do parágrafo"},
+                "a": {"@type": "slate", "plaintext": "Parágrafo exibido"},
+            },
+            "blocks_layout": {"items": ["a", "a", "inexistente"]},
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Parágrafo exibido"
+
+    @pytest.mark.parametrize(
+        "layout",
+        [None, {}, {"items": None}, {"items": []}, {"items": ["inexistente"]}, "invalido"],
+    )
+    def test_blocks_without_usable_layout_keep_dict_order(self, layout):
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "x": {"@type": "slate", "plaintext": "Um"},
+                "y": "nao-e-dict",
+                "z": {"@type": "slate", "plaintext": "Dois"},
+            },
+            "blocks_layout": layout,
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Um\n\nDois"
+
     def test_invalid_modified_date_produces_none_updated_datetime(self):
         scraper = _make_scraper()
         item = _api_item(modified="not-a-date")

@@ -298,6 +298,35 @@ class Plone6APIScraper:
         self.news_data.append(news_item)
         return True  # CONTINUAR
 
+    @staticmethod
+    def _ordered_blocks(item: dict) -> list[dict]:
+        """Blocos do item na ordem da página.
+
+        A ordem dos blocos está em ``blocks_layout.items``; o objeto ``blocks`` da API não a
+        guarda (na antaq, em 19/11/2026, o primeiro bloco do objeto era o penúltimo parágrafo da
+        notícia). Com um layout que aponte para algum bloco, valem só os blocos do layout, que são
+        os exibidos na página. Sem layout utilizável, a ordem do objeto ``blocks``.
+        """
+        blocks = item.get("blocks")
+        if not isinstance(blocks, dict) or not blocks:
+            return []
+
+        layout = item.get("blocks_layout")
+        layout_ids = layout.get("items") if isinstance(layout, dict) else None
+        ordered_ids = []
+        if isinstance(layout_ids, list):
+            ordered_ids = list(
+                dict.fromkeys(
+                    block_id
+                    for block_id in layout_ids
+                    if isinstance(block_id, str) and block_id in blocks
+                )
+            )
+        if not ordered_ids:
+            ordered_ids = list(blocks)
+
+        return [blocks[block_id] for block_id in ordered_ids if isinstance(blocks[block_id], dict)]
+
     def _transform_news_item(self, item: dict, published_dt: datetime | None) -> dict[str, str]:
         """
         Transformar item da API do Plone para formato interno.
@@ -325,32 +354,35 @@ class Plone6APIScraper:
         # 4. Subtítulo (description)
         subtitle = item.get("description", None)
 
-        # 5. Conteúdo: Extrair de blocks (Plone 6 usa formato blocks/slate)
+        # 5. Conteúdo: Extrair de blocks (Plone 6 usa formato blocks/slate), na ordem da página
         content_md = ""
 
-        # Tentar extrair de blocks
-        blocks = item.get("blocks", {})
-        if blocks:
-            # Procurar por blocos do tipo 'slate' ou 'text'
-            for block_id, block_data in blocks.items():
-                if isinstance(block_data, dict):
-                    block_type = block_data.get("@type", "")
+        for block_data in self._ordered_blocks(item):
+            block_type = block_data.get("@type", "")
 
-                    # Slate block (formato Volto)
-                    if block_type == "slate":
-                        plaintext = block_data.get("plaintext", "")
-                        if plaintext:
-                            content_md += plaintext + "\n\n"
+            # Slate block (formato Volto)
+            if block_type == "slate":
+                plaintext = block_data.get("plaintext", "")
+                if plaintext:
+                    content_md += plaintext + "\n\n"
 
-                    # Text block (formato alternativo)
-                    elif block_type in ["text", "textBlock"]:
-                        text = block_data.get("text", "")
-                        if text:
-                            # Se for HTML, converter para Markdown
-                            if "<" in text and ">" in text:
-                                content_md += md(text) + "\n\n"
-                            else:
-                                content_md += text + "\n\n"
+            # Text block (formato alternativo)
+            elif block_type in ["text", "textBlock"]:
+                text = block_data.get("text", "")
+                if text:
+                    # Se for HTML, converter para Markdown
+                    if "<" in text and ">" in text:
+                        content_md += md(text) + "\n\n"
+                    else:
+                        content_md += text + "\n\n"
+
+            # Bloco HTML do Volto: conteúdo migrado do Plone 5 (antaq até 13/11/2026)
+            elif block_type == "html":
+                html = block_data.get("html", "")
+                if isinstance(html, str) and html.strip():
+                    converted = md(html).strip()
+                    if converted:
+                        content_md += converted + "\n\n"
 
         # Fallback: tentar campo 'text' (formato antigo)
         if not content_md:
