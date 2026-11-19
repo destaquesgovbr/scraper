@@ -114,12 +114,12 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria. A col
 
 | Categoria | Na DAG | Ação recomendada |
 |-----------|--------|-----------------|
-| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries, o "Erro de rede ao acessar API" do Plone 6 e o `Both scrapers failed` em que o fallback Plone 6 falhou por rede |
+| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries, o "Erro de rede ao acessar API" do Plone 6 o `Both scrapers failed` em que o fallback Plone 6 falhou por rede e, na EBC, a 1ª página do índice não baixada depois dos retries |
 | `ANTI_BOT` | permanente: falha sem retry | Desativar temporariamente se persistir (ver seção abaixo) |
 | `EMPTY_CONTENT` | passageiro: repete | Normal se agência publica pouco (hoje nenhuma exceção gera esta categoria) |
 | `URL_BROKEN` | permanente: falha sem retry | 404/410 e outros 4xx permanentes (400, 405...): verificar nova URL no site; atualizar YAML ou desativar |
 | `ACCESS_DENIED` | permanente: falha sem retry | 401/403 ou redirect para login: procurar listagem pública; senão desativar (`active: false`) |
-| `HTML_CHANGED` | permanente: falha sem retry | Verificar site manualmente; fix no parser. Inclui o `Both scrapers failed` em que o fallback Plone 6 falhou por outro motivo (404 ou resposta não-JSON da API: o site não serve o Plone 6) |
+| `HTML_CHANGED` | permanente: falha sem retry | Verificar site manualmente; fix no parser. Inclui o `Both scrapers failed` em que o fallback Plone 6 falhou por outro motivo (404 ou resposta não-JSON da API: o site não serve o Plone 6) e, na EBC, a 1ª página do índice sem nenhum link de artigo (`No articles found on first page of EBC index`) |
 | `UNKNOWN` | passageiro: repete | Ver `error_message` para detalhes |
 | `unknown_agency` (só na resposta da API) | permanente: falha sem retry | Agência fora do `site_urls.yaml` da API ou inativa nele: YAMLs dessincronizados ou imagem da API antiga |
 
