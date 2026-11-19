@@ -109,6 +109,9 @@ def record_scrape_run_safe(storage, run: ScrapeRunResult, agency_key: str) -> No
 
 EVENT_SCRAPE_ATTEMPT = "scrape_attempt"
 EVENT_CIRCUIT_TRANSITION = "circuit_transition"
+EVENT_DISPATCH_RUN = "dispatch_run"
+EVENT_DISPATCH_FAILED = "dispatch_failed"
+EVENT_FRESHNESS = "freshness"
 
 # outcome do scrape_attempt
 OUTCOME_SUCCESS = "success"
@@ -184,3 +187,94 @@ def log_circuit_transition(transition) -> None:
         bound.warning(message)
     else:
         bound.info(message)
+
+
+def log_dispatch_run(
+    *,
+    mode: str,
+    reason: str,
+    night_skip: bool,
+    due: int,
+    dispatched: int,
+    duplicates: int,
+    skipped_inflight: int,
+    tiers_recomputed: bool,
+    reconciled: int,
+    **extra,
+) -> None:
+    """Evento ``dispatch_run``: um por chamada do ``/dispatch`` que terminou.
+
+    Sai em todo tick, inclusive no modo ``off`` e nos ticks noturnos que não despacham: é o
+    heartbeat do alerta de ausência do infra (métrica ``scraper_dispatch_runs``). Campos
+    extras (``failed``, ``agencies``...) vão juntos no jsonPayload.
+    """
+    fields = {
+        "event": EVENT_DISPATCH_RUN,
+        "mode": mode,
+        "reason": reason,
+        "night_skip": night_skip,
+        "due": due,
+        "dispatched": dispatched,
+        "duplicates": duplicates,
+        "skipped_inflight": skipped_inflight,
+        "tiers_recomputed": tiers_recomputed,
+        "reconciled": reconciled,
+        **extra,
+    }
+    message = (
+        f"dispatch_run mode={mode} reason={reason} night_skip={night_skip} due={due} "
+        f"dispatched={dispatched} duplicates={duplicates} skipped_inflight={skipped_inflight} "
+        f"tiers_recomputed={tiers_recomputed} reconciled={reconciled}"
+    )
+    bound = logger.bind(**fields)
+    if extra.get("failed"):
+        bound.warning(message)
+    else:
+        bound.info(message)
+
+
+def log_dispatch_failed(*, error: str, **fields) -> None:
+    """Evento ``dispatch_failed``: tick que terminou sem conseguir despachar nada.
+
+    Sai no lugar do ``dispatch_run`` (que é o heartbeat), em nível ERROR, com as mesmas
+    contagens e o erro: o tick ``live`` em que o Cloud Tasks recusou todas as tarefas
+    (permissão, fila apagada ou desabilitada). Não entra na métrica ``scraper_dispatch_runs``,
+    então o alerta de ausência do heartbeat dispara.
+    """
+    payload = {**fields, "event": EVENT_DISPATCH_FAILED, "error": error}
+    logger.bind(**payload).error(
+        f"dispatch_failed mode={fields.get('mode')} reason={fields.get('reason')} "
+        f"due={fields.get('due')} failed={fields.get('failed')}: {error}"
+    )
+
+
+def log_freshness(
+    *,
+    tier: str,
+    lag_p50_min: float | None,
+    lag_p90_min: float | None,
+    lag_max_min: float | None,
+    agencies: int,
+    slo_ok_ratio: float | None,
+    **extra,
+) -> None:
+    """Evento ``freshness``: um por faixa a cada tick diurno do ``/dispatch``.
+
+    ``lag_*_min``: percentis do atraso desde o último sucesso (min); ``slo_ok_ratio``: a
+    fração geral dentro do SLO (todas as faixas). Alimenta a métrica
+    ``scraper_freshness_lag_p90`` do infra.
+    """
+    fields = {
+        "event": EVENT_FRESHNESS,
+        "tier": tier,
+        "lag_p50_min": lag_p50_min,
+        "lag_p90_min": lag_p90_min,
+        "lag_max_min": lag_max_min,
+        "agencies": agencies,
+        "slo_ok_ratio": slo_ok_ratio,
+        **extra,
+    }
+    logger.bind(**fields).info(
+        f"freshness tier={tier} agencies={agencies} p50={lag_p50_min} p90={lag_p90_min} "
+        f"max={lag_max_min} slo_ok_ratio={slo_ok_ratio}"
+    )

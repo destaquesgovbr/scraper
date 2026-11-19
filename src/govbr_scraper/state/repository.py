@@ -1,4 +1,4 @@
-"""SQL de ``scrape_agency_state`` (migration 038 do data-platform).
+"""SQL de ``scrape_agency_state`` e ``scrape_dispatch_meta`` (migration 038 do data-platform).
 
 Cada função recebe uma conexão psycopg2 e **não** faz commit nem rollback: a transação é do
 chamador. Se a tabela (ou uma coluna) não existir, a função levanta ``StateUnavailable`` e a
@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import fields
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from psycopg2 import errors
+from psycopg2.extras import Json, execute_values
 
 from govbr_scraper.state.model import AgencyState, CircuitState, Tier
 
@@ -147,5 +148,86 @@ def mark_dispatched(conn, agency_keys: Iterable[str], now: datetime) -> int:
     cur = _execute(conn, sql, (now, now, keys))
     try:
         return max(cur.rowcount, 0)
+    finally:
+        cur.close()
+
+
+# =============================================================================
+# /dispatch: recálculo das faixas e chave-valor do despachante (scrape_dispatch_meta)
+# =============================================================================
+
+META_TABLE = "scrape_dispatch_meta"
+
+
+def claim_daily(conn, key: str, day: date, now: datetime) -> bool:
+    """Reserva a tarefa diária ``key`` para o dia BRT ``day``; True só para quem reservou.
+
+    ``INSERT … ON CONFLICT (key) DO UPDATE … WHERE`` a data gravada é outra, ``RETURNING``:
+    devolve a linha só se gravou o dia novo. Dois ticks concorrentes ficam em série no lock
+    da linha (ou do índice, na primeira vez): o segundo espera o commit do primeiro, reavalia
+    a condição com a data já gravada e recebe False. Se o primeiro desfizer (ROLLBACK), o
+    segundo reserva. A reserva vale só depois do commit do chamador.
+    """
+    value = Json({"date": day.isoformat(), "claimed_at": now.isoformat()})
+    sql = (
+        f"INSERT INTO {META_TABLE} (key, value, updated_at) VALUES (%s, %s, %s) "  # nosec B608
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at "
+        f"WHERE {META_TABLE}.value->>'date' IS DISTINCT FROM EXCLUDED.value->>'date' "
+        "RETURNING key"
+    )
+    cur = _execute(conn, sql, (key, value, now))
+    try:
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
+
+
+def get_meta(conn, key: str) -> dict[str, Any] | None:
+    """Valor de ``scrape_dispatch_meta[key]``, ou None."""
+    cur = _execute(conn, f"SELECT value FROM {META_TABLE} WHERE key = %s", (key,))  # nosec B608
+    try:
+        row = cur.fetchone()
+    finally:
+        cur.close()
+    return row[0] if row is not None else None
+
+
+def update_tiers(conn, updates: Iterable[Any], now: datetime) -> int:
+    """Grava as faixas recalculadas (``TierUpdate``); devolve quantas linhas mudaram.
+
+    Só as colunas da faixa (``tier``, ``poll_interval_minutes``, ``rate_ewma_per_day``,
+    ``tier_updated_at``, ``updated_at``), num UPDATE por lote: não sobrescreve o resto da
+    linha, que o ``record_scrape_run`` pode estar gravando ao mesmo tempo. Com
+    ``next_due_cap`` e o circuito ainda fechado, ``next_due_at`` vira o menor dos dois.
+    """
+    rows = [
+        (
+            u.agency_key,
+            u.tier.value,
+            u.poll_interval_minutes,
+            u.rate_ewma_per_day,
+            u.next_due_cap,
+            now,
+        )
+        for u in updates
+    ]
+    if not rows:
+        return 0
+    sql = (
+        f"UPDATE {TABLE} AS s SET "  # nosec B608
+        "tier = v.tier, poll_interval_minutes = v.poll_interval_minutes, "
+        "rate_ewma_per_day = v.rate, tier_updated_at = v.now, updated_at = v.now, "
+        "next_due_at = CASE WHEN v.due_cap IS NOT NULL AND s.circuit_state = 'closed' "
+        "THEN LEAST(s.next_due_at, v.due_cap) ELSE s.next_due_at END "
+        "FROM (VALUES %s) AS v(agency_key, tier, poll_interval_minutes, rate, due_cap, now) "
+        "WHERE s.agency_key = v.agency_key"
+    )
+    template = "(%s, %s, %s::integer, %s::double precision, %s::timestamptz, %s::timestamptz)"
+    cur = conn.cursor()
+    try:
+        execute_values(cur, sql, rows, template=template, page_size=500)
+        return max(cur.rowcount, 0)
+    except (errors.UndefinedTable, errors.UndefinedColumn) as e:
+        raise StateUnavailable(f"{TABLE} indisponível: {e}".strip()) from e
     finally:
         cur.close()

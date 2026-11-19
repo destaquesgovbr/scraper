@@ -182,3 +182,45 @@ São ~880 chamadas por dia, contra 1.323 hoje. O atraso das agências que concen
   - chamadas por dia ≤ 900;
   - p90 de latência por faixa dentro do SLO;
   - os alertas testados com teste sintético (`"test": true` no `dgb.ops.alerts`).
+
+## Implementação (19/11/2026)
+
+O desenho de implementação dos Passos 2–4 (contrato entre as frentes: scraper, data-platform, infra e streamlit-infra-health) ajustou o plano com base nos dados de 18–19/11.
+
+### Desvios em relação ao plano
+
+| Plano | Implementado | Motivo |
+|---|---|---|
+| `list_agencies` da DAG filtra o circuito aberto (Passo 2) | A **API** pula a agência (`skipped`, sem raspar nem gravar `scrape_runs`) e a task da DAG termina skipped | A lista da DAG é fixa no parse; filtrar exigiria acesso ao banco e mudaria a `summarize`. A sonda acontece quando vence |
+| Circuito aberto testado 1× por dia, às 09h | Sondas com espera crescente: **2 h → 6 h → 24 h**, depois a cada 24 h | Falsos positivos de `html_changed`/`access_denied` duram minutos ou horas (`saude` 3 h, `gestao` 77 min); com teste diário, cada um deixaria a agência ~24 h sem raspar |
+| Intervalo pela metade por 6 h em todas as faixas | Pela metade **só nas faixas h2, h6 e d1**; a m30 fica no piso de 30 min | ~1.100 chamadas/dia em vez de ~1.220 |
+| `next_due` a partir do fim da raspagem | `next_due_at = início + intervalo − 5 min`, e o `/dispatch` aceita o que vence até `now + 7 min` (meio tick) | Sem a folga, um intervalo de 30 min vira 45 |
+| Cloud Scheduler `*/15 6-23` | Scheduler `*/15 * * * *` **o dia todo**; o `/dispatch` decide o modo noturno: das 23:00 às 05:59 só despacha no tick das 03:00 | O alerta de ausência do heartbeat (`dispatch_run`) funciona 24 h, sem falso alarme à noite |
+| Painel lê `scrape_agency_state` direto no Postgres | O painel lê `GET /agencies/state` do scraper-api, com ID token | O infra-health é público (allUsers + senha) e não tem VPC; evita pôr nele a credencial do banco |
+| — | **Reconciliador** diário (modo `live`, a partir da passada das 03h): republica em `dgb.news.scraped` até 20 notícias sem tema criadas entre now − 7 d e now − 2 h | Sem a republicação da notícia inalterada (Passo 2), sumiu o único retry implícito de um enriquecimento que falhou. O lote ≤ 20 respeita o liveness do enrichment-worker |
+| Meta de ≤ 900 chamadas/dia | Meta de **≤ 1.150/dia** | Medido com as faixas reais: 947 sem o encurtamento e ~1.100 com o encurtamento parcial |
+| Passada das 03h só para as faixas m30 e h2 | A passada das 03h despacha **tudo o que venceu** (regra do desenho, §3.3; não está na tabela de ajustes dele) | As agências h6 e d1 que vencem de madrugada saem às 03h em vez de esperar até as 06h |
+
+### Decisões da implementação dos Passos 3 e 4 (scraper)
+
+Detalhes que o desenho deixou em aberto, decididos no código (`src/govbr_scraper/dispatch/`):
+
+- **Falha fatal do tick não loga `dispatch_run`:** banco fora, 038 ausente (503), `live` sem as envs `SCRAPE_TASKS_*` (500) e tick `live` em que o Cloud Tasks recusou tarefas e nenhuma foi criada nem duplicada (500, evento `dispatch_failed`: permissão revogada, fila apagada ou desabilitada). Assim o alerta "Nenhuma execução do /dispatch em 45 min" também cobre o despachante que roda mas não consegue despachar. No `off` e nos ticks noturnos o evento sai normalmente. Falha parcial (alguma tarefa criada) é um tick normal, com warning.
+- **`off` é a pausa:** `dry_run: true` no corpo rebaixa só o `live`; com a env em `off` (ou inválida) o `/dispatch` não lê o banco, nem no backfill.
+- **Cloud Tasks:** depois de 5 falhas seguidas ao criar tarefas, as restantes do tick nem são tentadas (contam em `failed`), para o tick caber no `attempt_deadline` de 300 s do Scheduler mesmo com permissão faltando.
+- **Faixas:** a histerese vale contra uma faixa já calculada; a linha criada pelo `ensure_rows` (nunca calculada) recebe a faixa da taxa direto, como no seed. Quando a faixa fica mais rápida e o circuito está fechado, `next_due_at` encurta para `última tentativa + intervalo novo − 5 min` (senão uma agência que sobe de d1 para m30 esperaria até 24 h). `update_tiers` só grava as colunas da faixa, para não sobrescrever o estado que o `record_scrape_run` grava ao mesmo tempo.
+- **Reserva diária:** `scrape_dispatch_meta['tiers_recomputed_on']` e `['reconciled_on']` com `{"date", "claimed_at"}`, por `INSERT … ON CONFLICT … DO UPDATE … WHERE` a data é outra `… RETURNING` (o segundo tick concorrente espera o lock e recebe nada). O reconciliador tem a própria chave: uma falha no recálculo não o impede, e sem `PUBSUB_TOPIC_NEWS_SCRAPED` ele não reserva o dia.
+- **Reconciliador:** as notícias mais novas primeiro (`ORDER BY created_at DESC`).
+- **Frescor:** só nos ticks diurnos (06:00–22:59); `slo_ok_ratio` do evento é o geral (igual em todas as faixas) e `tier_slo_ok_ratio`, o da faixa. Faixa sem nenhuma agência com sucesso não gera evento (não há atraso a medir). Em `dry_run` o SLO usa o piso de 120 min da cadência das DAGs (`slo_interval_floor`, da revisão do Passo 2), como o `GET /agencies/state`.
+- **Virada para `live`:** as DAGs de scraping só são pausadas depois do primeiro tick `live` com `dispatched > 0` (o desenho, §6, pausava antes). O `dry_run` nunca chama o Cloud Tasks, então um erro de permissão ou de fila só aparece na virada; com as DAGs no ar, voltar para `dry_run` não deixa buraco (runbook, "Virar para `live`").
+- **Idempotência da tarefa do tick:** o corpo leva `dispatched_at` (desvio do contrato, que previa só `agency` e `trigger`). Na primeira entrega, sem datas e sem `force`, o `/scrape/agency` pula a agência já tentada depois do despacho (`already_attempted`), sem raspar nem gravar. O estado "em voo" expira em 30 min; sem isso, a fila parada ou lenta acumulava uma tarefa por agência a cada 30 min, e duas entregas de um `html_changed` passageiro abriam o circuito em segundos.
+- **Backfill:** a janela explícita não é fatiada: uma tarefa por agência, que precisa caber nos 900 s (runbook, "Backfill": até ~100 notícias por agência por disparo). Não marca `last_dispatched_at` (a janela explícita não move `last_attempt_at`, e a agência pareceria em voo por 30 min, fora do tick regular) e ignora o modo noturno. A DAG `scrape_backfill` falha sem retry quando o despacho está em `off` ou `dry_run` sem o param `dry_run`, ou quando o Cloud Tasks recusa tarefas (lista as siglas, para disparar de novo só com elas). O nome das tarefas termina no `dedup_key` que a DAG manda (hash do `run_id`) em vez do `HHmm` do contrato: a repetição da task depois de um timeout ou 5xx recebe 409 nas tarefas já criadas.
+- **`/scrape/agency`:** `trigger` ausente vale `backfill` com janela explícita e `task` sem; `unknown_agency` gera `scrape_attempt` com `outcome=failed` e `retryable=false`. O `StorageAdapter.close()` agora também fecha o publisher do `dgb.news.scraped`, esperando as publicações pendentes (até 10 s): no Cloud Run a CPU é cortada depois da resposta. Vale também para `/scrape/agencies` e `/scrape/ebc`.
+
+### Estado de cada passo
+
+- **Passo 1** (ajustes rápidos): mergeado em 18/11 (scraper#78).
+- **Passo 2** (estado por agência, marca d'água, disjuntor, custo): pronto na branch `feat/ingestao-passo2-estado` (19/11), ainda sem merge. Depende da migration 038 do data-platform aplicada e do PR I-1 do infra.
+- **Passo 3** (fila e Scheduler): pronto no scraper na branch `feat/ingestao-passo3-fila` (19/11, sobre a do Passo 2), ainda sem merge: `POST /dispatch` (tick, modos `off`/`dry_run`/`live`, seleção, criação das tarefas, backfill), `POST /scrape/agency` e a DAG `scrape_backfill`. A fila, a SA invocadora, o job do Scheduler e as envs vêm no PR I-2 do infra. As DAGs `scrape_agencies`, `scrape_ebc` e `monitor_scraping_health` ficam até a virada para `live` (runbook, "Despacho por Fila").
+- **Passo 4** (ritmo e observabilidade): no scraper, junto com o Passo 3: recálculo diário das faixas com histerese, encurtamento do intervalo (Passo 2), frescor por faixa e os eventos `dispatch_run`/`freshness`. As métricas baseadas em log e os alertas vêm no PR I-2 do infra; o painel "Ingestão", no streamlit-infra-health.
+- **Rollout:** 038 → infra I-1 → scraper Passo 2 → painel → scraper Passos 3 e 4 (o `/dispatch` fica em `off` até o infra) → infra I-2 (`dry_run`) → 1 dia a seco → virada para `live` → 3 dias depois, remover as 3 DAGs. Cada merge e cada ação em produção com o OK do usuário.

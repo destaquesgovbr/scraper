@@ -8,13 +8,23 @@ O scraper coleta notícias publicadas em sites gov.br e da EBC (Agência Brasil,
 
 A coleta é orquestrada por **DAGs Airflow** (Airflow 3.1.8 próprio, na VM `destaquesgovbr-airflow`; o Cloud Composer foi desligado em 18/11/2026) que chamam a **API FastAPI** hospedada no Cloud Run. O sistema inclui 3 DAGs de manutenção para monitoramento, alertas e retenção de dados, mais o utilitário `notify.py`.
 
+**Despacho por fila (Passos 3 e 4 da rearquitetura, `_plan/rearquitetura-ingestao.md`):** o Cloud Scheduler chama o `POST /dispatch` a cada 15 min, e ele cria uma tarefa por agência vencida na fila `scrape-govbr` do Cloud Tasks, que chama o `POST /scrape/agency`. O modo vem de `SCRAPE_DISPATCH_MODE` (`off`/`dry_run`/`live`). Até a virada para `live`, as DAGs `scrape_agencies` e `scrape_ebc` continuam sendo o relógio; depois são pausadas e removidas, e o Airflow fica só com o backfill (`scrape_backfill`) e os relatórios.
+
 ## Arquitetura
 
 ```
+Cloud Scheduler scrape-dispatch (*/15, o dia todo; OIDC scrape-tasks-invoker)
+└── POST /dispatch ── lê scrape_agency_state; cria 1 tarefa por agência vencida (modo live)
+        │
+        ▼
+Cloud Tasks scrape-govbr (6 simultâneas, 1/s, 3 tentativas)
+└── POST /scrape/agency (1 agência; 2xx sucesso/permanente, 503 passageiro)
+
 DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
-│   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência + summarize)
-│   ├── scrape_ebc (06h–22h de 2 em 2 h, 1 task mapeada por fonte)
-│   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)
+│   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência + summarize)  ┐ pausadas na
+│   ├── scrape_ebc (06h–22h de 2 em 2 h, 1 task mapeada por fonte)                     │ virada para
+│   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)                              ┘ o live
+│   ├── scrape_backfill (manual: POST /dispatch com reason=backfill)
 │   ├── cleanup_old_scrape_runs (diário 03h)
 │   └── scraper_coverage_report (diário 08h)
 │
@@ -26,6 +36,8 @@ DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
         │       └── Plone6APIScraper ───┤
         ├── POST /scrape/ebc → EBCScrapeManager
         │       └── EBCWebScraper ──────┤
+        ├── POST /scrape/agency ────────┤  (tarefa do Cloud Tasks: gov.br ou EBC)
+        ├── POST /dispatch ─────────────┤  (tick do Scheduler e backfill)
         ├── POST /verify/integrity      │
         │       └── integrity.service ──┤
         ├── GET /agencies/state ────────┤  (painel "Ingestão" do streamlit-infra-health)
@@ -36,7 +48,8 @@ DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
                               │  agencies               │
                               │  themes                 │
                               │  scrape_runs            │
-                              │  scrape_agency_state    │  (marca d'água + disjuntor)
+                              │  scrape_agency_state    │  (marca d'água, disjuntor, faixa)
+                              │  scrape_dispatch_meta   │  (recálculo diário, reconciliador)
                               └─────────────────────────┘
                                         │
                                         ▼
@@ -52,7 +65,7 @@ DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
 ```
 scraper/
 ├── src/govbr_scraper/
-│   ├── api.py                         # FastAPI (Cloud Run) — 5 endpoints
+│   ├── api.py                         # FastAPI (Cloud Run) — 7 endpoints
 │   ├── logging_setup.py               # configure_logging: JSON no Cloud Logging (LOG_FORMAT)
 │   ├── state/                         # Estado por agência (scrape_agency_state, migration 038)
 │   │   ├── model.py                   # Tier, CircuitState, AgencyState, AttemptOutcome, Transition
@@ -63,6 +76,14 @@ scraper/
 │   │   ├── repository.py              # SQL (conexão do chamador, sem commit); StateUnavailable
 │   │   ├── report.py                  # Corpo de GET /agencies/state
 │   │   └── alerts.py                  # publish_ops_alert (dgb.ops.alerts), alert_for_transition
+│   ├── dispatch/                      # Despacho por fila (POST /dispatch; Passos 3 e 4)
+│   │   ├── config.py                  # SCRAPE_DISPATCH_MODE, envs do Cloud Tasks
+│   │   ├── selection.py               # select_due (vencidas, em voo, disjuntor, noite, teto)
+│   │   ├── tiers.py                   # EWMA de 28 dias (= seed da 038), histerese, recompute_tier
+│   │   ├── freshness.py               # Frescor por faixa (evento freshness)
+│   │   ├── tasks_client.py            # Cloud Tasks pela REST (AuthorizedSession); nomes das tarefas
+│   │   ├── queries.py                 # news: contagem diária e notícias sem tema (reconciliador)
+│   │   └── service.py                 # Dispatcher: tick e backfill
 │   ├── scrapers/
 │   │   ├── webscraper.py              # Scraper HTML gov.br (~1382 linhas)
 │   │   ├── scrape_manager.py          # Coordenador gov.br (routing por scraper_type)
@@ -91,6 +112,7 @@ scraper/
 ├── dags/
 │   ├── scrape_agencies.py             # 1 DAG, 1 task mapeada por agência ativa + summarize
 │   ├── scrape_ebc.py                  # 1 DAG, 1 task mapeada por fonte EBC
+│   ├── scrape_backfill.py             # Manual: POST /dispatch com reason=backfill
 │   ├── monitor_scraping_health.py     # Monitoramento: sem execução + falhas + circuito aberto + stale
 │   ├── cleanup_old_scrape_runs.py     # Retenção: delete > N dias
 │   ├── scraper_coverage_report.py     # Relatório diário + alerta cobertura
@@ -171,6 +193,20 @@ O `ScrapeManager` descarta antes de persistir, loga cada item e soma em `article
 - **Intervalo e encurtamento:** `next_due_at = início + intervalo efetivo − 5 min`; notícia nova (`articles_new > 0`) põe `boost_until = fim + 6 h`, e o intervalo efetivo cai pela metade nas faixas h2, h6 e d1 (a m30 fica no piso de 30 min). No Passo 2 as DAGs ainda são o relógio; `tier`, `poll_interval_minutes` e `next_due_at` passam a mandar no `/dispatch` (Passos 3 e 4).
 - **SLO** (`state/slo.py`, painel): dentro de 2× o intervalo efetivo desde o último sucesso, sem contar a noite (23:00–06:00 BRT); circuito aberto fica fora (`within_slo = None`). Enquanto o `/dispatch` não está em `live` (Passo 2, `off` e `dry_run`), o intervalo do SLO tem piso de 120 min (`DAG_CADENCE_MINUTES`, `slo_interval_floor`): as DAGs de 2 h ainda são o relógio, e sem o piso as m30 e as agências com boost apareceriam como atrasadas sem estar.
 
+### Despacho por fila e ritmo por agência (Passos 3 e 4 da rearquitetura)
+
+`_plan/rearquitetura-ingestao.md`, Passos 3 e 4; operação no runbook ("Despacho por Fila" e "Backfill"). Regras puras em `src/govbr_scraper/dispatch/` (testadas sem banco); o SQL novo fica em `state/repository.py` (`claim_daily`, `update_tiers`) e `dispatch/queries.py`.
+
+- **Tick** (`POST /dispatch`, `{"reason": "tick"}`, Cloud Scheduler a cada 15 min): `ensure_rows` das ativas → recálculo diário das faixas → `select_due` → criação das tarefas → `mark_dispatched` → frescor → reconciliador. `Dispatcher` em `dispatch/service.py`, com commit por etapa.
+- **Modo noturno:** das 23:00 às 05:59 BRT só o tick das 03:00–03:14 despacha (tudo o que venceu); os outros só logam `dispatch_run` (com `night_skip: true`).
+- **`select_due(states, active_keys, now)`** (pura): ativa, `next_due_at <= now + 7 min` (`DUE_LOOKAHEAD`), circuito fechado ou sonda vencida (`circuit_gate`), fora de voo (em voo = `last_dispatched_at > coalesce(last_attempt_at, -inf)` e há menos de 30 min); ordem por `next_due_at`, teto de 200 (o resto vai em `overflow`).
+- **Tarefas** (`dispatch/tasks_client.py`, REST com `google.auth` + `AuthorizedSession`, sem dependência nova): `scrape-<sigla>-<AAAAMMDDHHmm do tick em BRT, arredondado a 15 min>`, POST `{TARGET_URL}/scrape/agency` com `{"agency", "trigger": "task", "dispatched_at"}` (`dispatched_at` = o `now` do tick, ISO UTC), `oidcToken` da SA invocadora (audience = `TARGET_URL`), `dispatchDeadline` 900 s. 409 = duplicada (conta como despachada). Outro erro conta em `failed`, vira warning e o tick segue; depois de 5 falhas seguidas as restantes nem são tentadas (o tick cabe nos 300 s do Scheduler). Só as criadas e duplicadas recebem `last_dispatched_at`. **Tick `live` sem nenhuma criada nem duplicada e com `failed > 0`** (permissão revogada, fila apagada ou desabilitada) levanta `DispatchFailed` no fim (depois do frescor e do reconciliador): a API responde 500 e loga `dispatch_failed` no lugar do `dispatch_run`, para o alerta de ausência do heartbeat disparar.
+- **Faixas** (`dispatch/tiers.py`, 1× por dia BRT no primeiro tick depois das 03:00, em `dry_run` e `live`): EWMA de `news.published_at` por dia BRT nos 28 dias completos anteriores a hoje, idade 0 = ontem, 0 nos dias sem notícia, `w = 0,5^(idade/7)` (a mesma do seed da 038; teste `postgres` compara com o SQL do seed). ≥ 5 `m30`, ≥ 1 `h2`, ≥ 0,2 `h6`, senão `d1`, com histerese de 20% (sobe acima do limite × 1,2, desce abaixo do limite × 0,8; linha nunca calculada, sem histerese). Faixa mais rápida com circuito fechado encurta `next_due_at` para `última tentativa + intervalo novo − 5 min`. O dia é reservado em `scrape_dispatch_meta['tiers_recomputed_on']` por `INSERT … ON CONFLICT … WHERE … RETURNING` (`claim_daily`): dois ticks concorrentes, só um recalcula. `update_tiers` só grava as colunas da faixa.
+- **Frescor** (`dispatch/freshness.py`, ticks diurnos): por faixa, p50/p90/máximo de `lag_minutes` das ativas de circuito fechado, sem a `tvbrasil` (`published_at` é o horário da grade); evento `freshness` por faixa. Em `dry_run` o SLO (`slo_ok_ratio`, `tier_slo_ok_ratio`) usa o piso de 120 min da cadência das DAGs (`slo_interval_floor`), como o `GET /agencies/state`; em `live`, sem piso.
+- **Reconciliador** (só `live`, 1× por dia a partir das 03:00, reservado em `scrape_dispatch_meta['reconciled_on']`): até 20 notícias sem tema criadas entre now − 7 d e now − 2 h, republicadas pelo `EventPublisher` (mesmo formato de `publish_scraped`).
+- **Backfill** (`{"reason": "backfill", "agencies", "start_date", "end_date", "force", "dry_run"}`, DAG `scrape_backfill`): uma tarefa por agência com a janela explícita (`backfill-<sigla>-<início>-<fim>-<dedup_key>`, `trigger: "backfill"`; a DAG manda `dedup_key` = 12 hex do sha256 do `run_id`, e a repetição da task na mesma execução recebe 409 nas tarefas já criadas; sem `dedup_key`, vale o `HHmm` do relógio), sem olhar o vencimento nem a noite; o disjuntor vale, a não ser com `force`; não marca `last_dispatched_at`. A janela explícita não tem o limite de ~80 notícias da marca d'água e a tarefa tem 900 s (`dispatchDeadline` e Cloud Run), com a publicação em lotes (30 s a cada 20 notícias) dentro deles: a janela não é fatiada sozinha, então dispare em fatias de até ~100 notícias por agência (`agencia_brasil` 2 dias, `pf`/`tvbrasil` 4, as outras a semana; runbook, "Backfill").
+- **`POST /scrape/agency`**: a mesma lógica do Passo 2 (marca d'água, skip, sonda, estado) para uma agência, roteada pelo YAML (`site_urls.yaml` → `ScrapeManager`, `ebc_urls.yaml` → `EBCScrapeManager`). 200 para sucesso, erro permanente, `skipped`, `unknown_agency` e corpo inválido (validado à mão, nunca 422: o Cloud Tasks repete qualquer não-2xx); 503 só para erro passageiro. **Idempotente** com `dispatched_at`: na primeira entrega (`X-CloudTasks-TaskRetryCount` 0 ou ausente), sem datas e sem `force`, a agência cuja `last_attempt_at` é ≥ `dispatched_at` é pulada sem raspar nem gravar (`skipped`, `reason: already_attempted`): cobre a tarefa recriada pelo tick depois de 30 min em voo e a reentrega do Cloud Tasks; a repetição depois de um 503 raspa. O pool e o publisher do request fecham no `finally` (`StorageAdapter.close()` espera as publicações pendentes, até 10 s).
+
 ### Logs estruturados (JSON no Cloud Logging)
 
 `configure_logging()` (`logging_setup.py`, chamada no `__init__` do pacote) troca o sink do loguru por uma linha JSON por log no stderr: `{"severity", "message", "time", ...}` com os campos de `logger.bind(...)`/extra no nível raiz, o que no Cloud Run vira `jsonPayload.<campo>`. O `logging` da stdlib (managers, `api.py`) passa pelo loguru e também sai em JSON. **`LOG_FORMAT=text`** mantém o formato antigo do loguru (uso local; os testes o definem em `tests/conftest.py`). `LOG_LEVEL` continua definindo o nível.
@@ -179,8 +215,13 @@ Eventos fixos (os nomes de campo valem para as métricas baseadas em log do infr
 
 | Evento | Campos |
 |--------|--------|
-| `scrape_attempt` | `agency`, `outcome` (`success`/`failed`/`skipped`), `category` (ou `"none"`), `retryable`, `articles_new`, `duration_s`, `tier`, `explicit_window`, `trigger` (`dag`/`task`/`backfill`); mais `window_start`/`window_end`, `window_truncated`, `probe` e, no skip, `reason`/`next_probe_at`. Um por agência por tentativa, também quando pulada |
+| `scrape_attempt` | `agency`, `outcome` (`success`/`failed`/`skipped`), `category` (ou `"none"`), `retryable`, `articles_new`, `duration_s`, `tier`, `explicit_window`, `trigger` (`dag`/`task`/`backfill`); mais `window_start`/`window_end`, `window_truncated`, `probe`, no skip `reason` (`circuit_open` com `next_probe_at`, ou `already_attempted` com `dispatched_at`/`last_attempt_at`) e, nas tarefas do Cloud Tasks, `task_name`/`task_retry` (cabeçalhos `X-CloudTasks-TaskName`/`-TaskRetryCount`). Um por agência por tentativa, também quando pulada |
 | `circuit_transition` | `agency`, `from_state`, `to_state`, `reason` (`permanent_errors`, `transient_24h`, `probe_success`, `forced_success`), `category` |
+| `dispatch_run` | `mode`, `reason`, `night_skip`, `due`, `dispatched`, `duplicates`, `skipped_inflight`, `tiers_recomputed`, `reconciled`; mais `failed`, `overflow`, `tiers_changed`, `slo_ok_ratio`, `agencies` (siglas) e, no backfill, a janela, `skipped_circuit` e `unknown_agencies`. Um por chamada do `/dispatch` que terminou, em todo modo (inclusive `off`) e nos ticks noturnos: é o heartbeat. Chamada que falha (500/503) não loga |
+| `dispatch_failed` | Os campos do `dispatch_run` mais `error`, em ERROR. Sai no lugar dele quando o tick `live` não criou nem duplicou nenhuma tarefa porque o Cloud Tasks recusou (não entra na métrica `scraper_dispatch_runs`) |
+| `freshness` | `tier`, `lag_p50_min`, `lag_p90_min`, `lag_max_min`, `agencies`, `slo_ok_ratio` (geral, igual em todas as faixas); mais `tier_slo_ok_ratio`. Um por faixa a cada tick diurno |
+
+Fora do contrato das métricas, só informativos: `tiers_recomputed` (recálculo das faixas, com `changes`) e `reconciled` (reconciliador, com os `unique_ids`).
 
 Ex.: `jsonPayload.event="scrape_attempt" AND jsonPayload.outcome="failed"`.
 
@@ -274,7 +315,7 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou. Re-scrape sem mudança de conteúdo não republica, tenha o artigo tema ou não: o enrichment-worker pularia o já enriquecido e o bronze-writer reescreveria o mesmo objeto. Com `allow_update=True`, as linhas devolvidas pelo `ON CONFLICT (unique_id) DO UPDATE` continuam sendo publicadas (regravação forçada).
 
-**Artigo sem tema (enriquecimento que falhou):** até o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o re-scrape republicava o artigo sem tema (`most_specific_theme_id IS NULL`) a cada execução, porque era a única nova tentativa: o enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG `enrich_news_llm` foi removida (data-science 8f10273) e não havia Cloud Scheduler. Esse critério saiu. O retry passa a ser o reconciliador diário do `/dispatch` (Passo 3): na passada das 03h (modo `live`), republica até 20 notícias sem tema criadas entre 7 dias e 2 h atrás. **Até o Passo 3 estar em `live`, um enriquecimento que falhar não tem retry automático** (republicar à mão em `dgb.news.scraped`).
+**Artigo sem tema (enriquecimento que falhou):** até o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o re-scrape republicava o artigo sem tema (`most_specific_theme_id IS NULL`) a cada execução, porque era a única nova tentativa: o enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG `enrich_news_llm` foi removida (data-science 8f10273) e não havia Cloud Scheduler. Esse critério saiu. O retry passa a ser o reconciliador diário do `/dispatch` (Passo 3, ver "Despacho por fila"): a partir da passada das 03h (modo `live`), republica 1× por dia até 20 notícias sem tema criadas entre 7 dias e 2 h atrás. **Até o despacho estar em `live`, um enriquecimento que falhar não tem retry automático** (republicar à mão em `dgb.news.scraped`).
 
 ```json
 {
@@ -293,12 +334,14 @@ Atributos da mensagem: `trace_id` (UUID por batch), `event_version` ("1.0").
 
 ## API Endpoints
 
-A API roda no Cloud Run e é chamada pelas DAGs Airflow.
+A API roda no Cloud Run e é chamada pelas DAGs Airflow, pelo Cloud Scheduler (`/dispatch`) e pelas tarefas do Cloud Tasks (`/scrape/agency`).
 
 | Método | Endpoint | Descrição |
 |--------|----------|-----------|
 | `POST` | `/scrape/agencies` | Raspa sites gov.br (aceita lista de agências, datas) |
 | `POST` | `/scrape/ebc` | Raspa sites EBC (Agência Brasil, TV Brasil) |
+| `POST` | `/scrape/agency` | Raspa uma agência (gov.br ou EBC): alvo das tarefas do Cloud Tasks |
+| `POST` | `/dispatch` | Tick do despacho (Cloud Scheduler) ou backfill (DAG `scrape_backfill`) |
 | `POST` | `/verify/integrity` | Verifica integridade de artigos (imagens, conteúdo) |
 | `GET` | `/agencies/state` | Estado de cada agência (`scrape_agency_state`), com atraso, SLO e resumo |
 | `GET` | `/health` | Health check |
@@ -363,6 +406,28 @@ Mesmos campos. Sem `agencies`, as duas fontes ativas do `ebc_urls.yaml`, cada um
 - **`errors[].category`:** a mesma gravada em `scrape_runs.error_category`, ou `unknown_agency`; `null` em erro sem classificação (ex.: erro de config).
 - **`errors[].retryable`:** `false` em erro permanente; as DAGs falham sem retry. Default `true` (API antiga, sem o campo, é tratada como passageira pelas DAGs).
 
+### Request: `/scrape/agency`
+
+```json
+{"agency": "mec", "trigger": "task", "dispatched_at": "2026-11-19T13:00:00Z"}
+{"agency": "agencia_brasil", "start_date": "2026-11-10", "end_date": "2026-11-12", "trigger": "backfill"}
+```
+
+- Campos: `agency` (obrigatório), `start_date`/`end_date` (opcionais, juntos como em `/scrape/agencies`; `end_date` padrão = `start_date`), `force`, `allow_update`, `trigger` (`task`/`backfill`; ausente vale `backfill` com janela explícita e `task` sem) e `dispatched_at` (ISO 8601; sem fuso = UTC; a idempotência da tarefa do tick). Campos desconhecidos são ignorados.
+- O corpo é validado à mão: JSON quebrado, `agency` vazia, data inválida, `end_date` sem `start_date` ou início depois do fim dão **200** com `status: "invalid_payload"` (nunca 422).
+- Resposta: o corpo de `/scrape/agencies` (`ScrapeResponse`) mais `agency`, `trigger` e `retryable`. `status`: `completed`, `failed`, `skipped`, `unknown_agency` ou `invalid_payload`. HTTP 503 só em erro passageiro (`retryable: true`, inclusive banco fora ou exceção); o resto é 200.
+
+### Request e response: `/dispatch`
+
+```json
+{"reason": "tick"}
+{"reason": "backfill", "agencies": ["mec"], "start_date": "2026-11-10", "end_date": "2026-11-12", "force": false, "dry_run": false, "dedup_key": "<hash do run_id>"}
+```
+
+- Corpo opcional (sem corpo = tick). No backfill, `start_date` e `end_date` são obrigatórios (422 sem eles ou com início depois do fim) e `agencies` vazio = todas as ativas. `dedup_key` (opcional, `[A-Za-z0-9_-]{1,40}`, senão 422) vai no nome das tarefas do backfill. `dry_run: true` rebaixa `live` para `dry_run`.
+- Resposta: `{"mode", "reason", "night_skip", "due", "dispatched", "duplicates", "failed", "skipped_inflight", "overflow", "tiers_recomputed", "tiers_changed", "reconciled", "slo_ok_ratio", "agencies": [{"agency", "tier", "next_due_at", "probe", "task", "result"}]}`; `result` é `created`, `duplicate`, `failed` ou `dry_run` (com `failed`, mais `error`: `HTTP 403: ...`). No backfill, mais `start_date`, `end_date`, `skipped_circuit` e `unknown_agencies` (e `agencies` só com `agency`, `task`, `result` e `error`).
+- `off`: 200 sem ler o banco (só `dispatch_run`). 503 `{"detail": "scrape_agency_state indisponível"}` sem a 038; 500 em outro erro, em `live` sem as envs `SCRAPE_TASKS_*` e no tick `live` em que o Cloud Tasks recusou todas as tarefas (`{"detail", ...}` com as contagens; evento `dispatch_failed`).
+
 ### Request: `/verify/integrity`
 
 ```json
@@ -408,6 +473,7 @@ Só leitura, para o painel "Ingestão" do streamlit-infra-health (que chama com 
 |-----|----------|-----------|
 | `scrape_agencies` | `0 6-22/2 * * *` (06h–22h, 9x/dia) | 1 task mapeada (`scrape`) por agência gov.br ativa (~147) + `summarize` (única folha) |
 | `scrape_ebc` | `0 6-22/2 * * *` | 1 task mapeada por fonte EBC (`agencia_brasil`, `tvbrasil`) |
+| `scrape_backfill` | Manual (`schedule=None`) | `POST /dispatch` com `reason=backfill`: uma tarefa por agência com a janela explícita (Passo 3) |
 | `monitor_scraping_health` | `30 6-22/2 * * *` | Agências sem execução + falhas consecutivas + circuito aberto + agências stale |
 | `cleanup_old_scrape_runs` | Diário 03h | Delete registros > retention_days |
 | `scraper_coverage_report` | Diário 08h | Cobertura 24h + alerta se < threshold |
@@ -432,6 +498,10 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 - **Agência pulada pelo disjuntor** (em `skipped[]` da resposta): a task grava a XCom `skipped` (`{agency, next_probe_at}`) e levanta `AirflowSkipException`. A `summarize` recebe `scraped["skipped"]` (um `LazyXComSequence` dessa chave nas tasks mapeadas, que inclui as puladas) e as conta à parte: pulada não é falha, a fração de falhas é sobre as agências tentadas, e só puladas fica verde.
 - `scrape_ebc` tem a mesma agenda, os mesmos params e a mesma leitura da resposta (cópia das funções: cada arquivo de DAG é autocontido, não importa outro módulo de DAG nem o pacote `govbr_scraper`). Uma task mapeada por fonte (`EBC_SOURCES = ["agencia_brasil", "tvbrasil"]`, a sigla como map index), cada uma com a própria chamada a `/scrape/ebc` (`agencies: [fonte]`) e a mesma leitura da `scrape_agencies`: erro permanente falha sem retry, passageiro repete, circuito aberto dá skipped. Com as duas fontes numa requisição só, a API as raspava em série dentro do mesmo limite de 900 s do Cloud Run, e uma recuperação de alguns dias cortava a segunda sem gravar nada. `execution_timeout` de 16 min, logo acima dos 900 s da requisição (httpx e Cloud Run).
 - Um DagRun zumbi agora para todas as agências de uma vez, e o monitor acusa na execução seguinte. Com uma DAG por agência, ele parava uma agência só, em silêncio (`scrape_esg`, sem execução desde 11/11/2026).
+
+### DAG `scrape_backfill` (Passo 3)
+
+Manual, uma task (`dispatch_backfill`, `retries=1`, 5 min fixos, sem backoff exponencial). Params: `agencies` (lista; vazia = todas as ativas), `start_date` e `end_date` (obrigatórios, `Param` sem default com `format: date`), `force` e `dry_run`. Chama `POST /dispatch` com `{"reason": "backfill", ...}` (ID token, Variable `scraper_api_url`). Falha sem retry (`AirflowFailException`) com params inválidos, 4xx, despacho em `off`, despacho fora de `live` sem o param `dry_run` (nada criado) e tarefas recusadas pelo Cloud Tasks (lista as siglas); 5xx, corpo sem JSON e erro de rede repetem 1 vez. Está no teste de Variables (`default_var`) e no teste AST anti-backoff. As DAGs `scrape_agencies`, `scrape_ebc` e `monitor_scraping_health` ficam até a virada para `live` e saem num PR 3 dias depois.
 
 ### DAGs de manutenção
 
@@ -544,7 +614,7 @@ Uma linha por `agency_key` (sem FK para `agencies`: `ansn` e `povosindigenas` n�
 | `last_error_category`, `last_error_message` | Último erro (500 caracteres); ficam depois do sucesso |
 | `created_at`, `updated_at` | |
 
-`scrape_dispatch_meta` (chave-valor do `/dispatch`) vem na mesma migration.
+`scrape_dispatch_meta` (chave-valor do `/dispatch`) vem na mesma migration. Chaves: `tiers_recomputed_on` e `reconciled_on`, com `{"date": "<dia BRT>", "claimed_at": "<ISO>"}`, gravadas por `claim_daily` (reserva atômica do dia).
 
 ## Variáveis de Ambiente (API / Cloud Run)
 
@@ -554,8 +624,13 @@ LOG_LEVEL=INFO                       # Loguru level
 LOG_FORMAT=json                      # json (padrão, Cloud Logging) ou text (local e testes)
 PUBSUB_TOPIC_NEWS_SCRAPED=projects/{project}/topics/dgb.news.scraped  # Opcional
 PUBSUB_TOPIC_OPS_ALERTS=projects/{project}/topics/dgb.ops.alerts      # Alertas do disjuntor; sem ela, só log
-SCRAPE_DISPATCH_MODE=off             # off (padrão), dry_run ou live; no Passo 2 só aparece em GET /agencies/state
+SCRAPE_DISPATCH_MODE=off             # off (padrão; inválido também vale off), dry_run ou live (POST /dispatch)
+SCRAPE_TASKS_QUEUE=projects/inspire-7-finep/locations/southamerica-east1/queues/scrape-govbr
+SCRAPE_TASKS_INVOKER_SA=scrape-tasks-invoker@inspire-7-finep.iam.gserviceaccount.com
+SCRAPE_TASKS_TARGET_URL=https://destaquesgovbr-scraper-api-990583792367.southamerica-east1.run.app  # alvo e audience do OIDC
 ```
+
+As três `SCRAPE_TASKS_*` e o `SCRAPE_DISPATCH_MODE` vêm do Terraform (repo `infra`, PR I-2: `var.scrape_dispatch_mode`, padrão `dry_run`). Só o modo `live` exige as `SCRAPE_TASKS_*` (sem elas, o `/dispatch` responde 500). A SA do scraper-api tem `roles/cloudtasks.enqueuer` na fila e `roles/iam.serviceAccountUser` na `scrape-tasks-invoker`; a invocadora tem `roles/run.invoker` no scraper-api.
 
 `PUBSUB_TOPIC_OPS_ALERTS` vem do Terraform (repo `infra`, PR I-1), com `roles/pubsub.publisher` da SA do scraper-api no tópico `dgb.ops.alerts`.
 
@@ -615,7 +690,7 @@ A SA do Airflow (`destaquesgovbr-composer`, nome herdado do Composer; hoje é a 
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
-- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`, `test_postgres_health_checks.py`, `test_postgres_scrape_runs.py`, este com `scrape_runs` antes e depois da migration 037, `test_postgres_agency_state.py`, com e sem a 038, e `test_postgres_ebc.py`, a EBC de ponta a ponta, inclusive pela rota `/scrape/ebc` com o estado por agência) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`, `test_postgres_health_checks.py`, `test_postgres_scrape_runs.py`, este com `scrape_runs` antes e depois da migration 037, `test_postgres_agency_state.py`, com e sem a 038, `test_postgres_ebc.py`, a EBC de ponta a ponta, inclusive pela rota `/scrape/ebc` com o estado por agência, e `test_postgres_dispatch.py`, o `/dispatch`: taxa igual ao SQL do seed da 038, `claim_daily` com dois ticks concorrentes, `update_tiers`, reconciliador e o `Dispatcher` de ponta a ponta) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
   - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
   - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
   - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.
@@ -675,6 +750,15 @@ Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor rep
 3. Merge do scraper fora da janela :00–:10 das horas pares: a API e as DAGs sobem no mesmo push. Uma DAG nova contra a API antiga recebe 422 (falta `start_date`) e entra em retry (5 min) até a API nova subir.
 4. Na execução seguinte, conferir `scrape_agency_state` atualizada e `mec`/`antaq` abrindo o circuito depois de 2 execuções, com 2 alertas 🔴.
 5. A partir deste merge o re-scrape não republica mais o artigo sem tema (ver "Pub/Sub Events"): até o reconciliador do `/dispatch` (Passo 3) estar em `live`, um enriquecimento que falhar só é refeito à mão.
+
+### Ordem de deploy (Passos 3 e 4: despacho por fila)
+
+1. Merge do scraper (API + DAG `scrape_backfill`). Sem as envs do infra I-2, o `/dispatch` fica em `off` (padrão sem a env): nada muda na ingestão, que segue pelas DAGs.
+2. infra PR I-2 aplicado (fila, SA invocadora, Scheduler, envs, métricas e alertas; o primeiro apply pode dar 404 no alerta de uma métrica nova: rerun completo). O despacho passa a rodar em `dry_run` a cada 15 min e o recálculo diário das faixas começa a gravar.
+3. Depois de 1 dia de `dry_run` (comparar a lista do `/dispatch` com a das DAGs, as faixas e o volume previsto), a virada: pausar `scrape_agencies`, `scrape_ebc` e `monitor_scraping_health` na VM logo depois de uma execução de hora par e PR no infra com `scrape_dispatch_mode = "live"` (runbook, "Despacho por Fila").
+4. 3 dias depois: PR no scraper removendo as 3 DAGs, com docs e runbook.
+
+Pausar o despacho: PR no infra com `scrape_dispatch_mode = "off"` (e despausar as DAGs, se ainda existirem).
 
 ## Desenvolvimento Local
 

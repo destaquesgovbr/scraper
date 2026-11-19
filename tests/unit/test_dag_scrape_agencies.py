@@ -750,7 +750,9 @@ class TestNoExponentialBackoffAnywhere:
     derruba o scheduler do Airflow 3.1.0. Nenhum dos dois pode aparecer como argumento
     ou chave em nenhuma DAG de scraping."""
 
-    @pytest.mark.parametrize("dag_file", ["scrape_agencies.py", "scrape_ebc.py"])
+    @pytest.mark.parametrize(
+        "dag_file", ["scrape_agencies.py", "scrape_ebc.py", "scrape_backfill.py"]
+    )
     def test_not_used_as_keyword_or_dict_key(self, dag_file):
         tree = ast.parse((REPO_ROOT / "dags" / dag_file).read_text())
         forbidden = {"retry_exponential_backoff", "max_retry_delay"}

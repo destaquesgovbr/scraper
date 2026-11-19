@@ -279,3 +279,67 @@ class TestEventPublisherGracefulDegradation:
         # Should NOT raise
         result = self.publisher.publish_scraped(sample_articles)
         assert result == 0
+
+
+# =============================================================================
+# close(): fim da requisição (o publisher do /scrape/agency e do reconciliador)
+# =============================================================================
+
+
+class TestEventPublisherClose:
+    @pytest.fixture(autouse=True)
+    def setup_publisher(self):
+        from concurrent.futures import Future
+
+        self.Future = Future
+        self.client = MagicMock()
+        self.publisher = EventPublisher.__new__(EventPublisher)
+        self.publisher._topic = "projects/test/topics/dgb.news.scraped"
+        self.publisher._client = self.client
+        self.publisher._enabled = True
+
+    def _future(self, error=None, done=True):
+        future = self.Future()
+        if done:
+            if error is None:
+                future.set_result("msg-id")
+            else:
+                future.set_exception(error)
+        return future
+
+    def test_waits_for_pending_publishes_stops_and_closes_the_channel(self, sample_articles):
+        self.client.publish.side_effect = [self._future(), self._future()]
+        assert self.publisher.publish_scraped(sample_articles) == 2
+        self.publisher.close()
+        self.client.stop.assert_called_once()
+        self.client.transport.close.assert_called_once()
+        assert self.publisher.enabled is False
+        assert self.publisher._pending == []
+
+    def test_failed_publish_only_warns(self, sample_articles):
+        self.client.publish.side_effect = [self._future(RuntimeError("denied")), self._future()]
+        self.publisher.publish_scraped(sample_articles)
+        self.publisher.close()  # não levanta
+        self.client.transport.close.assert_called_once()
+
+    def test_unconfirmed_publish_keeps_the_channel_open(self, sample_articles):
+        self.client.publish.side_effect = [self._future(done=False), self._future()]
+        self.publisher.publish_scraped(sample_articles)
+        self.publisher.close(timeout=0.01)
+        self.client.stop.assert_called_once()
+        self.client.transport.close.assert_not_called()
+
+    def test_stop_error_does_not_raise(self):
+        self.client.stop.side_effect = RuntimeError("already stopped")
+        self.publisher.close()
+        self.client.transport.close.assert_called_once()
+
+    def test_second_close_is_noop(self):
+        self.publisher.close()
+        self.publisher.close()
+        self.client.stop.assert_called_once()
+
+    def test_disabled_publisher_close_is_noop(self):
+        with patch.dict("os.environ", {}, clear=True):
+            publisher = EventPublisher()
+        publisher.close()  # sem cliente: nada a fazer

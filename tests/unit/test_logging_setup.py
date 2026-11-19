@@ -1,4 +1,5 @@
-"""Logs em JSON (Cloud Logging) e eventos scrape_attempt/circuit_transition."""
+"""Logs em JSON (Cloud Logging) e eventos scrape_attempt, circuit_transition, dispatch_run e
+freshness (os nomes de campo são os das métricas baseadas em log do infra)."""
 
 import json
 import logging
@@ -8,7 +9,13 @@ import pytest
 from loguru import logger
 
 from govbr_scraper.logging_setup import configure_logging
-from govbr_scraper.monitoring.structured_log import log_circuit_transition, log_scrape_attempt
+from govbr_scraper.monitoring.structured_log import (
+    log_circuit_transition,
+    log_dispatch_failed,
+    log_dispatch_run,
+    log_freshness,
+    log_scrape_attempt,
+)
 from govbr_scraper.state.model import CircuitState, Transition
 
 
@@ -206,3 +213,125 @@ class TestEvents:
             "reason": "permanent_errors",
             "category": "html_changed",
         }
+
+    def test_scrape_attempt_with_cloud_tasks_headers(self, json_logs):
+        log_scrape_attempt(
+            agency="mec",
+            outcome="success",
+            trigger="task",
+            task_name="projects/p/locations/l/queues/q/tasks/scrape-mec-202611191500",
+            task_retry=1,
+        )
+        (line,) = json_logs()
+        assert line["trigger"] == "task"
+        assert line["task_name"].endswith("scrape-mec-202611191500")
+        assert line["task_retry"] == 1
+
+    def test_dispatch_run_fields(self, json_logs):
+        log_dispatch_run(
+            mode="live",
+            reason="tick",
+            night_skip=False,
+            due=12,
+            dispatched=10,
+            duplicates=1,
+            skipped_inflight=2,
+            tiers_recomputed=True,
+            reconciled=3,
+            failed=0,
+            agencies=["mec", "mds"],
+        )
+        (line,) = json_logs()
+        assert line["event"] == "dispatch_run"
+        assert line["severity"] == "INFO"
+        assert {
+            k: line[k]
+            for k in (
+                "mode",
+                "reason",
+                "night_skip",
+                "due",
+                "dispatched",
+                "duplicates",
+                "skipped_inflight",
+                "tiers_recomputed",
+                "reconciled",
+                "agencies",
+            )
+        } == {
+            "mode": "live",
+            "reason": "tick",
+            "night_skip": False,
+            "due": 12,
+            "dispatched": 10,
+            "duplicates": 1,
+            "skipped_inflight": 2,
+            "tiers_recomputed": True,
+            "reconciled": 3,
+            "agencies": ["mec", "mds"],
+        }
+
+    def test_dispatch_run_with_failures_is_warning(self, json_logs):
+        log_dispatch_run(
+            mode="live",
+            reason="tick",
+            night_skip=False,
+            due=3,
+            dispatched=1,
+            duplicates=0,
+            skipped_inflight=0,
+            tiers_recomputed=False,
+            reconciled=0,
+            failed=2,
+        )
+        (line,) = json_logs()
+        assert line["severity"] == "WARNING"
+        assert line["failed"] == 2
+
+    def test_dispatch_failed_is_error_and_not_the_heartbeat(self, json_logs):
+        log_dispatch_failed(
+            error="o Cloud Tasks recusou 2 de 2 tarefa(s) e nenhuma foi criada: HTTP 403: x",
+            mode="live",
+            reason="tick",
+            due=2,
+            dispatched=0,
+            failed=2,
+            event="dispatch_run",  # não pode virar heartbeat
+        )
+        (line,) = json_logs()
+        assert line["event"] == "dispatch_failed"
+        assert line["severity"] == "ERROR"
+        assert (line["mode"], line["due"], line["failed"]) == ("live", 2, 2)
+        assert "HTTP 403" in line["error"]
+
+    def test_freshness_fields(self, json_logs):
+        log_freshness(
+            tier="m30",
+            lag_p50_min=12.5,
+            lag_p90_min=40.1,
+            lag_max_min=55.0,
+            agencies=5,
+            slo_ok_ratio=0.97,
+            tier_slo_ok_ratio=1.0,
+        )
+        (line,) = json_logs()
+        assert line["event"] == "freshness"
+        assert {
+            k: line[k]
+            for k in (
+                "tier",
+                "lag_p50_min",
+                "lag_p90_min",
+                "lag_max_min",
+                "agencies",
+                "slo_ok_ratio",
+            )
+        } == {
+            "tier": "m30",
+            "lag_p50_min": 12.5,
+            "lag_p90_min": 40.1,
+            "lag_max_min": 55.0,
+            "agencies": 5,
+            "slo_ok_ratio": 0.97,
+        }
+        assert line["tier_slo_ok_ratio"] == 1.0
