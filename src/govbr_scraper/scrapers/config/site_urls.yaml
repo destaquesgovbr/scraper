@@ -67,8 +67,11 @@ agencies:
     active: true
     scraper_type: plone6_api
   antaq:
-    url: https://www.gov.br/antaq/pt-br/noticias
+    # url: https://www.gov.br/antaq/pt-br/noticias
+    url: https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias
     active: true
+    scraper_type: plone6_api
+    notes: "2026-11-19: desde 16/11 a URL antiga redireciona (302) para central-de-conteudos/noticias, que é Plone 6 (Volto): o HTML não traz os itens e a API Plone na URL antiga segue o redirect e devolve HTML. A API na URL nova responde 200 (1.869 itens)."
   antt:
     # url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias
     url: https://www.gov.br/antt/pt-br/assuntos/ultimas-noticias-antt
@@ -430,8 +433,10 @@ agencies:
     disabled_reason: "A listagem retorna 404 (URL atualizada em 2026-07-16)"
     disabled_date: "2026-11-11"
   mec:
-    url: https://www.gov.br/mec/pt-br/assuntos/noticias
+    # url: https://www.gov.br/mec/pt-br/assuntos/noticias
+    url: https://www.gov.br/mec/pt-br/assuntos/noticias/colecao-noticias-2026
     active: true
+    notes: "2026-11-19: assuntos/noticias virou capa em 28/10 (div.collection-item, só as 20 mais recentes, sem paginação); a coleção do link \"Mais notícias...\" lista em tileItem, 20 por página. A API Plone dá 404 (Plone 5). Trocar para colecao-noticias-2027 na virada do ano."
   memoriasreveladas:
     url: https://www.gov.br/memoriasreveladas/pt-br/centrais-de-conteudo/destaques
     active: true

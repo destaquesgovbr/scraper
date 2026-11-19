@@ -35,6 +35,8 @@ htmlcov/
 *.csv
 *.json
 !dags/config/*.yaml
+# Fixtures de teste (respostas públicas do gov.br, reduzidas)
+!tests/unit/fixtures/**/*.json
 
 # OS
 .DS_Store
