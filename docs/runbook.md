@@ -260,7 +260,7 @@ Passos 3 e 4 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`). 
 **Logs** (`jsonPayload.event`):
 
 - `dispatch_run` (um por chamada que terminou, em todos os modos e também nos ticks noturnos): `mode`, `reason`, `night_skip`, `due`, `dispatched`, `duplicates`, `skipped_inflight`, `tiers_recomputed`, `reconciled`, mais `failed`, `overflow`, `tiers_changed` e `agencies` (as siglas selecionadas). É o heartbeat do alerta "Nenhuma execução do /dispatch em 45 min". Um tick que falha (banco fora, 038 ausente, `live` sem as envs do Cloud Tasks) responde 500/503 e **não** loga `dispatch_run`, de propósito: o alerta de ausência dispara.
-- `freshness` (um por faixa, nos ticks diurnos): `tier`, `lag_p50_min`, `lag_p90_min`, `lag_max_min`, `agencies`, `slo_ok_ratio` (geral) e `tier_slo_ok_ratio`. Entram as agências ativas de circuito fechado, sem a `tvbrasil` (o `published_at` dela é o horário da grade).
+- `freshness` (um por faixa, nos ticks diurnos): `tier`, `lag_p50_min`, `lag_p90_min`, `lag_max_min`, `agencies`, `slo_ok_ratio` (geral) e `tier_slo_ok_ratio`. Entram as agências ativas de circuito fechado, sem a `tvbrasil` (o `published_at` dela é o horário da grade). Em `dry_run` o SLO usa o piso de 120 min da cadência das DAGs, como o painel (`GET /agencies/state`); em `live`, o intervalo de cada agência.
 - `scrape_attempt` com `trigger: "task"` (tick) ou `"backfill"`, e `task_name`/`task_retry` dos cabeçalhos do Cloud Tasks.
 
 ```bash
@@ -280,13 +280,15 @@ gcloud tasks list --queue=scrape-govbr --location=southamerica-east1 \
 
 **Reconciliador** (só `live`, 1× por dia a partir das 03:00, reservado em `scrape_dispatch_meta['reconciled_on']`). Republica em `dgb.news.scraped` até 20 notícias sem tema (`most_specific_theme_id IS NULL`) criadas entre 7 dias e 2 h atrás, as mais novas primeiro, no mesmo formato do scraper. É o único retry de um enriquecimento que falhou. O lote pequeno respeita o liveness do enrichment-worker. Sem `PUBSUB_TOPIC_NEWS_SCRAPED`, não reserva o dia e só loga warning.
 
-**Conferir o dia a seco (`dry_run`).** Compare a lista do `/dispatch` com a das DAGs: `jsonPayload.agencies` dos `dispatch_run` contra as tasks mapeadas da `scrape_agencies` do mesmo período. Nos ticks entre as execuções de 2 em 2 h, as agências `m30` aparecem vencidas (as DAGs ainda são o relógio): é o esperado. Confira também as faixas (`SELECT tier, COUNT(*) FROM scrape_agency_state GROUP BY 1`) e o volume previsto (~1.100 chamadas/dia).
+**Conferir o dia a seco (`dry_run`).** Compare a lista do `/dispatch` com a das DAGs: `jsonPayload.agencies` dos `dispatch_run` contra as tasks mapeadas da `scrape_agencies` do mesmo período. Nos ticks entre as execuções de 2 em 2 h, as agências `m30` aparecem vencidas (as DAGs ainda são o relógio): é o esperado. O `slo_ok_ratio` do `freshness` e do `dispatch_run` já desconta isso (piso de 120 min fora do `live`); os percentis de atraso (`lag_p90_min`) são os reais, então a `m30` fica perto de 2 h até a virada. Confira também as faixas (`SELECT tier, COUNT(*) FROM scrape_agency_state GROUP BY 1`) e o volume previsto (~1.100 chamadas/dia).
 
 **Virar para `live`** (depois de 1 dia em `dry_run` sem surpresas):
 
 1. Logo depois de uma execução de hora par terminar, pause na VM (`af dags pause`) a `scrape_agencies`, a `scrape_ebc` e a `monitor_scraping_health`.
 2. PR no repo `infra` com `scrape_dispatch_mode = "live"`; merge e apply (o deploy do Cloud Run troca a env).
 3. No tick seguinte, conferir: `dispatch_run` com `mode: live` e `dispatched > 0`; `scrape_attempt` com `trigger: "task"`; a fila esvaziando entre os ticks; `scrape_runs` mantendo as ~149 agências.
+
+   Com a `monitor_scraping_health` pausada, some também a seção "Circuito Aberto", o lembrete diário de agência com o disjuntor aberto. Fica o alerta 🔴 do scraper-api, publicado uma vez só, sem retry: confira os circuitos abertos no painel "Ingestão" (ou em `summary.circuit_open` do `GET /agencies/state`) até existir um alerta do Cloud Monitoring para eles.
 4. Três dias depois, PR no scraper removendo as 3 DAGs (e as seções delas neste runbook).
 
 **Pausar o despacho:** PR no repo `infra` com `scrape_dispatch_mode = "off"`. O job do Scheduler continua chamando (o heartbeat fica), mas nada é despachado; tarefas já na fila ainda rodam. Para voltar à ingestão pelo Airflow, despause a `scrape_agencies` e a `scrape_ebc` na VM. Não mude a env direto no Cloud Run: o Terraform a reverte no próximo apply.
@@ -316,7 +318,11 @@ Params:
 af dags trigger scrape_backfill --conf '{"agencies": ["mec"], "start_date": "2026-11-10", "end_date": "2026-11-12"}'
 ```
 
-A task falha **sem retry** com params inválidos, com o despacho em `off` ou em `dry_run` (sem o param `dry_run`, nada é criado: use a recuperação pelos params `start_date`/`end_date` da `scrape_agencies` enquanto ela existir) e quando o Cloud Tasks recusa tarefas (a mensagem lista as siglas: dispare de novo só com elas). Erro de rede e 5xx repetem uma vez, 5 min depois. Prefira janelas de até 7 dias por disparo (cada tarefa tem 15 min para raspar). O resultado de cada agência sai no log do scraper-api (`jsonPayload.event="scrape_attempt" AND jsonPayload.trigger="backfill"`) e em `scrape_runs`.
+A task falha **sem retry** com params inválidos, com o despacho em `off` ou em `dry_run` (sem o param `dry_run`, nada é criado: use a recuperação pelos params `start_date`/`end_date` da `scrape_agencies` enquanto ela existir) e quando o Cloud Tasks recusa tarefas (a mensagem lista as siglas: dispare de novo só com elas). Erro de rede e 5xx repetem uma vez, 5 min depois.
+
+**Tamanho da janela.** Cada tarefa raspa a janela inteira da agência numa requisição só: 900 s (`dispatchDeadline` da tarefa e timeout do Cloud Run), sem o limite de ~80 notícias da marca d'água. A raspagem leva ~2 s por notícia no gov.br e ~3–4 s na EBC, e a publicação, 30 s a cada 20 notícias (lotes do `dgb.news.scraped`). As notícias só são gravadas depois de raspada a janela inteira: a tarefa cortada pelo prazo durante a raspagem não grava nada, e o Cloud Tasks a refaz do zero (até 3 tentativas). Mantenha cada disparo em até ~100 notícias por agência, como na recuperação pela `scrape_agencies`: para a `agencia_brasil`, fatias de 2 dias; para a `pf` e a `tvbrasil`, de 4; para as outras, a semana inteira cabe. Um disparo com `agencies` vazio manda a mesma janela para todas: com mais de 2 dias, a tarefa da `agencia_brasil` pode estourar o prazo (e as da `pf` e da `tvbrasil`, com mais de 4), gastar as 3 tentativas e falhar. Refaça só elas em fatias; sem `allow_update`, o que já foi gravado não é regravado.
+
+Uso típico depois da virada: recuperar os dias que a janela automática deixou de fora (`window_truncated` no `scrape_attempt`; "Disjuntor e Marca d'Água"). O resultado de cada agência sai no log do scraper-api (`jsonPayload.event="scrape_attempt" AND jsonPayload.trigger="backfill"`) e em `scrape_runs`.
 
 ## Execução Vermelha da `scrape_agencies` (task `summarize`)
 

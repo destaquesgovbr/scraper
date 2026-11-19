@@ -148,7 +148,8 @@ _AGENCIES_HELP = (
 )
 _DATE_HELP = (
     "Obrigatório, YYYY-MM-DD, em datas de Brasília. A janela vai explícita: a raspagem não "
-    "mexe no estado da agência (marca d'água, disjuntor)."
+    "mexe no estado da agência (marca d'água, disjuntor). Cada agência é uma tarefa de até "
+    "900 s: até ~100 notícias por agência (agencia_brasil 2 dias, pf e tvbrasil 4; runbook)."
 )
 _FORCE_HELP = "Ignora o disjuntor: inclui as agências com o circuito aberto."
 _DRY_RUN_HELP = "Só lista as agências que seriam despachadas, sem criar tarefas."
