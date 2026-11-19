@@ -23,6 +23,7 @@ import pytest
 from govbr_scraper.models.monitoring import ErrorCategory, classify_exception
 from govbr_scraper.scrapers.content_validation import invalid_content_reason
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
+from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError, WebScraper
 from govbr_scraper.scrapers.yaml_config import get_config_dir, load_urls_from_yaml
 
@@ -241,3 +242,31 @@ class TestAntaqPlone6:
         assert all(n["agency"] == "antaq" for n in news)
         assert all(invalid_content_reason(n) is None for n in news)
         assert all(n["url"].startswith(_agency_config("antaq")["url"] + "/") for n in news)
+
+    @patch("govbr_scraper.scrapers.plone6_api_scraper.time.sleep")
+    def test_unique_id_igual_ao_ja_gravado(self, _sleep):
+        """As de 13/11 já estão no banco (raspadas pelo WebScraper até 13/11/2026).
+
+        Com a data da API em UTC, o unique_id seria outro (d375b1 e 46a6a4); a notícia que
+        mudasse de URL (as até 03/11 foram para .../noticias/2026/) entraria de novo.
+        """
+        scraper = Plone6APIScraper(
+            "2026-11-13", _agency_config("antaq")["url"], max_date="2026-11-13"
+        )
+        first_page = _antaq_api()
+        end = {"items": [], "items_total": first_page["items_total"]}
+        with patch.object(scraper, "_fetch_api_page", side_effect=[first_page, end]):
+            news = scraper.scrape_news()
+
+        assert [n["published_at"].isoformat() for n in news] == [
+            "2026-11-13T16:03:06-03:00",
+            "2026-11-13T12:13:24-03:00",
+        ]
+        assert [
+            generate_readable_unique_id("antaq", n["published_at"], n["title"]) for n in news
+        ] == [
+            "tomada-de-subsidios-recebe-contribuicoes-para-avaliar-regras-de-liberacao-de-atividades"
+            "-economicas_0c5d71",
+            "antaq-prorroga-prazo-para-contribuicoes-sobre-transferencia-de-combustivel-entre"
+            "-embarcacoes_acf4e7",
+        ]
