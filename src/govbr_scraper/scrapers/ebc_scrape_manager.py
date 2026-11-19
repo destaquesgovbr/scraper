@@ -11,7 +11,7 @@ from govbr_scraper.models.monitoring import (
 )
 from govbr_scraper.monitoring.structured_log import log_scrape_result, record_scrape_run_safe
 from govbr_scraper.scrapers.content_hash import compute_content_hash
-from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper
+from govbr_scraper.scrapers.ebc_webscraper import EBCWebScraper, known_url_fence_applies
 from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.yaml_config import (
     UnknownAgencyError,
@@ -93,11 +93,26 @@ class EBCScrapeManager:
                 # Load all agency URLs if agencies list is None or empty
                 agency_urls = load_urls_from_yaml(config_dir, "ebc_urls.yaml")
 
-            # Create list of (agency_name, scraper) tuples
-            webscrapers = [
-                (agency_name, EBCWebScraper(min_date, agency_config["url"], max_date=max_date))
-                for agency_name, agency_config in agency_urls.items()
-            ]
+            # Create list of (agency_name, scraper) tuples. A cerca de URLs conhecidas (a
+            # mesma do gov.br) só vale quando a janela chega até hoje (BRT): no backfill ela
+            # pararia antes da janela, e a consulta nem é feita.
+            fence = known_url_fence_applies(
+                datetime.strptime(max_date, "%Y-%m-%d").date() if max_date else None
+            )
+            webscrapers = []
+            for agency_name, agency_config in agency_urls.items():
+                known_urls = self._recent_urls(agency_name) if fence else set()
+                webscrapers.append(
+                    (
+                        agency_name,
+                        EBCWebScraper(
+                            min_date,
+                            agency_config["url"],
+                            max_date=max_date,
+                            known_urls=known_urls,
+                        ),
+                    )
+                )
 
             if sequential:
                 for agency_name, scraper in webscrapers:
@@ -195,6 +210,19 @@ class EBCScrapeManager:
             "agencies_processed": agencies_processed,
             "errors": errors,
         }
+
+    def _recent_urls(self, agency_name: str) -> set[str]:
+        """URLs recentes da fonte para a cerca; ``set()`` (sem cerca) se a consulta falhar.
+
+        A chave do ``ebc_urls.yaml`` é a mesma gravada em ``news.agency_key`` (vem do host
+        do artigo). Um link da TV Brasil na listagem da Agência Brasil é gravado como
+        ``tvbrasil`` e fica fora do conjunto: só seria baixado de novo.
+        """
+        try:
+            return self.dataset_manager.get_recent_urls(agency_name)
+        except Exception as e:
+            logging.warning(f"Known URL fence disabled for {agency_name}: {e}")
+            return set()
 
     def _process_and_upload_data(self, new_data: list[dict], allow_update: bool) -> "InsertCounts":
         """

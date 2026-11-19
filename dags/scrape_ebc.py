@@ -1,12 +1,23 @@
 """DAG para scraping de notícias EBC (Agência Brasil, TV Brasil) via Cloud Run API.
 
-Mesma agenda e mesma janela da ``scrape_agencies``: a cada 2 horas, das 06h às 22h em
-horário de Brasília (``0 6-22/2 * * *``), com 9 h para trás. Params opcionais
-``start_date``/``end_date`` (YYYY-MM-DD) para recuperar um período depois de uma queda.
+Mesma agenda da ``scrape_agencies``: a cada 2 horas, das 06h às 22h em horário de Brasília
+(``0 6-22/2 * * *``). Uma task mapeada por fonte (``agencia_brasil`` e ``tvbrasil``, a sigla
+como map index na UI), cada uma com a própria chamada a ``/scrape/ebc`` sem datas: a API usa
+a marca d'água da fonte. Params opcionais ``start_date``/``end_date`` (YYYY-MM-DD) para
+recuperar um período depois de uma queda (janela explícita, que não mexe no estado) e
+``force`` (ignora o disjuntor).
 
-Erro permanente (todos os ``errors[]`` com ``retryable: false``) falha sem retry
-(``AirflowFailException``); se algum erro é passageiro, o corpo não é JSON ou a API é antiga
-(sem ``retryable``), a task repete (2x, a cada 5 min), como antes.
+Uma chamada por fonte: com as duas numa requisição só, a API as raspava em série dentro do
+mesmo limite de 900 s do Cloud Run, e uma recuperação de alguns dias cortava a segunda fonte
+sem gravar nem registrar nada. ``execution_timeout`` (16 min) fica logo acima desse limite
+e do timeout do httpx (900 s).
+
+Fonte com o circuito aberto é pulada pela API (``skipped``): a task dela termina como
+skipped (``AirflowSkipException``).
+
+Erro permanente (todos os ``errors[]`` da fonte com ``retryable: false``) falha sem retry
+(``AirflowFailException``); erro passageiro, corpo que não é JSON ou API antiga (sem
+``retryable``) repetem (2x, a cada 5 min), como antes.
 
 As funções de janela e de leitura da resposta são cópia das de ``scrape_agencies.py`` de
 propósito: cada arquivo de DAG é autocontido (não importa outro módulo de DAG).
@@ -15,8 +26,7 @@ propósito: cada arquivo de DAG é autocontido (não importa outro módulo de DA
 import json
 import logging
 import re
-from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta
 
 from airflow.decorators import dag, task
 from airflow.sdk import Param
@@ -24,42 +34,18 @@ from airflow.sdk import Param
 logger = logging.getLogger(__name__)
 
 
-BRASILIA = ZoneInfo("America/Sao_Paulo")
+# As fontes ativas do ebc_urls.yaml do scraper-api, cada uma com o próprio estado.
+EBC_SOURCES = ["agencia_brasil", "tvbrasil"]
 
-# A execução das 06h precisa cobrir a madrugada sem scraping, desde a execução das 22h do
-# dia anterior: 8 h de intervalo + 1 h de folga.
-SCRAPE_LOOKBACK_HOURS = 9
+# Limite de uma requisição ao scraper-api: o timeout do Cloud Run (repo infra,
+# scraper-api.tf) e o do httpx. A task tem 1 min de folga para o token e a leitura da resposta.
+_API_TIMEOUT_SECONDS = 900.0
+_TASK_TIMEOUT = timedelta(minutes=16)
 
 # status do corpo de /scrape/ebc que indica falha (a API também responde 500/207).
 _FAILED_BODY_STATUSES = ("failed", "partial")
 
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
-
-
-def _scrape_window(
-    logical_date: datetime, lookback_hours: int = SCRAPE_LOOKBACK_HOURS
-) -> tuple[str, str]:
-    """Janela (min_date, max_date) da execução, em datas de Brasília.
-
-    As listagens datam as notícias no horário de Brasília. Em UTC, das 22:00 às 23:59 BRT a
-    data já é o dia seguinte e a execução pulava as notícias do dia. A janela vai de
-    ``lookback_hours`` antes da execução até a execução. Com 9 h, as execuções das 06h e
-    das 08h ainda incluem o dia anterior (o que saiu depois da execução das 22h); a partir
-    das 10h, só o dia corrente. Datetime sem fuso é tratado como UTC.
-
-    No Airflow 3 o cron usa o CronTriggerTimetable (``create_cron_data_intervals = False``,
-    o padrão): a logical_date é o próprio horário agendado (06:00, 08:00...), não o início
-    do intervalo anterior.
-    """
-    # O logical_date do Airflow é pendulum.DateTime, cuja aritmética e astimezone não
-    # preservam o fuso de um ZoneInfo (em produção a janela saiu invertida). Só o instante
-    # (timestamp) é usado, convertido para um datetime da stdlib em Brasília.
-    if logical_date.tzinfo is None:
-        # timezone.utc (não datetime.UTC, 3.11+): o arquivo roda no Python do Composer.
-        logical_date = logical_date.replace(tzinfo=timezone.utc)  # noqa: UP017
-    local = datetime.fromtimestamp(logical_date.timestamp(), tz=BRASILIA)
-    start = local - timedelta(hours=lookback_hours)
-    return start.strftime("%Y-%m-%d"), local.strftime("%Y-%m-%d")
 
 
 def _parse_param_date(value, name: str) -> date:
@@ -72,18 +58,19 @@ def _parse_param_date(value, name: str) -> date:
         raise ValueError(f"{name} não é uma data válida: {value!r}") from e
 
 
-def _resolve_window(logical_date: datetime, params=None) -> tuple[str, str]:
-    """Janela da execução: a dos params ``start_date``/``end_date`` ou a de ``_scrape_window``.
+def _resolve_window(params=None) -> tuple[str, str] | None:
+    """Janela explícita dos params ``start_date``/``end_date``, ou None.
 
-    Os params servem para recuperar um período depois de uma queda (disparo manual). Só
-    valem juntos; vazios ou ausentes, vale a janela calculada. Erro de formato, só um dos
-    dois ou início depois do fim levantam ValueError.
+    None (os dois vazios ou ausentes): a DAG não manda datas e a API usa a marca d'água de
+    cada fonte. Os params servem para recuperar um período depois de uma queda (disparo
+    manual) e só valem juntos. Erro de formato, só um dos dois ou início depois do fim
+    levantam ValueError.
     """
     params = params or {}
     start = params.get("start_date") or None
     end = params.get("end_date") or None
     if start is None and end is None:
-        return _scrape_window(logical_date)
+        return None
     if start is None or end is None:
         raise ValueError("Informe start_date e end_date juntos (YYYY-MM-DD), ou nenhum dos dois")
     start_date = _parse_param_date(start, "start_date")
@@ -93,32 +80,40 @@ def _resolve_window(logical_date: datetime, params=None) -> tuple[str, str]:
     return start_date.isoformat(), end_date.isoformat()
 
 
-def _run_instant(context) -> datetime:
-    """Instante de referência da execução para a janela.
-
-    Execução agendada: a logical_date (o horário do cron). Disparo manual pela CLI/API do
-    Airflow 3 pode vir sem logical_date: vale o run_after do DagRun ou, na falta, agora.
+def _scrape_payload(agency_keys: list[str], params=None) -> dict:
+    """Corpo de /scrape/*: sem datas por padrão (marca d'água); com a janela dos params, se
+    houver; ``force`` do param (ignora o disjuntor). Levanta ValueError com params inválidos.
     """
-    logical_date = context.get("logical_date")
-    if logical_date is not None:
-        return logical_date
-    run_after = getattr(context.get("dag_run"), "run_after", None)
-    if run_after is not None:
-        return run_after
-    return datetime.now(timezone.utc)  # noqa: UP017
+    params = params or {}
+    payload = {
+        "agencies": list(agency_keys),
+        "allow_update": False,
+        "sequential": True,
+        "force": params.get("force") is True,
+    }
+    window = _resolve_window(params)
+    if window is not None:
+        payload["start_date"], payload["end_date"] = window
+    return payload
 
 
 def _on_scrape_failure(context):
-    """Callback para log estruturado de falha na DAG de scraping."""
+    """Callback para log estruturado de falha de uma task de scraping (com a fonte)."""
     ti = context.get("task_instance")
     dag_id = ti.dag_id if ti else "unknown"
     task_id = ti.task_id if ti else "unknown"
+    map_index = getattr(ti, "map_index", -1) if ti else -1
+    # A task grava a sigla no contexto (map_index_template); o rendered_map_index é o
+    # mesmo valor, já renderizado pelo Airflow.
+    agency = context.get("agency_key") or (getattr(ti, "rendered_map_index", None) if ti else None)
     exception = context.get("exception", "unknown")
     try_number = ti.try_number if ti else 0
     logger.error(
-        "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
+        "Scrape DAG failure: dag=%s task=%s agency=%s map_index=%s try=%d error=%s",
         dag_id,
         task_id,
+        agency or "unknown",
+        map_index,
         try_number,
         exception,
     )
@@ -155,6 +150,23 @@ def _describe_errors(errors: list[dict]) -> str:
         f"{e.get('agency')} [{e.get('category') or 'sem categoria'}]: {e.get('error')}"
         for e in errors
     )
+
+
+def _response_skipped(body, agency_key: str | None = None) -> list[dict]:
+    """Itens de ``skipped[]`` do corpo de /scrape/* (só os da agência, se informada).
+
+    A API pula a agência com o circuito aberto cuja sonda ainda não venceu. API antiga, sem
+    o campo, devolve [].
+    """
+    if not isinstance(body, dict):
+        return []
+    skipped = body.get("skipped")
+    if not isinstance(skipped, list):
+        return []
+    items = [s for s in skipped if isinstance(s, dict)]
+    if agency_key is not None:
+        items = [s for s in items if s.get("agency") == agency_key]
+    return items
 
 
 def _check_scrape_response(status_code: int, body, agency_key: str | None) -> None:
@@ -208,8 +220,14 @@ def _scrape_result(agency_key: str, body: dict) -> dict:
 
 _DATE_PARAM_HELP = (
     "Opcional, YYYY-MM-DD, em datas de Brasília. Para recuperar um período depois de uma "
-    "queda, informe start_date e end_date juntos: eles substituem a janela calculada. "
-    "Vazios, vale a janela normal (9 h antes da execução até a execução)."
+    "queda, informe start_date e end_date juntos: a janela vai explícita e não mexe no "
+    "estado da agência. Vazios, a API usa a marca d'água de cada agência (desde o último "
+    "sucesso, até 7 dias ou ~80 notícias da agência)."
+)
+_FORCE_PARAM_HELP = (
+    "Ignora o disjuntor: raspa também as agências com o circuito aberto (erro permanente "
+    "seguido). Sem datas, um sucesso fecha o circuito; com start_date/end_date o estado da "
+    "agência não muda (o circuito continua aberto)."
 )
 
 
@@ -236,27 +254,41 @@ _DATE_PARAM_HELP = (
             title="Data final (recuperação)",
             description=_DATE_PARAM_HELP,
         ),
+        "force": Param(
+            False,
+            type="boolean",
+            title="Ignorar o disjuntor",
+            description=_FORCE_PARAM_HELP,
+        ),
     },
     default_args={
         "owner": "scraper",
         "retries": 2,
+        # Intervalo fixo, SEM retry_exponential_backoff: a task é mapeada, e no Airflow 3.1.0
+        # o scheduler lê task.max_retry_delay de uma task mapeada em retry; o MappedOperator
+        # não tem o atributo e o AttributeError derruba o loop do scheduler (18/11/2026).
         "retry_delay": timedelta(minutes=5),
-        "execution_timeout": timedelta(minutes=30),
+        "execution_timeout": _TASK_TIMEOUT,
         "on_failure_callback": _on_scrape_failure,
     },
 )
 def scrape_ebc_dag():
-    @task
-    def scrape_ebc(**context):
-        """Chama Scraper API no Cloud Run para scraping EBC."""
+    @task(map_index_template="{{ agency_key }}")
+    def scrape_ebc(agency_key: str):
+        """Chama a Scraper API no Cloud Run para a fonte EBC desta task mapeada."""
         import google.auth.transport.requests
         import google.oauth2.id_token
         import httpx
-        from airflow.exceptions import AirflowFailException
+        from airflow.exceptions import AirflowFailException, AirflowSkipException
         from airflow.models import Variable
+        from airflow.sdk import get_current_context
+
+        context = get_current_context()
+        # Renderiza o map_index_template: a UI mostra a sigla no lugar do índice.
+        context["agency_key"] = agency_key
 
         try:
-            min_date, max_date = _resolve_window(_run_instant(context), context.get("params"))
+            payload = _scrape_payload([agency_key], context.get("params"))
         except ValueError as e:
             # Params inválidos no disparo manual: repetir não adianta.
             raise AirflowFailException(str(e)) from e
@@ -268,19 +300,19 @@ def scrape_ebc_dag():
         auth_req = google.auth.transport.requests.Request()
         token = google.oauth2.id_token.fetch_id_token(auth_req, scraper_api_url)
 
-        logger.info(f"Calling scraper API for EBC: {min_date} to {max_date}")
+        window = (
+            f"{payload['start_date']} a {payload['end_date']}"
+            if "start_date" in payload
+            else "marca d'água"
+        )
+        logger.info(f"Calling scraper API for EBC ({agency_key}): janela {window}")
 
         # Erro de rede/timeout do httpx propaga e o Airflow repete.
         response = httpx.post(
             f"{scraper_api_url}/scrape/ebc",
-            json={
-                "start_date": min_date,
-                "end_date": max_date,
-                "allow_update": False,
-                "sequential": True,
-            },
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
-            timeout=900.0,
+            timeout=_API_TIMEOUT_SECONDS,
         )
         # O corpo vem antes do status HTTP: o 500/207 traz os erros e se vale repetir.
         try:
@@ -299,12 +331,19 @@ def scrape_ebc_dag():
                 json.dumps(result, indent=2, ensure_ascii=False),
             )
 
-        # Duas fontes (agencia_brasil e tvbrasil): só falha sem retry se todos os erros
-        # forem permanentes; se algum for passageiro, repete a task.
-        _check_scrape_response(response.status_code, result, None)
-        return _scrape_result("ebc", result)
+        # Circuito aberto: a API não raspou e a task fica skipped.
+        skipped = _response_skipped(result, agency_key)
+        if skipped:
+            raise AirflowSkipException(
+                f"{agency_key}: circuito aberto ({skipped[0].get('reason')}), "
+                f"próxima sonda em {skipped[0].get('next_probe_at')}"
+            )
 
-    scrape_ebc()
+        # Erro permanente: AirflowFailException (sem retry). O resto: AirflowException.
+        _check_scrape_response(response.status_code, result, agency_key)
+        return _scrape_result(agency_key, result)
+
+    scrape_ebc.expand(agency_key=EBC_SOURCES)
 
 
 dag_instance = scrape_ebc_dag()

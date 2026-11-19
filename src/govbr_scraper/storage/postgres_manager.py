@@ -6,6 +6,7 @@ Manages news storage in PostgreSQL with connection pooling, caching, and error h
 
 import os
 import subprocess  # nosec B404
+from datetime import UTC, datetime
 
 # Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -16,6 +17,10 @@ from psycopg2 import errors, extensions, pool
 from psycopg2.extras import RealDictCursor, execute_values
 
 from govbr_scraper.models.news import Agency, NewsInsert, Theme
+from govbr_scraper.state import repository as state_repository
+from govbr_scraper.state.model import AgencyState, AttemptOutcome, Transition
+from govbr_scraper.state.repository import StateUnavailable
+from govbr_scraper.state.transitions import apply_attempt
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
@@ -26,7 +31,22 @@ class _ExistingArticle(NamedTuple):
 
     unique_id: str
     content_hash: str | None
-    most_specific_theme_id: int | None
+
+
+class _UrlMatch(NamedTuple):
+    """Pré-check por (agency_key, url) (``PostgresManager._match_existing_by_url``).
+
+    - ``to_update``: pares (unique_id existente, dados do re-scrape) que vão para o UPDATE
+      da Phase 1;
+    - ``to_insert``: os que não casaram, para o INSERT da Phase 2;
+    - ``unchanged_uids``: unique_ids existentes com o mesmo ``content_hash`` do re-scrape.
+      Nunca são republicados. Com ``allow_update=False`` também ficam fora de ``to_update``
+      (sem UPDATE e fora de ``articles_saved``); com ``allow_update=True`` são atualizados.
+    """
+
+    to_update: list[tuple[str, NewsInsert]]
+    to_insert: list[NewsInsert]
+    unchanged_uids: set[str]
 
 
 class InsertResult(NamedTuple):
@@ -235,9 +255,23 @@ class PostgresManager:
         """
         Insert news records (batch operation).
 
+        Artigo que já existe com o mesmo (agency_key, url) é o re-scrape (Phase 1):
+
+        - ``allow_update=False`` (o das DAGs): só é atualizado se o ``content_hash``
+          mudou (hash gravado NULL conta como mudou). Com o mesmo hash não há UPDATE,
+          não conta em ``saved`` e não é republicado;
+        - ``allow_update=True`` (forçar regravação, ex.: depois de corrigir o parser):
+          todo artigo casado é atualizado e conta em ``saved``, mas só o de hash
+          diferente é republicado.
+
+        O artigo sem tema não é mais republicado no re-scrape: o retry de um
+        enriquecimento que falhou fica com o reconciliador diário do ``/dispatch``
+        (Passo 3 da rearquitetura da ingestão).
+
         Args:
             news: List of news to insert
-            allow_update: If True, update existing records (ON CONFLICT UPDATE)
+            allow_update: If True, update existing records (ON CONFLICT UPDATE and the
+                Phase 1 UPDATE even when content_hash did not change)
 
         Returns:
             InsertResult(saved, articles, new). saved includes every row written
@@ -246,11 +280,9 @@ class PostgresManager:
             ON CONFLICT DO NOTHING, or the rows with xmax = 0 in the RETURNING
             of ON CONFLICT DO UPDATE (allow_update=True). articles is a list of
             dicts with unique_id, agency_key, published_at for each row to
-            publish as dgb.news.scraped: new rows, plus existing rows (matched
-            by URL) whose content_hash changed or that are not enriched yet (no
-            theme: the republication is the enrichment retry). Re-scrapes of
-            enriched articles without content change are updated but not
-            returned.
+            publish as dgb.news.scraped: new rows, rows returned by the
+            ON CONFLICT DO UPDATE (allow_update=True), plus existing rows
+            (matched by URL) whose content_hash changed.
         """
         if not news:
             raise ValueError("News list cannot be empty")
@@ -302,26 +334,20 @@ class PostgresManager:
             cursor = conn.cursor()
 
             # Two-phase insert: pre-check URLs against existing records
-            to_update, to_insert, skip_publish_uids = self._match_existing_by_url(news, cursor)
-
-            if to_update:
-                logger.info(
-                    f"Updating {len(to_update)} existing articles by URL match "
-                    f"({len(skip_publish_uids)} enriched with unchanged content, not republished)"
-                )
+            match = self._match_existing_by_url(news, cursor, allow_update)
+            self._log_url_match(match, allow_update)
 
             # Phase 1: UPDATE existing articles matched by URL. Go back for
-            # publication (dgb.news.scraped) only the ones whose content changed or
-            # that have no theme yet (retry of a failed enrichment).
-            updated_articles = self._update_existing_articles(to_update, cursor)
+            # publication (dgb.news.scraped) only the ones whose content changed.
+            updated_articles = self._update_existing_articles(match.to_update, cursor)
             inserted_articles.extend(
-                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
+                a for a in updated_articles if a["unique_id"] not in match.unchanged_uids
             )
 
             # Phase 2: INSERT new articles
-            if to_insert:
+            if match.to_insert:
                 phase2 = self._insert_new_articles(
-                    to_insert,
+                    match.to_insert,
                     allow_update,
                     cursor,
                     news_by_uid,
@@ -461,10 +487,10 @@ class PostgresManager:
                 "UniqueViolation on INSERT (race condition with concurrent worker). "
                 "Re-checking URLs and retrying."
             )
-            retry_update, retry_insert, skip_publish_uids = self._match_existing_by_url(
-                to_insert, cursor
-            )
-            updated_articles = self._update_existing_articles(retry_update, cursor)
+            retry_match = self._match_existing_by_url(to_insert, cursor, allow_update)
+            self._log_url_match(retry_match, allow_update)
+            updated_articles = self._update_existing_articles(retry_match.to_update, cursor)
+            retry_insert = retry_match.to_insert
             if retry_insert:
                 retry_values = [
                     (
@@ -498,7 +524,7 @@ class PostgresManager:
                 result = []
             returned_ids = [row[0] for row in result]
             inserted_articles = [
-                a for a in updated_articles if a["unique_id"] not in skip_publish_uids
+                a for a in updated_articles if a["unique_id"] not in retry_match.unchanged_uids
             ]
             inserted_articles.extend(self._returned_articles(returned_ids, news_by_uid))
             return _Phase2Result(
@@ -555,56 +581,69 @@ class PostgresManager:
         self,
         news: list[NewsInsert],
         cursor,
-    ) -> tuple[list[tuple[str, NewsInsert]], list[NewsInsert], set[str]]:
+        allow_update: bool = False,
+    ) -> _UrlMatch:
         """Separa os artigos que já existem (casados por (agency_key, url)) dos novos.
 
-        Returns:
-            (to_update, to_insert, skip_publish_uids). to_update tem pares
-            (unique_id existente, dados do re-scrape). skip_publish_uids são os
-            unique_ids existentes que a Phase 1 atualiza mas não republica em
-            dgb.news.scraped: content_hash gravado igual ao do re-scrape E artigo
-            já enriquecido (most_specific_theme_id gravado, o mesmo critério do
-            is_already_enriched do enrichment-worker). Sem tema, a republicação
-            é a única nova tentativa de um enriquecimento que falhou: o worker
-            faz ACK mesmo em erro e não há reconciliação agendada.
+        O artigo existente com o mesmo ``content_hash`` do re-scrape fica em
+        ``unchanged_uids`` e não é republicado em dgb.news.scraped: o enrichment-worker
+        pularia o já enriquecido e o bronze-writer reescreveria o mesmo objeto. Sem
+        ``allow_update`` ele também não é atualizado. O hash gravado NULL (linha legada)
+        conta como mudança. O artigo ainda sem tema não tem mais tratamento especial:
+        o retry do enriquecimento é o reconciliador diário do ``/dispatch`` (Passo 3).
         """
         url_pairs = [(n.agency_key, n.url) for n in news if n.url and n.agency_key]
         existing_by_url = self._find_existing_by_url(url_pairs, cursor)
 
         to_update: list[tuple[str, NewsInsert]] = []
         to_insert: list[NewsInsert] = []
-        skip_publish_uids: set[str] = set()
+        unchanged_uids: set[str] = set()
         for n in news:
             key = (n.agency_key, n.url) if n.url and n.agency_key else None
             if key and key in existing_by_url:
                 existing = existing_by_url[key]
+                if existing.content_hash is not None and existing.content_hash == n.content_hash:
+                    unchanged_uids.add(existing.unique_id)
+                    if not allow_update:
+                        continue  # nada mudou: sem UPDATE, sem contagem, sem republicação
                 to_update.append((existing.unique_id, n))
-                if (
-                    existing.content_hash == n.content_hash
-                    and existing.most_specific_theme_id is not None
-                ):
-                    skip_publish_uids.add(existing.unique_id)
             else:
                 to_insert.append(n)
-        return to_update, to_insert, skip_publish_uids
+        return _UrlMatch(to_update, to_insert, unchanged_uids)
+
+    @staticmethod
+    def _log_url_match(match: _UrlMatch, allow_update: bool) -> None:
+        """Loga quantos artigos casados por URL vão ao UPDATE e quantos ficam iguais."""
+        if not match.to_update and not match.unchanged_uids:
+            return
+        if allow_update:
+            logger.info(
+                f"Updating {len(match.to_update)} existing articles by URL match "
+                f"({len(match.unchanged_uids)} with unchanged content, not republished)"
+            )
+        else:
+            logger.info(
+                f"Updating {len(match.to_update)} existing articles by URL match with changed "
+                f"content; {len(match.unchanged_uids)} unchanged (no UPDATE, not republished)"
+            )
 
     def _find_existing_by_url(
         self,
         url_pairs: list[tuple[str, str]],
         cursor,
     ) -> dict[tuple[str, str], _ExistingArticle]:
-        """Mapeia (agency_key, url) -> (unique_id, content_hash, most_specific_theme_id)."""
+        """Mapeia (agency_key, url) -> (unique_id, content_hash)."""
         if not url_pairs:
             return {}
 
         query = """
-            SELECT unique_id, agency_key, url, content_hash, most_specific_theme_id FROM news
+            SELECT unique_id, agency_key, url, content_hash FROM news
             WHERE (agency_key, url) IN %s
         """
         cursor.execute(query, (tuple(url_pairs),))
         result: dict[tuple[str, str], _ExistingArticle] = {}
         for row in cursor.fetchall():
-            result[(row[1], row[2])] = _ExistingArticle(row[0], row[3], row[4])
+            result[(row[1], row[2])] = _ExistingArticle(row[0], row[3])
         return result
 
     def _update_existing_articles(
@@ -682,16 +721,38 @@ class PostgresManager:
 
     # O aviso de scrape_runs sem articles_new sai uma vez por processo, não por agência.
     _warned_missing_articles_new = False
+    # Idem para scrape_agency_state ausente (migration 038 não aplicada).
+    _warned_missing_agency_state = False
 
-    def record_scrape_run(self, run: "ScrapeRunResult") -> None:
-        """Record a scrape execution result.
+    def record_scrape_run(
+        self,
+        run: "ScrapeRunResult",
+        *,
+        started_at: datetime | None = None,
+        explicit_window: bool = False,
+        forced: bool = False,
+    ) -> Transition | None:
+        """Record a scrape execution result and update the agency state.
 
         A coluna articles_new vem da migration 037 do data-platform. Se o banco ainda
         não a tem (deploy do scraper antes da migration), o INSERT é refeito sem ela:
         perder a linha de scrape_runs faria o monitor acusar todas as agências.
 
+        Na mesma transação, depois do INSERT, o estado da agência em scrape_agency_state
+        (migration 038) é atualizado dentro de um SAVEPOINT: se falhar (inclusive sem a
+        tabela), só o estado é desfeito e a linha de scrape_runs é gravada assim mesmo.
+        Depois do commit, uma transição do disjuntor gera o evento circuit_transition e o
+        alerta em dgb.ops.alerts.
+
         Args:
             run: The scrape run result to persist.
+            started_at: Início da tentativa; padrão ``scraped_at − execution_time_seconds``.
+            explicit_window: A requisição trouxe start_date/end_date (backfill/recuperação):
+                o estado não muda.
+            forced: A requisição trouxe force (ignora o disjuntor).
+
+        Returns:
+            A transição do disjuntor, se houve (já anunciada).
         """
         values = {
             "agency_key": run.agency_key,
@@ -705,6 +766,10 @@ class PostgresManager:
             "fallback_triggered": run.fallback_triggered,
             "articles_new": run.articles_new,
         }
+        outcome = AttemptOutcome.from_run(
+            run, started_at=started_at, explicit_window=explicit_window, forced=forced
+        )
+        transition = None
         conn = self.pool.getconn()
         try:
             try:
@@ -716,10 +781,71 @@ class PostgresManager:
                 self._warn_missing_articles_new()
                 values.pop("articles_new")
                 self._insert_scrape_run(conn, values)
+            transition = self._record_agency_state(conn, outcome)
             conn.commit()
         except Exception as e:
             conn.rollback()
             logger.error(f"Error recording scrape run for {run.agency_key}: {e}")
+            raise
+        finally:
+            self.pool.putconn(conn)
+        if transition is not None:
+            from govbr_scraper.state.alerts import announce_transition
+
+            announce_transition(transition)
+        return transition
+
+    def _record_agency_state(self, conn, outcome: AttemptOutcome) -> Transition | None:
+        """Atualiza scrape_agency_state num SAVEPOINT da transação do scrape_runs.
+
+        Erro (tabela ausente, lock, bug) desfaz só o SAVEPOINT e vira warning: a linha de
+        scrape_runs não pode se perder por causa do estado.
+        """
+        now = datetime.now(UTC)
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT agency_state")
+        try:
+            # A linha existe antes do FOR UPDATE: duas tentativas simultâneas da mesma
+            # agência (retry sobreposto, backfill) ficam em série.
+            state_repository.ensure_rows(conn, [outcome.agency_key], now)
+            prev = state_repository.get_state(
+                conn, outcome.agency_key, for_update=True
+            ) or AgencyState.new(outcome.agency_key, now)
+            new_state, transition = apply_attempt(prev, outcome, now)
+            state_repository.upsert_state(conn, new_state)
+            with conn.cursor() as cur:
+                cur.execute("RELEASE SAVEPOINT agency_state")
+        except Exception as e:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT agency_state")
+            if isinstance(e, StateUnavailable):
+                self._warn_missing_agency_state()
+            else:
+                logger.warning(
+                    f"Falha ao atualizar scrape_agency_state de {outcome.agency_key} "
+                    f"(scrape_runs gravado assim mesmo): {e}"
+                )
+            return None
+        return transition
+
+    def list_agency_states(self) -> list[AgencyState]:
+        """Todas as linhas de scrape_agency_state. Sem a tabela: StateUnavailable."""
+        conn = self.pool.getconn()
+        try:
+            return state_repository.list_states(conn)
+        finally:
+            # O putconn desfaz a transação de leitura (ou a abortada).
+            self.pool.putconn(conn)
+
+    def mark_agency_probe(self, agency_key: str, now: datetime) -> bool:
+        """Marca o circuito aberto da agência como half_open (a sonda vai rodar) e comita."""
+        conn = self.pool.getconn()
+        try:
+            changed = state_repository.mark_probe(conn, agency_key, now)
+            conn.commit()
+            return changed
+        except Exception:
+            conn.rollback()
             raise
         finally:
             self.pool.putconn(conn)
@@ -733,6 +859,16 @@ class PostgresManager:
         query = f"INSERT INTO scrape_runs ({columns}) VALUES ({placeholders})"  # nosec B608
         with conn.cursor() as cur:
             cur.execute(query, tuple(values.values()))
+
+    @classmethod
+    def _warn_missing_agency_state(cls) -> None:
+        if cls._warned_missing_agency_state:
+            return
+        cls._warned_missing_agency_state = True
+        logger.warning(
+            "scrape_agency_state ausente (migration 038 do data-platform não aplicada): "
+            "scrape_runs gravado sem o estado por agência"
+        )
 
     @classmethod
     def _warn_missing_articles_new(cls) -> None:

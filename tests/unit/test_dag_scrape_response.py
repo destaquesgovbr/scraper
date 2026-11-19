@@ -30,6 +30,10 @@ class AirflowFailException(AirflowException):
     pass
 
 
+class AirflowSkipException(AirflowException):
+    pass
+
+
 def _airflow_mocks(tasks):
     def fake_dag(**kwargs):
         return lambda fn: fn
@@ -55,6 +59,7 @@ def _airflow_mocks(tasks):
     exceptions = types.ModuleType("airflow.exceptions")
     exceptions.AirflowException = AirflowException
     exceptions.AirflowFailException = AirflowFailException
+    exceptions.AirflowSkipException = AirflowSkipException
 
     return {
         "airflow": MagicMock(),
@@ -106,6 +111,28 @@ class TestResponseErrors:
         body = {"errors": [_error("html_changed", False), "boom", _error("x", True, "mds")]}
         assert dag_module._response_errors(body, "mec") == [_error("html_changed", False)]
         assert len(dag_module._response_errors(body)) == 2
+
+
+class TestResponseSkipped:
+    @pytest.mark.parametrize("body", [None, "texto", {"detail": "x"}, {"skipped": "x"}])
+    def test_body_without_skipped(self, dag_module, body):
+        assert dag_module._response_skipped(body) == []
+
+    def test_filters_by_agency(self, dag_module):
+        body = {
+            "skipped": [
+                {"agency": "mec", "reason": "circuit_open", "next_probe_at": "2026-11-19T16:00Z"},
+                {"agency": "mds", "reason": "circuit_open"},
+                "lixo",
+            ]
+        }
+        assert [s["agency"] for s in dag_module._response_skipped(body)] == ["mec", "mds"]
+        assert [s["agency"] for s in dag_module._response_skipped(body, "mec")] == ["mec"]
+
+    def test_skipped_only_body_passes_the_check(self, dag_module):
+        """status "skipped" com HTTP 200 não é falha: quem decide o skip é a task."""
+        body = {"status": "skipped", "errors": [], "skipped": [{"agency": "mec"}]}
+        dag_module._check_scrape_response(200, body, "mec")
 
 
 class TestAllPermanent:
@@ -189,7 +216,7 @@ def ebc():
     _drop("dags.scrape_ebc")
 
 
-def _run_ebc(module, status_code=200, body=None):
+def _run_ebc(module, status_code=200, body=None, agency_key="agencia_brasil"):
     variable = module._test_mocks["airflow.models"].Variable
     variable.get = MagicMock(return_value="https://scraper.run.app")
     response = MagicMock()
@@ -199,45 +226,68 @@ def _run_ebc(module, status_code=200, body=None):
         response.text = "<html>502</html>"
     else:
         response.json.return_value = body
+    context = {"logical_date": SIX_AM, "params": {}}
+    module._test_mocks["airflow.sdk"].get_current_context = MagicMock(return_value=context)
     with (
         patch.dict(sys.modules, module._test_mocks),
         patch("google.oauth2.id_token.fetch_id_token", return_value="tok"),
         patch("google.auth.transport.requests.Request"),
         patch("httpx.post", return_value=response),
     ):
-        return module._test_tasks["scrape_ebc"]._original_fn(logical_date=SIX_AM, params={})
+        return module._test_tasks["scrape_ebc"]._original_fn(agency_key)
 
 
 class TestScrapeEbcTask:
-    def test_success_returns_result(self, ebc):
+    """Uma task mapeada por fonte: cada uma lê só a própria parte da resposta."""
+
+    def test_task_is_mapped_with_the_source_as_index(self, ebc):
+        assert ebc._test_tasks["scrape_ebc"].task_kwargs == {
+            "map_index_template": "{{ agency_key }}"
+        }
+        assert ebc.EBC_SOURCES == ["agencia_brasil", "tvbrasil"]
+
+    def test_skipped_source_skips_the_task(self, ebc):
+        body = {
+            "status": "skipped",
+            "errors": [],
+            "skipped": [
+                {
+                    "agency": "agencia_brasil",
+                    "reason": "circuit_open",
+                    "next_probe_at": "2026-11-19T16:00:00Z",
+                }
+            ],
+        }
+        with pytest.raises(AirflowSkipException, match="agencia_brasil: circuito aberto"):
+            _run_ebc(ebc, 200, body)
+
+    def test_other_source_skipped_does_not_skip_this_one(self, ebc):
+        body = {
+            "status": "completed",
+            "articles_new": 2,
+            "articles_saved": 2,
+            "errors": [],
+            "skipped": [{"agency": "tvbrasil", "reason": "circuit_open"}],
+        }
+        assert _run_ebc(ebc, 200, body)["articles_new"] == 2
+
+    def test_success_returns_result_of_the_source(self, ebc):
         body = {"status": "completed", "articles_new": 7, "articles_saved": 40, "errors": []}
-        assert _run_ebc(ebc, 200, body) == {
-            "agency": "ebc",
+        assert _run_ebc(ebc, 200, body, agency_key="tvbrasil") == {
+            "agency": "tvbrasil",
             "articles_new": 7,
             "articles_saved": 40,
         }
 
-    def test_all_permanent_fails_without_retry(self, ebc):
-        body = {
-            "status": "failed",
-            "errors": [
-                _error("unknown_agency", False, "agencia_brasil"),
-                _error("html_changed", False, "tvbrasil"),
-            ],
-        }
-        with pytest.raises(AirflowFailException, match="html_changed, unknown_agency"):
+    def test_permanent_error_fails_without_retry(self, ebc):
+        body = {"status": "failed", "errors": [_error("html_changed", False, "agencia_brasil")]}
+        with pytest.raises(AirflowFailException, match="agencia_brasil.*html_changed"):
             _run_ebc(ebc, 500, body)
 
-    def test_any_transient_error_retries(self, ebc):
-        body = {
-            "status": "partial",
-            "errors": [
-                _error("html_changed", False, "agencia_brasil"),
-                _error("network_error", True, "tvbrasil"),
-            ],
-        }
-        with pytest.raises(AirflowException, match="EBC") as exc:
-            _run_ebc(ebc, 207, body)
+    def test_transient_error_retries(self, ebc):
+        body = {"status": "failed", "errors": [_error("network_error", True, "tvbrasil")]}
+        with pytest.raises(AirflowException, match="tvbrasil") as exc:
+            _run_ebc(ebc, 500, body, agency_key="tvbrasil")
         assert not isinstance(exc.value, AirflowFailException)
 
     def test_non_json_retries(self, ebc):

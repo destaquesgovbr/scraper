@@ -101,3 +101,86 @@ def record_scrape_run_safe(storage, run: ScrapeRunResult, agency_key: str) -> No
         logger.warning(
             "Failed to record scrape run for {agency}: {err}", agency=agency_key, err=err
         )
+
+
+# =============================================================================
+# Eventos estruturados (jsonPayload no Cloud Logging; métricas baseadas em log)
+# =============================================================================
+
+EVENT_SCRAPE_ATTEMPT = "scrape_attempt"
+EVENT_CIRCUIT_TRANSITION = "circuit_transition"
+
+# outcome do scrape_attempt
+OUTCOME_SUCCESS = "success"
+OUTCOME_FAILED = "failed"
+OUTCOME_SKIPPED = "skipped"
+
+
+def log_scrape_attempt(
+    *,
+    agency: str,
+    outcome: str,
+    category: str | None = None,
+    retryable: bool | None = None,
+    articles_new: int | None = None,
+    duration_s: float | None = None,
+    tier: str | None = None,
+    explicit_window: bool = False,
+    trigger: str = "dag",
+    **extra,
+) -> None:
+    """Evento ``scrape_attempt``: uma vez por agência por tentativa, inclusive quando pulada.
+
+    ``outcome`` é success/failed/skipped; ``category`` vira ``"none"`` quando não há (o label
+    da métrica não pode ser nulo). ``trigger``: dag, task ou backfill. Campos extras (janela,
+    cabeçalhos do Cloud Tasks) vão juntos no jsonPayload.
+    """
+    fields = {
+        "event": EVENT_SCRAPE_ATTEMPT,
+        "agency": agency,
+        "outcome": outcome,
+        "category": str(category) if category else "none",
+        "retryable": retryable,
+        "articles_new": articles_new,
+        "duration_s": round(duration_s, 3) if duration_s is not None else None,
+        "tier": tier,
+        "explicit_window": explicit_window,
+        "trigger": trigger,
+        **extra,
+    }
+    message = (
+        f"scrape_attempt agency={agency} outcome={outcome} category={fields['category']} "
+        f"articles_new={articles_new} tier={tier}"
+    )
+    bound = logger.bind(**fields)
+    if outcome == OUTCOME_FAILED:
+        bound.warning(message)
+    else:
+        bound.info(message)
+
+
+def log_circuit_transition(transition) -> None:
+    """Evento ``circuit_transition`` (abertura ou fechamento do disjuntor de uma agência)."""
+
+    def _value(v):
+        return getattr(v, "value", v)
+
+    from_state = _value(transition.from_state)
+    to_state = _value(transition.to_state)
+    fields = {
+        "event": EVENT_CIRCUIT_TRANSITION,
+        "agency": transition.agency_key,
+        "from_state": from_state,
+        "to_state": to_state,
+        "reason": transition.reason,
+        "category": transition.category or "none",
+    }
+    message = (
+        f"circuit_transition agency={transition.agency_key} {from_state}->{to_state} "
+        f"reason={transition.reason} category={fields['category']}"
+    )
+    bound = logger.bind(**fields)
+    if to_state == "open":
+        bound.warning(message)
+    else:
+        bound.info(message)

@@ -19,9 +19,14 @@ DAG única de scraping das agências gov.br: ``scrape_agencies``.
   que falharam e só derruba a execução se nenhuma funcionou ou se a fração de falhas passou
   da Variable ``scraper_max_failed_ratio`` (padrão 0,10). Vermelho = problema de plataforma;
   a agência quebrada aparece na própria task mapeada.
-- Janela: ver ``_scrape_window`` (9 h para trás, para a execução das 06h cobrir a madrugada).
+- Janela: a DAG não manda datas; a API usa a marca d'água de cada agência (desde o último
+  sucesso, até 7 dias ou ~80 notícias da agência; estado por agência em scrape_agency_state).
+- Disjuntor: com o circuito da agência aberto e a sonda ainda não vencida, a API pula a
+  agência (``skipped``) e a task termina como skipped (``AirflowSkipException``), sem contar
+  como falha na ``summarize``.
 - Params opcionais ``start_date``/``end_date`` (YYYY-MM-DD) para recuperar um período depois
-  de uma queda (disparo manual; ver docs/runbook.md).
+  de uma queda (janela explícita, que não mexe no estado da agência) e ``force`` (ignora o
+  disjuntor). Disparo manual; ver docs/runbook.md.
 
 Substitui as ~147 DAGs ``scrape_<agencia>`` (uma por agência, a cada 10 min), que eram 96,7%
 das task runs do Composer (infra#223). Com uma DAG só, um DagRun zumbi deixa de parar uma
@@ -33,8 +38,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import date, datetime, timedelta
 
 import yaml
 from airflow.decorators import dag, task
@@ -42,12 +46,6 @@ from airflow.sdk import Param
 
 logger = logging.getLogger(__name__)
 
-
-BRASILIA = ZoneInfo("America/Sao_Paulo")
-
-# A execução das 06h precisa cobrir a madrugada sem scraping, desde a execução das 22h do
-# dia anterior: 8 h de intervalo + 1 h de folga.
-SCRAPE_LOOKBACK_HOURS = 9
 
 # Agências raspadas ao mesmo tempo dentro de uma execução (max_active_tis_per_dag).
 DEFAULT_MAX_CONCURRENT_AGENCIES = 4
@@ -86,32 +84,6 @@ def _max_concurrent_agencies(raw: str | None) -> int:
 MAX_CONCURRENT_AGENCIES = _max_concurrent_agencies(os.environ.get("SCRAPE_MAX_CONCURRENT_AGENCIES"))
 
 
-def _scrape_window(
-    logical_date: datetime, lookback_hours: int = SCRAPE_LOOKBACK_HOURS
-) -> tuple[str, str]:
-    """Janela (min_date, max_date) da execução, em datas de Brasília.
-
-    As listagens datam as notícias no horário de Brasília. Em UTC, das 22:00 às 23:59 BRT a
-    data já é o dia seguinte e a execução pulava as notícias do dia. A janela vai de
-    ``lookback_hours`` antes da execução até a execução. Com 9 h, as execuções das 06h e
-    das 08h ainda incluem o dia anterior (o que saiu depois da execução das 22h); a partir
-    das 10h, só o dia corrente. Datetime sem fuso é tratado como UTC.
-
-    No Airflow 3 o cron usa o CronTriggerTimetable (``create_cron_data_intervals = False``,
-    o padrão): a logical_date é o próprio horário agendado (06:00, 08:00...), não o início
-    do intervalo anterior.
-    """
-    # O logical_date do Airflow é pendulum.DateTime, cuja aritmética e astimezone não
-    # preservam o fuso de um ZoneInfo (em produção a janela saiu invertida). Só o instante
-    # (timestamp) é usado, convertido para um datetime da stdlib em Brasília.
-    if logical_date.tzinfo is None:
-        # timezone.utc (não datetime.UTC, 3.11+): o arquivo roda no Python do Composer.
-        logical_date = logical_date.replace(tzinfo=timezone.utc)  # noqa: UP017
-    local = datetime.fromtimestamp(logical_date.timestamp(), tz=BRASILIA)
-    start = local - timedelta(hours=lookback_hours)
-    return start.strftime("%Y-%m-%d"), local.strftime("%Y-%m-%d")
-
-
 def _parse_param_date(value, name: str) -> date:
     """Valida um param de data no formato YYYY-MM-DD."""
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value):
@@ -122,18 +94,19 @@ def _parse_param_date(value, name: str) -> date:
         raise ValueError(f"{name} não é uma data válida: {value!r}") from e
 
 
-def _resolve_window(logical_date: datetime, params=None) -> tuple[str, str]:
-    """Janela da execução: a dos params ``start_date``/``end_date`` ou a de ``_scrape_window``.
+def _resolve_window(params=None) -> tuple[str, str] | None:
+    """Janela explícita dos params ``start_date``/``end_date``, ou None.
 
-    Os params servem para recuperar um período depois de uma queda (disparo manual). Só
-    valem juntos; vazios ou ausentes, vale a janela calculada. Erro de formato, só um dos
-    dois ou início depois do fim levantam ValueError.
+    None (os dois vazios ou ausentes): a DAG não manda datas e a API usa a marca d'água de
+    cada agência. Os params servem para recuperar um período depois de uma queda (disparo
+    manual) e só valem juntos. Erro de formato, só um dos dois ou início depois do fim
+    levantam ValueError.
     """
     params = params or {}
     start = params.get("start_date") or None
     end = params.get("end_date") or None
     if start is None and end is None:
-        return _scrape_window(logical_date)
+        return None
     if start is None or end is None:
         raise ValueError("Informe start_date e end_date juntos (YYYY-MM-DD), ou nenhum dos dois")
     start_date = _parse_param_date(start, "start_date")
@@ -143,19 +116,21 @@ def _resolve_window(logical_date: datetime, params=None) -> tuple[str, str]:
     return start_date.isoformat(), end_date.isoformat()
 
 
-def _run_instant(context) -> datetime:
-    """Instante de referência da execução para a janela.
-
-    Execução agendada: a logical_date (o horário do cron). Disparo manual pela CLI/API do
-    Airflow 3 pode vir sem logical_date: vale o run_after do DagRun ou, na falta, agora.
+def _scrape_payload(agency_keys: list[str], params=None) -> dict:
+    """Corpo de /scrape/*: sem datas por padrão (marca d'água); com a janela dos params, se
+    houver; ``force`` do param (ignora o disjuntor). Levanta ValueError com params inválidos.
     """
-    logical_date = context.get("logical_date")
-    if logical_date is not None:
-        return logical_date
-    run_after = getattr(context.get("dag_run"), "run_after", None)
-    if run_after is not None:
-        return run_after
-    return datetime.now(timezone.utc)  # noqa: UP017
+    params = params or {}
+    payload = {
+        "agencies": list(agency_keys),
+        "allow_update": False,
+        "sequential": True,
+        "force": params.get("force") is True,
+    }
+    window = _resolve_window(params)
+    if window is not None:
+        payload["start_date"], payload["end_date"] = window
+    return payload
 
 
 def _on_scrape_failure(context):
@@ -211,6 +186,23 @@ def _describe_errors(errors: list[dict]) -> str:
         f"{e.get('agency')} [{e.get('category') or 'sem categoria'}]: {e.get('error')}"
         for e in errors
     )
+
+
+def _response_skipped(body, agency_key: str | None = None) -> list[dict]:
+    """Itens de ``skipped[]`` do corpo de /scrape/* (só os da agência, se informada).
+
+    A API pula a agência com o circuito aberto cuja sonda ainda não venceu. API antiga, sem
+    o campo, devolve [].
+    """
+    if not isinstance(body, dict):
+        return []
+    skipped = body.get("skipped")
+    if not isinstance(skipped, list):
+        return []
+    items = [s for s in skipped if isinstance(s, dict)]
+    if agency_key is not None:
+        items = [s for s in items if s.get("agency") == agency_key]
+    return items
 
 
 def _check_scrape_response(status_code: int, body, agency_key: str | None) -> None:
@@ -276,13 +268,15 @@ def _parse_max_failed_ratio(raw) -> float:
     return value
 
 
-def _summarize_results(results, expected_agencies) -> dict:
+def _summarize_results(results, expected_agencies, skipped_results=()) -> dict:
     """Agrega os resultados da task mapeada scrape.
 
     ``results`` é o LazyXComSequence do Airflow: só tem os resultados das tasks que deram
     certo, compactados (a posição não é o map_index). Por isso cada resultado leva a sigla, e
-    as falhas são as esperadas que não aparecem. Só iteração: fatiar (``results[:]``) levanta
-    TypeError no Airflow 3.0.1.
+    as falhas são as esperadas que não aparecem nem foram puladas. ``skipped_results`` é a
+    sequência da XCom ``skipped`` (empurrada pela task pulada pelo disjuntor antes do
+    AirflowSkipException). Só iteração: fatiar (``results[:]``) levanta TypeError no
+    Airflow 3.0.1.
     """
     ok: set[str] = set()
     articles_new = 0
@@ -300,13 +294,22 @@ def _summarize_results(results, expected_agencies) -> dict:
         if isinstance(item.get("articles_saved"), int):
             articles_saved += item["articles_saved"]
     expected = set(expected_agencies)
-    failed = sorted(expected - ok)
+    skipped = {
+        item["agency"]
+        for item in (skipped_results or [])
+        if isinstance(item, dict) and item.get("agency")
+    }
+    skipped = (skipped & expected) - ok
+    failed = sorted(expected - ok - skipped)
     total = len(expected)
+    attempted = total - len(skipped)
     return {
         "total": total,
         "ok": len(ok & expected),
         "failed": failed,
-        "failed_ratio": round(len(failed) / total, 4) if total else 1.0,
+        "skipped": sorted(skipped),
+        # Pulada pelo disjuntor não conta: a fração é sobre as agências tentadas.
+        "failed_ratio": round(len(failed) / attempted, 4) if attempted else 0.0,
         "articles_new": articles_new,
         "articles_saved": articles_saved,
         "agencies_without_articles_new": len(without_new),
@@ -314,14 +317,18 @@ def _summarize_results(results, expected_agencies) -> dict:
 
 
 def _summary_failure(summary: dict, max_failed_ratio: float) -> str | None:
-    """Motivo para derrubar a execução, ou None se ela fica verde."""
-    if summary["ok"] == 0:
+    """Motivo para derrubar a execução, ou None se ela fica verde.
+
+    Agência pulada pelo disjuntor não é falha: só puladas (nenhuma tentada) fica verde.
+    """
+    all_skipped = bool(summary["skipped"]) and len(summary["skipped"]) == summary["total"]
+    if summary["ok"] == 0 and not all_skipped:
         return f"Nenhuma agência raspada com sucesso ({summary['total']} esperadas)"
     if summary["failed_ratio"] > max_failed_ratio:
         return (
-            f"{len(summary['failed'])} de {summary['total']} agências falharam "
-            f"({summary['failed_ratio']:.0%}, acima do limite de {max_failed_ratio:.0%}): "
-            f"{', '.join(summary['failed'])}"
+            f"{len(summary['failed'])} de {summary['total'] - len(summary['skipped'])} "
+            f"agências tentadas falharam ({summary['failed_ratio']:.0%}, acima do limite de "
+            f"{max_failed_ratio:.0%}): {', '.join(summary['failed'])}"
         )
     return None
 
@@ -355,8 +362,14 @@ def _load_agencies_config() -> dict:
 
 _DATE_PARAM_HELP = (
     "Opcional, YYYY-MM-DD, em datas de Brasília. Para recuperar um período depois de uma "
-    "queda, informe start_date e end_date juntos: eles substituem a janela calculada. "
-    "Vazios, vale a janela normal (9 h antes da execução até a execução)."
+    "queda, informe start_date e end_date juntos: a janela vai explícita e não mexe no "
+    "estado da agência. Vazios, a API usa a marca d'água de cada agência (desde o último "
+    "sucesso, até 7 dias ou ~80 notícias da agência)."
+)
+_FORCE_PARAM_HELP = (
+    "Ignora o disjuntor: raspa também as agências com o circuito aberto (erro permanente "
+    "seguido). Sem datas, um sucesso fecha o circuito; com start_date/end_date o estado da "
+    "agência não muda (o circuito continua aberto)."
 )
 
 
@@ -383,6 +396,12 @@ _DATE_PARAM_HELP = (
             title="Data final (recuperação)",
             description=_DATE_PARAM_HELP,
         ),
+        "force": Param(
+            False,
+            type="boolean",
+            title="Ignorar o disjuntor",
+            description=_FORCE_PARAM_HELP,
+        ),
     },
     default_args={
         "owner": "scraper",
@@ -403,7 +422,7 @@ def scrape_agencies_dag():
         import google.auth.transport.requests
         import google.oauth2.id_token
         import httpx
-        from airflow.exceptions import AirflowFailException
+        from airflow.exceptions import AirflowFailException, AirflowSkipException
         from airflow.models import Variable
         from airflow.sdk import get_current_context
 
@@ -413,7 +432,7 @@ def scrape_agencies_dag():
         context["agency_key"] = agency_key
 
         try:
-            min_date, max_date = _resolve_window(_run_instant(context), context.get("params"))
+            payload = _scrape_payload([agency_key], context.get("params"))
         except ValueError as e:
             # Params inválidos no disparo manual: repetir não adianta.
             raise AirflowFailException(str(e)) from e
@@ -426,18 +445,17 @@ def scrape_agencies_dag():
         auth_req = google.auth.transport.requests.Request()
         token = google.oauth2.id_token.fetch_id_token(auth_req, scraper_api_url)
 
-        logger.info(f"Calling scraper API for {agency_key}: {min_date} to {max_date}")
+        window = (
+            f"{payload['start_date']} a {payload['end_date']}"
+            if "start_date" in payload
+            else "marca d'água"
+        )
+        logger.info(f"Calling scraper API for {agency_key}: janela {window}")
 
         # Erro de rede/timeout do httpx propaga e o Airflow repete.
         response = httpx.post(
             f"{scraper_api_url}/scrape/agencies",
-            json={
-                "start_date": min_date,
-                "end_date": max_date,
-                "agencies": [agency_key],
-                "allow_update": False,
-                "sequential": True,
-            },
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
             timeout=900.0,
         )
@@ -458,6 +476,22 @@ def scrape_agencies_dag():
                 json.dumps(result, indent=2, ensure_ascii=False),
             )
 
+        # Circuito aberto: a API não raspou. A task fica skipped; a XCom "skipped" (empurrada
+        # antes, porque a task pulada não devolve valor) diz à summarize que não é falha.
+        skipped = _response_skipped(result, agency_key)
+        if skipped:
+            next_probe_at = skipped[0].get("next_probe_at")
+            try:
+                context["ti"].xcom_push(
+                    key="skipped", value={"agency": agency_key, "next_probe_at": next_probe_at}
+                )
+            except Exception as e:  # a summarize conta como falha; a task segue skipped
+                logger.warning("Falha ao gravar a XCom skipped de %s: %s", agency_key, e)
+            raise AirflowSkipException(
+                f"{agency_key}: circuito aberto ({skipped[0].get('reason')}), "
+                f"próxima sonda em {next_probe_at}"
+            )
+
         # Erro permanente: AirflowFailException (sem retry). O resto: AirflowException.
         _check_scrape_response(response.status_code, result, agency_key)
         return _scrape_result(agency_key, result)
@@ -465,28 +499,34 @@ def scrape_agencies_dag():
     # retries=0 e trigger_rule all_done: roda depois de todas as agências, com ou sem falha, e
     # é a única folha, então decide sozinha a cor da execução.
     @task(trigger_rule="all_done", retries=0)
-    def summarize(results, expected_agencies):
-        """Resume a execução e só falha se nenhuma agência funcionou ou se muitas falharam."""
+    def summarize(results, expected_agencies, skipped=None):
+        """Resume a execução e só falha se nenhuma agência funcionou ou se muitas falharam.
+
+        Agência pulada pelo disjuntor (XCom ``skipped``) é contada à parte, sem ser falha.
+        """
         from airflow.exceptions import AirflowFailException
         from airflow.models import Variable
 
-        summary = _summarize_results(results, expected_agencies)
+        summary = _summarize_results(results, expected_agencies, skipped)
         max_failed_ratio = _parse_max_failed_ratio(
             Variable.get("scraper_max_failed_ratio", default_var="0.10")
         )
         logger.info(
-            "Resumo scrape_agencies: %d/%d agências OK, %d com falha (%.1f%%, limite %.0f%%); "
-            "%d notícias novas, %d linhas gravadas",
+            "Resumo scrape_agencies: %d/%d agências OK, %d com falha (%.1f%% das tentadas, "
+            "limite %.0f%%), %d puladas (circuito aberto); %d notícias novas, %d linhas gravadas",
             summary["ok"],
             summary["total"],
             len(summary["failed"]),
             summary["failed_ratio"] * 100,
             max_failed_ratio * 100,
+            len(summary["skipped"]),
             summary["articles_new"],
             summary["articles_saved"],
         )
         if summary["failed"]:
             logger.warning("Agências com falha: %s", ", ".join(summary["failed"]))
+        if summary["skipped"]:
+            logger.info("Agências puladas (circuito aberto): %s", ", ".join(summary["skipped"]))
         if summary["agencies_without_articles_new"]:
             logger.info(
                 "%d agência(s) sem articles_new na resposta (API anterior ao campo)",
@@ -500,9 +540,10 @@ def scrape_agencies_dag():
 
     # Lista calculada no parse: incluir ou desativar uma agência no YAML muda as tasks
     # mapeadas da próxima execução, sem criar nem remover DAGs. A summarize recebe a mesma
-    # lista (serializada com a DAG) para saber quais agências faltaram.
+    # lista (serializada com a DAG) para saber quais agências faltaram, e a XCom "skipped"
+    # das tasks mapeadas (LazyXComSequence; inclui as puladas) para não contá-las como falha.
     scraped = scrape.expand(agency_key=ACTIVE_AGENCY_KEYS)
-    summarize(scraped, ACTIVE_AGENCY_KEYS)
+    summarize(scraped, ACTIVE_AGENCY_KEYS, scraped["skipped"])
 
 
 ACTIVE_AGENCY_KEYS = sorted(_load_agencies_config())

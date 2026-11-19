@@ -1,9 +1,5 @@
-import os
-import sys
+from govbr_scraper.logging_setup import configure_logging
 
-from loguru import logger
-
-# Configure loguru to respect LOG_LEVEL (default: INFO)
-_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logger.remove()
-logger.add(sys.stderr, level=_log_level)
+# Logs em JSON por linha no stderr (Cloud Logging), ou no formato de texto do loguru com
+# LOG_FORMAT=text (uso local e testes). LOG_LEVEL define o nível (padrão INFO).
+configure_logging()

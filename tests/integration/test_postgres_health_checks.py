@@ -25,10 +25,13 @@ from psycopg2.extensions import make_dsn
 from govbr_scraper.monitoring.health_checks import (
     compute_coverage_report,
     find_consecutive_failures,
+    find_open_circuit_agencies,
+    find_open_circuits,
     find_silent_agencies,
     find_stale_agencies,
 )
 from tests.integration import postgres_guard
+from tests.integration.migration_038 import MIGRATION_038
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -273,3 +276,86 @@ class TestFindConsecutiveFailuresPostgres:
         _error(db, "ctir", 0.5, "html_changed")
         result = self._failures(db)
         assert result["ctir"]["consecutive_failures"] == 1
+
+
+class TestOpenCircuitExclusionPostgres:
+    """Com a migration 038, agência com o disjuntor aberto sai de "Agências Sem Execução" e
+    das falhas consecutivas; sem a tabela, nada muda (UndefinedTable tratado)."""
+
+    @pytest.fixture
+    def agency_state(self, db):
+        with db.cursor() as cur:
+            cur.execute(MIGRATION_038)
+        yield
+        with db.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS scrape_agency_state, scrape_dispatch_meta")
+
+    @staticmethod
+    def _circuit(db, agency_key: str, state: str) -> None:
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO scrape_agency_state (agency_key, circuit_state) VALUES (%s, %s)",
+                (agency_key, state),
+            )
+
+    def test_without_table_nothing_changes(self, db):
+        assert find_open_circuit_agencies(db) == set()
+        assert _silent(db, ["mec"]) == {"mec": None}
+
+    def test_open_and_half_open_are_excluded(self, db, agency_state):
+        self._circuit(db, "mec", "open")
+        self._circuit(db, "antaq", "half_open")
+        self._circuit(db, "mds", "closed")
+        for agency in ("mec", "antaq", "mds"):
+            _error(db, agency, 0.5, "html_changed")
+        assert find_open_circuit_agencies(db) == {"mec", "antaq"}
+        assert _silent(db, ["mec", "antaq", "mds", "inma"]) == {"inma": None}
+        failures = find_consecutive_failures(db, threshold=3, window_hours=6)
+        assert {r["agency_key"] for r in failures} == {"mds"}
+        all_failures = find_consecutive_failures(
+            db, threshold=3, window_hours=6, skip_open_circuits=False
+        )
+        assert {r["agency_key"] for r in all_failures} == {"mec", "antaq", "mds"}
+
+    def test_find_open_circuits_returns_the_section_columns(self, db, agency_state):
+        """A seção "Circuito Aberto" do monitor: a query roda no DDL real da 038."""
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO scrape_agency_state (agency_key, circuit_state, circuit_opened_at, "
+                "next_due_at, last_error_category) VALUES "
+                "('mec', 'open', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '1 hour', "
+                "'html_changed'), ('antaq', 'half_open', NULL, NOW(), NULL), "
+                "('mds', 'closed', NULL, NOW(), NULL)"
+            )
+        rows = find_open_circuits(db)
+        assert [r["agency_key"] for r in rows] == ["antaq", "mec"]
+        assert set(rows[0]) == {
+            "agency_key",
+            "circuit_state",
+            "circuit_opened_at",
+            "next_due_at",
+            "last_error_category",
+        }
+        assert (rows[1]["circuit_state"], rows[1]["last_error_category"]) == (
+            "open",
+            "html_changed",
+        )
+        assert rows[1]["circuit_opened_at"] < rows[1]["next_due_at"]
+
+    def test_dag_query_runs_in_a_transaction_without_table(self, db, base_dsn):
+        """No monitor a conexão não é autocommit: o rollback libera a transação abortada."""
+        # A DSN vem do base_dsn, não de db.dsn: o psycopg2 mascara a senha em
+        # connection.dsn ("password=xxx"), e a reconexão só passaria com auth trust.
+        with db.cursor() as cur:
+            cur.execute("SELECT current_schema()")
+            schema = cur.fetchone()[0]
+        conn = psycopg2.connect(make_dsn(base_dsn, options=f"-c search_path={schema}"))
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            assert find_open_circuit_agencies(conn) == set()
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM scrape_runs")
+                assert cur.fetchone()[0] == 0
+        finally:
+            conn.close()

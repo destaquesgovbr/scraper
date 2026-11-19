@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from psycopg2 import errors
 from psycopg2.extras import RealDictCursor
 
 # Última execução de cada agência ativa (LATERAL top-1 pelo índice
@@ -93,7 +94,49 @@ CONSECUTIVE_FAILURES_QUERY = """
 """
 
 
-def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -> list[dict]:
+# Agências com o disjuntor aberto (open ou half_open) em scrape_agency_state (migration 038
+# do data-platform). Saem de "Agências Sem Execução" e das falhas consecutivas: a API pula a
+# agência sem gravar scrape_run. No lugar delas, o monitor lista os circuitos abertos numa
+# seção própria (o alerta de abertura do scraper-api sai uma vez só, sem retry). Sem a
+# tabela, nada muda.
+#
+# NOTE: This query is duplicated in dags/monitor_scraping_health.py
+# (_OPEN_CIRCUIT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+OPEN_CIRCUIT_AGENCIES_QUERY = """
+    SELECT agency_key, circuit_state, circuit_opened_at, next_due_at, last_error_category
+    FROM scrape_agency_state
+    WHERE circuit_state <> 'closed'
+    ORDER BY agency_key
+"""
+
+
+def find_open_circuits(conn) -> list[dict]:
+    """Agências com o disjuntor aberto, com estado, abertura, próxima sonda e último erro.
+
+    Tabela ausente (038 não aplicada): rollback da transação abortada e lista vazia.
+    """
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(OPEN_CIRCUIT_AGENCIES_QUERY)
+            return [dict(row) for row in cur.fetchall()]
+    except errors.UndefinedTable:
+        conn.rollback()
+        return []
+
+
+def find_open_circuit_agencies(conn) -> set[str]:
+    """Siglas das agências com o disjuntor aberto; vazio se scrape_agency_state não existe."""
+    return {row["agency_key"] for row in find_open_circuits(conn)}
+
+
+def _without_open_circuits(conn, rows: list[dict]) -> list[dict]:
+    open_circuits = find_open_circuit_agencies(conn)
+    return [r for r in rows if r["agency_key"] not in open_circuits]
+
+
+def find_consecutive_failures(
+    conn, threshold: int = 3, window_hours: int = 6, skip_open_circuits: bool = True
+) -> list[dict]:
     """Find agencies with N or more consecutive recent failures, or a permanent last error.
 
     Args:
@@ -101,6 +144,7 @@ def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -
         threshold: Number of consecutive failures to trigger alert.
         window_hours: How many hours back to look for failures (default 6: three runs of
             the scrape_agencies DAG, which runs every 2 hours).
+        skip_open_circuits: Tira as agências com o disjuntor aberto (como o monitor).
 
     Returns:
         List of dicts with agency_key, consecutive_failures, last_error, last_failure_at.
@@ -112,7 +156,8 @@ def find_consecutive_failures(conn, threshold: int = 3, window_hours: int = 6) -
         cur.execute(
             CONSECUTIVE_FAILURES_QUERY, {"threshold": threshold, "window_hours": window_hours}
         )
-        return [dict(row) for row in cur.fetchall()]
+        rows = [dict(row) for row in cur.fetchall()]
+    return _without_open_circuits(conn, rows) if skip_open_circuits else rows
 
 
 def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
@@ -134,7 +179,9 @@ def find_stale_agencies(conn, stale_hours: int = 24) -> list[dict]:
         return [dict(row) for row in cur.fetchall()]
 
 
-def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int = 3) -> list[dict]:
+def find_silent_agencies(
+    conn, active_agencies: Iterable[str], silent_hours: int = 3, skip_open_circuits: bool = True
+) -> list[dict]:
     """Find active agencies with no scrape_run at all (success or error) in the window.
 
     Every call to the scraper API records one scrape_run per agency, success or
@@ -150,6 +197,8 @@ def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int
         active_agencies: Agency keys expected to run (active in site_urls.yaml).
         silent_hours: Hours without any run to consider the agency silent (default 3:
             the DAG runs every 2 hours, plus 1 hour of margin).
+        skip_open_circuits: Tira as agências com o disjuntor aberto, que a API pula sem
+            gravar scrape_run (como o monitor).
 
     Returns:
         List of dicts with agency_key and last_run_at (None when there is no run
@@ -160,7 +209,8 @@ def find_silent_agencies(conn, active_agencies: Iterable[str], silent_hours: int
         return []
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(SILENT_AGENCIES_QUERY, {"agencies": agencies, "silent_hours": silent_hours})
-        return [dict(row) for row in cur.fetchall()]
+        rows = [dict(row) for row in cur.fetchall()]
+    return _without_open_circuits(conn, rows) if skip_open_circuits else rows
 
 
 def compute_coverage_report(conn, hours: int = 24) -> dict:
