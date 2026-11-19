@@ -3,9 +3,10 @@ Testes de integração do PostgresManager contra um Postgres descartável.
 
 Provam que o re-scrape (Phase 1: artigo existente casado por (agency_key, url))
 preserva o que os workers downstream gravaram (summary, temas, embedding e a
-miniatura do thumbnail-worker em image_url) e só republica dgb.news.scraped
-quando o conteúdo mudou ou quando o artigo ainda não tem tema (a republicação é
-o retry de um enriquecimento que falhou).
+miniatura do thumbnail-worker em image_url), só atualiza a linha quando o
+content_hash mudou (com allow_update=False; allow_update=True força o UPDATE) e só
+republica dgb.news.scraped quando o conteúdo mudou, com ou sem tema gravado (o
+retry de um enriquecimento que falhou é o reconciliador do /dispatch).
 
 Requer SCRAPER_TEST_POSTGRES_URL apontando para um Postgres LOCAL e descartável,
 com pgvector, numa porta diferente de 5432. Sem a variável, os testes são
@@ -310,6 +311,12 @@ def _set_thumbnail(db, unique_id: str = UID) -> None:
         assert cur.rowcount == 1
 
 
+def _updated_at(db, unique_id: str = UID) -> datetime:
+    with db.cursor() as cur:
+        cur.execute("SELECT updated_at FROM news WHERE unique_id = %s", (unique_id,))
+        return cur.fetchone()[0]
+
+
 def _count_news(db) -> int:
     with db.cursor() as cur:
         cur.execute("SELECT count(*) FROM news")
@@ -329,12 +336,33 @@ def _assert_themes(row: dict, theme_ids: dict[str, int]) -> None:
 
 
 class TestRescrapePreservesEnrichment:
-    def test_same_content_preserves_summary_themes_and_embedding(self, pg, db, theme_ids):
+    def test_same_content_is_not_updated(self, pg, db, theme_ids):
+        """Mesmo content_hash e allow_update=False (o das DAGs): a Phase 1 não regrava a
+        linha (extracted_at fica o da primeira extração) e não conta em articles_saved."""
+        pg.insert([_scraped(pg)])
+        _enrich(db, theme_ids)
+        updated_at_before = _updated_at(db)
+
+        # Re-scrape ~10 h depois: mesmo conteúdo, scraper sem summary.
+        result = pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)])
+
+        assert (result.saved, result.new, result.articles) == (0, 0, [])
+        row = _row(db)
+        assert row["extracted_at"] == FIRST_EXTRACTED_AT  # sem UPDATE
+        assert _updated_at(db) == updated_at_before
+        assert row["summary"] == SUMMARY
+        _assert_themes(row, theme_ids)
+        assert row["has_embedding"] is True
+        assert _count_news(db) == 1
+
+    def test_same_content_with_allow_update_preserves_summary_themes_and_embedding(
+        self, pg, db, theme_ids
+    ):
         pg.insert([_scraped(pg)])
         _enrich(db, theme_ids)
 
-        # Re-scrape ~10 h depois: mesmo conteúdo, scraper sem summary.
-        pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)])
+        # Re-scrape forçado (allow_update=True): mesmo conteúdo, scraper sem summary.
+        pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)], allow_update=True)
 
         row = _row(db)
         assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT  # o UPDATE da Phase 1 rodou
@@ -388,7 +416,8 @@ class TestRescrapePreservesEnrichment:
     @pytest.mark.parametrize("rescrape_image", ["", None], ids=["vazia", "nula"])
     def test_rescrape_without_image_preserves_thumbnail(self, pg, db, rescrape_image):
         """TV Brasil: o scraper entrega image '' para vídeo sem imagem e o
-        thumbnail-worker grava a miniatura; o re-scrape não pode apagá-la."""
+        thumbnail-worker grava a miniatura; o UPDATE do re-scrape não pode apagá-la
+        (allow_update=True força o UPDATE com o mesmo conteúdo)."""
         pg.insert([_scraped(pg, video_url=VIDEO_URL)])
         _set_thumbnail(db)
 
@@ -397,6 +426,27 @@ class TestRescrapePreservesEnrichment:
                 _scraped(
                     pg,
                     image_url=rescrape_image,
+                    video_url=VIDEO_URL,
+                    extracted_at=RESCRAPE_EXTRACTED_AT,
+                )
+            ],
+            allow_update=True,
+        )
+
+        row = _row(db)
+        assert row["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        assert row["image_url"] == THUMBNAIL_URL
+
+    def test_changed_content_without_image_preserves_thumbnail(self, pg, db):
+        """Conteúdo alterado (UPDATE também com allow_update=False): a miniatura fica."""
+        pg.insert([_scraped(pg, video_url=VIDEO_URL)])
+        _set_thumbnail(db)
+
+        pg.insert(
+            [
+                _scraped(
+                    pg,
+                    content="Conteúdo corrigido pela agência.",
                     video_url=VIDEO_URL,
                     extracted_at=RESCRAPE_EXTRACTED_AT,
                 )
@@ -413,16 +463,38 @@ class TestRescrapePreservesEnrichment:
         _set_thumbnail(db)
 
         source_image = "https://imagens.ebc.com.br/governo-anuncia-programa.jpg"
-        pg.insert([_scraped(pg, image_url=source_image, extracted_at=RESCRAPE_EXTRACTED_AT)])
+        pg.insert(
+            [_scraped(pg, image_url=source_image, extracted_at=RESCRAPE_EXTRACTED_AT)],
+            allow_update=True,
+        )
 
         assert _row(db)["image_url"] == source_image
+
+    def test_same_content_does_not_update_fields_outside_the_hash(self, pg, db):
+        """Efeito aceito: com o mesmo título e conteúdo e allow_update=False, os campos
+        fora do hash (imagem, tags, extracted_at...) não são regravados."""
+        pg.insert([_scraped(pg)])
+
+        pg.insert(
+            [
+                _scraped(
+                    pg,
+                    image_url="https://imagens.ebc.com.br/outra.jpg",
+                    extracted_at=RESCRAPE_EXTRACTED_AT,
+                )
+            ]
+        )
+
+        row = _row(db)
+        assert row["image_url"] == ""
+        assert row["extracted_at"] == FIRST_EXTRACTED_AT
 
     def test_summary_provided_by_rescrape_wins(self, pg, db, theme_ids):
         """COALESCE só protege contra NULL: um summary vindo do re-scrape prevalece."""
         pg.insert([_scraped(pg)])
         _enrich(db, theme_ids)
 
-        pg.insert([_scraped(pg, summary="Resumo vindo da fonte.")])
+        pg.insert([_scraped(pg, summary="Resumo vindo da fonte.")], allow_update=True)
 
         assert _row(db)["summary"] == "Resumo vindo da fonte."
 
@@ -538,37 +610,52 @@ class TestRepublishOnlyOnContentChange:
 
         counts = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
 
-        assert counts.saved == 1  # a Phase 1 atualizou a linha (articles_saved inalterado)
-        assert counts.new == 0  # articles_new: re-scrape não é notícia nova
-        assert _row(db)["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        assert counts == InsertCounts(saved=0, new=0)  # sem UPDATE: nada gravado
+        assert _row(db)["extracted_at"] == FIRST_EXTRACTED_AT
         publisher.publish_scraped.assert_not_called()
 
-    def test_rescrape_without_content_change_but_not_enriched_is_republished(
+    def test_rescrape_without_content_change_and_not_enriched_is_not_republished(
         self, adapter, publisher, db
     ):
-        """Enriquecimento falhou (sem tema gravado): o enrichment-worker faz ACK sem
-        retry, então a republicação do re-scrape é a nova tentativa."""
+        """Sem tema gravado (enriquecimento falhou) também não republica: o retry é o
+        reconciliador diário do /dispatch, com lote limitado."""
         adapter.insert(_scraped_batch())
         publisher.reset_mock()
 
         counts = adapter.insert(_scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT))
 
-        assert counts == InsertCounts(saved=1, new=0)
+        assert counts == InsertCounts(saved=0, new=0)
         assert _row(db)["most_specific_theme_id"] is None
-        assert _published_uids(publisher) == [UID]
+        publisher.publish_scraped.assert_not_called()
+
+    def test_forced_rescrape_without_content_change_is_not_republished(
+        self, adapter, publisher, db
+    ):
+        """allow_update=True regrava a linha, mas o conteúdo igual não é republicado."""
+        adapter.insert(_scraped_batch())
+        publisher.reset_mock()
+
+        counts = adapter.insert(
+            _scraped_batch(extracted_at=RESCRAPE_EXTRACTED_AT), allow_update=True
+        )
+
+        assert counts == InsertCounts(saved=1, new=0)
+        assert _row(db)["extracted_at"] == RESCRAPE_EXTRACTED_AT
+        publisher.publish_scraped.assert_not_called()
 
     def test_rescrape_with_content_change_is_republished(self, adapter, publisher, db, theme_ids):
         adapter.insert(_scraped_batch())
         _enrich(db, theme_ids)
         publisher.reset_mock()
 
-        adapter.insert(
+        counts = adapter.insert(
             _scraped_batch(
                 content="Conteúdo corrigido pela agência.",
                 extracted_at=RESCRAPE_EXTRACTED_AT,
             )
         )
 
+        assert counts == InsertCounts(saved=1, new=0)
         assert _published_uids(publisher) == [UID]
         row = _row(db)
         assert row["summary"] == SUMMARY
@@ -593,20 +680,32 @@ class TestArticlesNewCount:
         result = pg.insert([_scraped(pg)])
         assert (result.saved, result.new) == (1, 1)
 
-    def test_rescrape_by_url_is_saved_but_not_new(self, pg):
+    def test_unchanged_rescrape_by_url_is_neither_saved_nor_new(self, pg):
         pg.insert([_scraped(pg)])
         result = pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)])
+        assert (result.saved, result.new) == (0, 0)
+
+    def test_changed_rescrape_by_url_is_saved_but_not_new(self, pg):
+        pg.insert([_scraped(pg)])
+        result = pg.insert(
+            [_scraped(pg, content="Conteúdo corrigido.", extracted_at=RESCRAPE_EXTRACTED_AT)]
+        )
+        assert (result.saved, result.new) == (1, 0)
+
+    def test_forced_rescrape_by_url_is_saved_but_not_new(self, pg):
+        pg.insert([_scraped(pg)])
+        result = pg.insert([_scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT)], allow_update=True)
         assert (result.saved, result.new) == (1, 0)
 
     def test_mixed_batch_counts_only_the_inserted(self, pg, db):
         pg.insert([_scraped(pg)])
         result = pg.insert(
             [
-                _scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT),
+                _scraped(pg, extracted_at=RESCRAPE_EXTRACTED_AT),  # igual: não grava
                 _scraped(pg, unique_id=OTHER_UID, url=OTHER_URL, title="Ministério lança edital"),
             ]
         )
-        assert (result.saved, result.new) == (2, 1)
+        assert (result.saved, result.new) == (1, 1)
         assert _count_news(db) == 2
 
     def test_unique_id_conflict_without_allow_update_is_neither(self, pg, db):

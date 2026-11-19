@@ -10,8 +10,6 @@ from govbr_scraper.models.news import NewsInsert
 # content_hash já gravado no banco (4ª coluna do SELECT de _find_existing_by_url).
 # Os artigos de _make_news não têm content_hash, então por padrão o conteúdo "mudou".
 STORED_HASH = "hash-gravado-000"
-# most_specific_theme_id gravado (5ª coluna): artigo já enriquecido. None = sem tema.
-STORED_THEME_ID = 42
 
 
 def _make_news(
@@ -42,7 +40,6 @@ class TestUrlBasedDedup:
                 "ebc",
                 "https://example.com/article",
                 STORED_HASH,
-                STORED_THEME_ID,
             ),
         ]
 
@@ -104,7 +101,7 @@ class TestUrlBasedDedup:
     def test_update_preserves_original_unique_id(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("original-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("original-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         news = [_make_news("new-uid-different")]
@@ -119,7 +116,7 @@ class TestUrlBasedDedup:
     def test_update_changes_title_content_content_hash(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         news = [
@@ -145,7 +142,7 @@ class TestUrlBasedDedup:
     def test_update_includes_updated_datetime_and_extracted_at(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         updated_dt = datetime(2026, 1, 2, 10, 0, tzinfo=UTC)
@@ -172,7 +169,7 @@ class TestUrlBasedDedup:
         o embedding depois (embeddings-api só assina dgb.news.enriched)."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         news = [_make_news("new-uid", title="Titulo editado")]
@@ -190,7 +187,7 @@ class TestUrlBasedDedup:
     def test_mixed_batch_new_and_existing(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/existing", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/existing", STORED_HASH),
         ]
 
         news = [
@@ -217,7 +214,7 @@ class TestUrlBasedDedup:
     def test_returns_metadata_for_updated_articles(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         news = [_make_news("new-uid")]
@@ -255,7 +252,7 @@ class TestUrlBasedDedup:
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.side_effect = [
             [],
-            [("race-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID)],
+            [("race-uid", "ebc", "https://example.com/article", STORED_HASH)],
         ]
 
         news = [_make_news("new-uid")]
@@ -283,7 +280,7 @@ class TestUrlBasedDedup:
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.side_effect = [
             [],
-            [("race-uid", "ebc", "https://example.com/race", STORED_HASH, STORED_THEME_ID)],
+            [("race-uid", "ebc", "https://example.com/race", STORED_HASH)],
         ]
         news = [
             _make_news("new-uid-1", url="https://example.com/race"),
@@ -302,14 +299,17 @@ class TestUrlBasedDedup:
 
 
 class TestRepublishOnlyChangedContent:
-    """Phase 1 continua atualizando o artigo existente, mas só devolve para
-    publicação (dgb.news.scraped) os que tiveram o conteúdo alterado ou que
-    ainda não foram enriquecidos (sem tema: a republicação é o retry)."""
+    """Re-scrape casado por (agency_key, url): só o artigo com content_hash diferente é
+    atualizado (allow_update=False) e republicado em dgb.news.scraped. O de hash igual
+    não recebe UPDATE, não conta em articles_saved e não é republicado, com ou sem tema
+    (o retry do enriquecimento que falhou é o reconciliador do /dispatch).
+    Com allow_update=True todo artigo casado é atualizado, mas só o alterado é
+    republicado."""
 
-    def test_find_existing_by_url_selects_content_hash_and_theme(self, pg_manager, mock_pool):
+    def test_find_existing_by_url_selects_content_hash(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
 
         result = pg_manager._find_existing_by_url(
@@ -317,18 +317,14 @@ class TestRepublishOnlyChangedContent:
         )
 
         select_sql = " ".join(mock_cursor.execute.call_args[0][0].split())
-        assert (
-            "SELECT unique_id, agency_key, url, content_hash, most_specific_theme_id FROM news"
-            in select_sql
-        )
-        assert result == {
-            ("ebc", "https://example.com/article"): ("existing-uid", STORED_HASH, STORED_THEME_ID)
-        }
+        assert "SELECT unique_id, agency_key, url, content_hash FROM news" in select_sql
+        assert "most_specific_theme_id" not in select_sql
+        assert result == {("ebc", "https://example.com/article"): ("existing-uid", STORED_HASH)}
 
-    def test_unchanged_content_is_updated_but_not_returned(self, pg_manager, mock_pool):
+    def test_unchanged_content_is_not_updated_counted_or_returned(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
         news = [_make_news("existing-uid")]
         news[0].content_hash = STORED_HASH
@@ -338,21 +334,59 @@ class TestRepublishOnlyChangedContent:
         ) as mock_exec:
             count, articles, new = pg_manager.insert(news)
 
-        assert "UPDATE news SET" in mock_exec.call_args[0][1]  # a Phase 1 rodou
-        assert count == 1  # articles_saved não muda de semântica
-        assert new == 0  # articles_new: re-scrape não é notícia nova
+        mock_exec.assert_not_called()  # nem UPDATE (Phase 1) nem INSERT (Phase 2)
+        assert count == 0  # articles_saved: nada foi gravado
+        assert new == 0
         assert articles == []
 
-    def test_unchanged_content_without_theme_is_returned(self, pg_manager, mock_pool):
-        """Artigo ainda sem tema (enriquecimento falhou: throttling, timeout, modelo
-        fora): o enrichment-worker não tem retry próprio e faz ACK mesmo em erro,
-        então a republicação do re-scrape é a única nova tentativa."""
+    def test_unchanged_content_without_theme_is_not_returned(self, pg_manager, mock_pool):
+        """Sem tema também não é republicado: o critério "tema nulo" saiu (o retry do
+        enriquecimento que falhou é o reconciliador diário do /dispatch)."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, None),
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
         ]
         news = [_make_news("existing-uid")]
         news[0].content_hash = STORED_HASH
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+        ) as mock_exec:
+            count, articles, new = pg_manager.insert(news)
+
+        mock_exec.assert_not_called()
+        assert (count, new, articles) == (0, 0, [])
+
+    def test_unchanged_content_with_allow_update_is_updated_but_not_returned(
+        self, pg_manager, mock_pool
+    ):
+        """allow_update=True força a regravação (ex.: parser corrigido em campo fora do
+        hash): o UPDATE roda e conta em articles_saved, mas não há republicação."""
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
+        ]
+        news = [_make_news("existing-uid")]
+        news[0].content_hash = STORED_HASH
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+        ) as mock_exec:
+            count, articles, new = pg_manager.insert(news, allow_update=True)
+
+        assert mock_exec.call_count == 1
+        assert "UPDATE news SET" in mock_exec.call_args[0][1]
+        assert count == 1
+        assert new == 0
+        assert articles == []
+
+    def test_changed_content_is_updated_and_returned(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH),
+        ]
+        news = [_make_news("existing-uid", content="Conteudo corrigido")]
+        news[0].content_hash = "hash-novo-000000"
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
@@ -360,47 +394,52 @@ class TestRepublishOnlyChangedContent:
             count, articles, new = pg_manager.insert(news)
 
         assert "UPDATE news SET" in mock_exec.call_args[0][1]
+        assert mock_exec.call_args[0][2][0][2] == "hash-novo-000000"
         assert count == 1
-        assert [a["unique_id"] for a in articles] == ["existing-uid"]
-
-    def test_changed_content_is_returned(self, pg_manager, mock_pool):
-        _, _, mock_cursor = mock_pool
-        mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID),
-        ]
-        news = [_make_news("existing-uid", content="Conteudo corrigido")]
-        news[0].content_hash = "hash-novo-000000"
-
-        with patch(
-            "govbr_scraper.storage.postgres_manager.execute_values",
-        ):
-            count, articles, new = pg_manager.insert(news)
-
-        assert count == 1
+        assert new == 0
         assert [a["unique_id"] for a in articles] == ["existing-uid"]
 
     def test_stored_hash_null_counts_as_changed(self, pg_manager, mock_pool):
         """Linha legada sem content_hash: o re-scrape que traz o hash é mudança."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("existing-uid", "ebc", "https://example.com/article", None, STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", None),
         ]
         news = [_make_news("existing-uid")]
         news[0].content_hash = "hash-novo-000000"
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
-        ):
-            _, articles, _ = pg_manager.insert(news)
+        ) as mock_exec:
+            count, articles, _ = pg_manager.insert(news)
 
+        assert "UPDATE news SET" in mock_exec.call_args[0][1]
+        assert count == 1
         assert [a["unique_id"] for a in articles] == ["existing-uid"]
 
-    def test_mixed_batch_returns_new_changed_and_not_enriched(self, pg_manager, mock_pool):
+    def test_both_hashes_null_counts_as_changed(self, pg_manager, mock_pool):
+        """Sem hash dos dois lados não dá para afirmar que nada mudou: atualiza."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.return_value = [
-            ("uid-igual", "ebc", "https://example.com/igual", "hash-igual-00000", STORED_THEME_ID),
-            ("uid-sem-tema", "ebc", "https://example.com/sem-tema", "hash-sem-tema-00", None),
-            ("uid-mudou", "ebc", "https://example.com/mudou", "hash-antigo-0000", STORED_THEME_ID),
+            ("existing-uid", "ebc", "https://example.com/article", None),
+        ]
+        news = [_make_news("existing-uid")]  # content_hash None
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+        ) as mock_exec:
+            count, articles, _ = pg_manager.insert(news)
+
+        assert mock_exec.call_count == 1
+        assert count == 1
+        assert [a["unique_id"] for a in articles] == ["existing-uid"]
+
+    def test_mixed_batch_counts_and_returns_only_new_and_changed(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("uid-igual", "ebc", "https://example.com/igual", "hash-igual-00000"),
+            ("uid-sem-tema", "ebc", "https://example.com/sem-tema", "hash-sem-tema-00"),
+            ("uid-mudou", "ebc", "https://example.com/mudou", "hash-antigo-0000"),
         ]
         igual = _make_news("uid-igual", url="https://example.com/igual")
         igual.content_hash = "hash-igual-00000"
@@ -413,24 +452,66 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[None, [("uid-nova",)]],
-        ):
+        ) as mock_exec:
             count, articles, new = pg_manager.insert([igual, sem_tema, mudou, nova])
 
-        assert count == 4
+        update_rows = mock_exec.call_args_list[0][0][2]
+        assert [row[-1] for row in update_rows] == ["uid-mudou"]  # só o alterado
+        insert_rows = mock_exec.call_args_list[1][0][2]
+        assert [row[0] for row in insert_rows] == ["uid-nova"]
+        assert count == 2  # 1 atualizado + 1 inserido
         assert new == 1
-        assert sorted(a["unique_id"] for a in articles) == [
-            "uid-mudou",
-            "uid-nova",
-            "uid-sem-tema",
-        ]
+        assert sorted(a["unique_id"] for a in articles) == ["uid-mudou", "uid-nova"]
 
-    def test_race_retry_does_not_return_unchanged_content(self, pg_manager, mock_pool):
+    def test_mixed_batch_with_allow_update_updates_all_but_returns_changed(
+        self, pg_manager, mock_pool
+    ):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.return_value = [
+            ("uid-igual", "ebc", "https://example.com/igual", "hash-igual-00000"),
+            ("uid-mudou", "ebc", "https://example.com/mudou", "hash-antigo-0000"),
+        ]
+        igual = _make_news("uid-igual", url="https://example.com/igual")
+        igual.content_hash = "hash-igual-00000"
+        mudou = _make_news("uid-mudou", url="https://example.com/mudou")
+        mudou.content_hash = "hash-novo-000000"
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+        ) as mock_exec:
+            count, articles, new = pg_manager.insert([igual, mudou], allow_update=True)
+
+        update_rows = mock_exec.call_args[0][2]
+        assert sorted(row[-1] for row in update_rows) == ["uid-igual", "uid-mudou"]
+        assert count == 2
+        assert new == 0
+        assert [a["unique_id"] for a in articles] == ["uid-mudou"]
+
+    def test_race_retry_skips_unchanged_content(self, pg_manager, mock_pool):
         """No retry do UniqueViolation (worker concorrente inseriu antes), o artigo
-        casado por URL com o mesmo conteúdo também não é republicado."""
+        casado por URL com o mesmo conteúdo não é atualizado, contado nem republicado."""
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.side_effect = [
             [],
-            [("race-uid", "ebc", "https://example.com/article", STORED_HASH, STORED_THEME_ID)],
+            [("race-uid", "ebc", "https://example.com/article", STORED_HASH)],
+        ]
+        news = [_make_news("new-uid")]
+        news[0].content_hash = STORED_HASH
+
+        with patch(
+            "govbr_scraper.storage.postgres_manager.execute_values",
+            side_effect=[errors.UniqueViolation()],
+        ) as mock_exec:
+            count, articles, new = pg_manager.insert(news)
+
+        assert mock_exec.call_count == 1  # só o INSERT abortado; sem UPDATE no retry
+        assert (count, new, articles) == (0, 0, [])
+
+    def test_race_retry_with_allow_update_updates_but_does_not_return(self, pg_manager, mock_pool):
+        _, _, mock_cursor = mock_pool
+        mock_cursor.fetchall.side_effect = [
+            [],
+            [("race-uid", "ebc", "https://example.com/article", STORED_HASH)],
         ]
         news = [_make_news("new-uid")]
         news[0].content_hash = STORED_HASH
@@ -438,22 +519,20 @@ class TestRepublishOnlyChangedContent:
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
             side_effect=[errors.UniqueViolation(), None],
-        ):
-            count, articles, new = pg_manager.insert(news)
+        ) as mock_exec:
+            count, articles, new = pg_manager.insert(news, allow_update=True)
 
-        assert count == 1
-        assert articles == []
+        assert "UPDATE news SET" in mock_exec.call_args_list[1][0][1]
+        assert (count, new, articles) == (1, 0, [])
 
-    def test_race_retry_returns_unchanged_content_without_theme(self, pg_manager, mock_pool):
-        """No retry do UniqueViolation, o artigo casado por URL ainda sem tema é
-        republicado mesmo com o conteúdo igual (mesma regra da Phase 1)."""
+    def test_race_retry_returns_changed_content(self, pg_manager, mock_pool):
         _, _, mock_cursor = mock_pool
         mock_cursor.fetchall.side_effect = [
             [],
-            [("race-uid", "ebc", "https://example.com/article", STORED_HASH, None)],
+            [("race-uid", "ebc", "https://example.com/article", STORED_HASH)],
         ]
         news = [_make_news("new-uid")]
-        news[0].content_hash = STORED_HASH
+        news[0].content_hash = "hash-novo-000000"
 
         with patch(
             "govbr_scraper.storage.postgres_manager.execute_values",
@@ -461,5 +540,5 @@ class TestRepublishOnlyChangedContent:
         ):
             count, articles, new = pg_manager.insert(news)
 
-        assert count == 1
+        assert (count, new) == (1, 0)
         assert [a["unique_id"] for a in articles] == ["race-uid"]

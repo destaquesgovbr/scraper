@@ -3,12 +3,14 @@ import logging
 import re
 import time
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
 from scipy.stats import truncnorm
 
-from govbr_scraper.scrapers.errors import PermanentHTTPError
+from govbr_scraper.models.monitoring import ErrorCategory
+from govbr_scraper.scrapers.errors import ListingPageError, PermanentHTTPError
 from govbr_scraper.scrapers.http_policy import (
     REQUEST_TIMEOUT,
     raise_for_http_status,
@@ -18,15 +20,50 @@ from govbr_scraper.scrapers.http_policy import (
 # Set up logging configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# As listagens da EBC datam as notícias no horário de Brasília.
+_BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def today_brt() -> date:
+    """Data de hoje no horário de Brasília."""
+    return datetime.now(_BRT).date()
+
+
+def known_url_fence_applies(max_date: date | None, today: date | None = None) -> bool:
+    """True se a cerca de URLs conhecidas vale para uma janela que termina em ``max_date``.
+
+    Na EBC a data do artigo só aparece depois de baixá-lo (no gov.br ela vem na
+    listagem, e o item mais novo que ``max_date`` é pulado antes da cerca). Num
+    backfill, com ``max_date`` antes de hoje (BRT), os primeiros itens da listagem são
+    os mais novos e já conhecidos, e a cerca pararia antes de chegar à janela. Por isso
+    ela só vale quando a janela chega até hoje, ou não tem fim.
+    """
+    if max_date is None:
+        return True
+    return max_date >= (today if today is not None else today_brt())
+
 
 class EBCWebScraper:
-    def __init__(self, min_date: str, base_url: str, max_date: str | None = None):
+    # Mesma cerca do gov.br (WebScraper e Plone6APIScraper): para depois de 3 URLs
+    # conhecidas seguidas.
+    KNOWN_URL_STOP_THRESHOLD = 3
+
+    def __init__(
+        self,
+        min_date: str,
+        base_url: str,
+        max_date: str | None = None,
+        known_urls: set | None = None,
+    ):
         """
         Initialize the EBC scraper with minimum and maximum dates, and base URL.
 
         :param min_date: The minimum date for scraping news (format: YYYY-MM-DD).
         :param base_url: The base URL of the EBC news index page.
         :param max_date: The maximum date for scraping news (format: YYYY-MM-DD).
+        :param known_urls: URLs já gravadas da fonte (cerca de URLs conhecidas). Ignorado
+            quando ``max_date`` é anterior a hoje (BRT), o caso do backfill
+            (``known_url_fence_applies``).
         """
         self.base_url = base_url
         self.min_date = datetime.strptime(min_date, "%Y-%m-%d").date()
@@ -34,6 +71,14 @@ class EBCWebScraper:
             self.max_date = datetime.strptime(max_date, "%Y-%m-%d").date()
         else:
             self.max_date = None
+        if known_urls and not known_url_fence_applies(self.max_date):
+            logging.info(
+                f"Known URL fence disabled for {base_url}: max_date {self.max_date} is "
+                "before today (BRT), backfill"
+            )
+            known_urls = None
+        self.known_urls = known_urls or set()
+        self._consecutive_known = 0
         self.news_data = []
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -184,18 +229,30 @@ class EBCWebScraper:
         """
         Scrape news from EBC website until the min_date is reached.
 
+        A primeira página do índice não pode falhar em silêncio: sem ela a fonte sairia
+        como sucesso com 0 artigos. Nas páginas seguintes, uma falha só encerra a
+        paginação e mantém o que já foi coletado.
+
         :return: A list of dictionaries containing news data.
+        :raises ListingPageError: a primeira página do índice não foi baixada depois dos
+            retries (``network_error``) ou veio sem nenhum link de artigo (``html_changed``).
+        :raises PermanentHTTPError: 4xx permanente na primeira página do índice
+            (``url_broken`` ou ``access_denied``, como no gov.br).
         """
         page = 0
 
         while True:
             current_page_url = f"{self.base_url}?page={page}"
+            is_first_page = page == 0
             page += 1
 
             logging.info(f"Fetching latest news from index page: {current_page_url}")
 
             try:
-                news_urls = self.scrape_index_page(current_page_url)
+                if is_first_page:
+                    news_urls = self._scrape_first_index_page(current_page_url)
+                else:
+                    news_urls = self.scrape_index_page(current_page_url)
 
                 if not news_urls:
                     logging.info("No more news URLs found. Stopping.")
@@ -224,7 +281,35 @@ class EBCWebScraper:
         response = self.fetch_page(url)
         if not response:
             return []
+        return self._extract_index_urls(response)
 
+    def _scrape_first_index_page(self, url: str) -> list[str]:
+        """Primeira página do índice: falha vira exceção classificada, em vez de ``[]``.
+
+        :raises ListingPageError: ``network_error`` se a página não foi baixada depois dos
+            retries (5xx, 408, 429, timeout, conexão); ``html_changed`` se veio sem nenhum
+            link de artigo.
+        :raises PermanentHTTPError: 4xx permanente, sem retry.
+        """
+        try:
+            response = self._get(url)
+        except requests.exceptions.RequestException as e:
+            raise ListingPageError(
+                f"Failed to fetch page after retries for EBC index {url}: {e}",
+                error_category=ErrorCategory.NETWORK_ERROR,
+            ) from e
+
+        news_urls = self._extract_index_urls(response)
+        if not news_urls:
+            raise ListingPageError(
+                f"No articles found on first page of EBC index {url} but response was "
+                f"{len(response.content)} bytes. The page structure may have changed.",
+                error_category=ErrorCategory.HTML_CHANGED,
+            )
+        return news_urls
+
+    def _extract_index_urls(self, response: requests.Response) -> list[str]:
+        """Links de artigo de uma página do índice (lista vazia se não achar nenhum)."""
         soup = BeautifulSoup(response.content, "html.parser")
         news_urls = []
 
@@ -306,35 +391,55 @@ class EBCWebScraper:
         :return: True if should continue scraping, False if min_date reached.
         """
         for url in news_urls:
+            # Skip audio news (não é baixada nem conta na cerca)
+            if "radios.ebc.com.br" in url:
+                continue
+
+            # Known URL fence: pula a URL já gravada antes do sleep e do download, e para
+            # depois de KNOWN_URL_STOP_THRESHOLD conhecidas seguidas (como no gov.br).
+            if url in self.known_urls:
+                self._consecutive_known += 1
+                logging.info(
+                    f"Skipping known article ({self._consecutive_known}/"
+                    f"{self.KNOWN_URL_STOP_THRESHOLD}): {url}"
+                )
+                if self._consecutive_known >= self.KNOWN_URL_STOP_THRESHOLD:
+                    logging.info(
+                        f"Known URL fence: {self.KNOWN_URL_STOP_THRESHOLD} consecutive known "
+                        "articles. Stopping."
+                    )
+                    return False
+                continue
+
+            # Reset consecutive counter on new article
+            self._consecutive_known = 0
+
             time.sleep(self.smart_sleep())
+            logging.info(f"Retrieving news from: {url}")
 
-            # Skip audio news
-            if "radios.ebc.com.br" not in url:
-                logging.info(f"Retrieving news from: {url}")
+            full_news = self.scrape_news_page(url)
 
-                full_news = self.scrape_news_page(url)
+            if full_news.get("error"):
+                logging.warning(f"Error scraping {url}: {full_news['error']}")
+                continue
 
-                if full_news.get("error"):
-                    logging.warning(f"Error scraping {url}: {full_news['error']}")
+            # Check if current date is before minimum date
+            parsed_date = self.parse_date(full_news["date"])
+            if parsed_date:
+                if parsed_date < self.min_date:
+                    logging.info(
+                        f"Reached minimum date limit. Current news date: {full_news['date']}, Minimum date: {self.min_date.strftime('%d/%m/%Y')}"
+                    )
+                    return False
+
+                if self.max_date and parsed_date > self.max_date:
+                    logging.info(
+                        f"Skipping news dated {full_news['date']} as it is newer than max_date {self.max_date.strftime('%d/%m/%Y')}"
+                    )
                     continue
 
-                # Check if current date is before minimum date
-                parsed_date = self.parse_date(full_news["date"])
-                if parsed_date:
-                    if parsed_date < self.min_date:
-                        logging.info(
-                            f"Reached minimum date limit. Current news date: {full_news['date']}, Minimum date: {self.min_date.strftime('%d/%m/%Y')}"
-                        )
-                        return False
-
-                    if self.max_date and parsed_date > self.max_date:
-                        logging.info(
-                            f"Skipping news dated {full_news['date']} as it is newer than max_date {self.max_date.strftime('%d/%m/%Y')}"
-                        )
-                        continue
-
-                # Add to our data collection
-                self.news_data.append(full_news)
+            # Add to our data collection
+            self.news_data.append(full_news)
 
         return True
 

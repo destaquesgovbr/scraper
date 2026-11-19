@@ -148,7 +148,9 @@ O campo `scraper_type` no `site_urls.yaml` determina qual scraper é usado para 
 
 ### Known URL Fence
 
-Otimização que evita re-processar artigos já coletados. Antes de iniciar o scraping, o `ScrapeManager` consulta as últimas 200 URLs da agência via `get_recent_urls()`. Durante o scraping, URLs já conhecidas são contadas consecutivamente. Ao atingir **3 URLs conhecidas consecutivas**, o scraper para — assumindo que o restante já foi coletado em execuções anteriores.
+Otimização que evita re-processar artigos já coletados. Antes de iniciar o scraping, o `ScrapeManager` (e o `EBCScrapeManager`, para cada fonte) consulta as últimas 200 URLs da agência via `get_recent_urls()`. Durante o scraping, URLs já conhecidas são contadas consecutivamente e puladas sem baixar o artigo. Ao atingir **3 URLs conhecidas consecutivas** (`KNOWN_URL_STOP_THRESHOLD`, o mesmo nos três scrapers), o scraper para — assumindo que o restante já foi coletado em execuções anteriores. Se a consulta falhar, a raspagem segue sem cerca.
+
+**EBC** (Passo 2 da rearquitetura da ingestão): antes, cada execução baixava todos os artigos desde 00:00 BRT de `min_date` e regravava cada um. Agora a cerca vale antes do `sleep` e do download do artigo (`EBCWebScraper.process_news_urls`); áudio (`radios.ebc.com.br`) não é baixado nem conta. Na EBC a data do artigo só aparece depois do download (no gov.br ela vem na listagem, e o item mais novo que `max_date` é pulado antes da cerca), então num backfill os primeiros itens da listagem, os mais novos e já conhecidos, parariam a fonte antes da janela: a cerca é **desligada quando `max_date` é anterior a hoje (BRT)** (`known_url_fence_applies`), e a consulta nem é feita. A chave do `ebc_urls.yaml` é a mesma de `news.agency_key` (vem do host do artigo); um link da TV Brasil na listagem da Agência Brasil fica fora do conjunto da `agencia_brasil` e só seria baixado de novo.
 
 ### Itens pulados (não gravados)
 
@@ -189,7 +191,7 @@ Deduplicação por conteúdo via `compute_content_hash(title, content)`:
 2. Concatena `título\nconteúdo` normalizado
 3. SHA256 dos primeiros 16 caracteres hex
 
-Usado para detectar artigos duplicados com URLs diferentes e para verificação de integridade.
+Gravado em `news.content_hash`. Decide se o re-scrape de um artigo já gravado (mesmo `(agency_key, url)`) regrava a linha e a republica em `dgb.news.scraped` (ver "Nuance do `allow_update`" e "Pub/Sub Events"), e é usado na verificação de integridade.
 
 ### Unique ID
 
@@ -211,7 +213,9 @@ IDs legíveis no formato `{slug}_{suffix}` (ex: `governo-anuncia-programa_a3f2e1
 | `HTML_CHANGED` | no articles found (estrutura mudou) | permanente |
 | `UNKNOWN` | fallback | passageiro |
 
-O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `error_category` do `FallbackFailedError` ou o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e EBC) classificam com `classify_exception(e)`, que usa o `error_category` do `FallbackFailedError` e do `ListingPageError` ou o `http_status` do `PermanentHTTPError` quando houver, e a mesma categoria vai para `scrape_runs.error_category` e para `errors[].category` da API.
+
+**EBC, primeira página do índice** (`EBCWebScraper._scrape_first_index_page`): a falha não é mais engolida. Página não baixada depois dos retries (5xx, 408, 429, timeout, conexão) levanta `ListingPageError` com `network_error` (passageiro); página sem nenhum link de artigo, `ListingPageError` com `html_changed` (permanente); 4xx permanente sobe como `PermanentHTTPError` (`url_broken`/`access_denied`, como no gov.br). Antes, a EBC fora do ar ou com o HTML mudado saía como `success` com 0 artigos, e o disjuntor e a marca d'água do estado por agência não atuariam para ela. Nas páginas seguintes (`scrape_index_page`), a falha só encerra a paginação e mantém o que já foi coletado. Um artigo que falha continua sendo só pulado.
 
 **Primário e fallback falharam** (`FallbackFailedError`, mensagem `Both scrapers failed. Primary: No articles found... Fallback: ...`): a mensagem leria sempre `html_changed`, então o `ScrapeManager` fixa a categoria. Falha de rede do Plone 6 (`network_error`: 5xx, 408/429 depois dos retries, timeout, DNS) vale como `network_error`, passageira, porque um retry pode raspar pelo fallback. Qualquer outra (404 da API, como a mec, ou resposta não-JSON, como a antaq: o site não serve a API do Plone 6) fica `html_changed`, permanente.
 
@@ -226,7 +230,7 @@ O status HTTP vem antes da mensagem; 5xx cai na mensagem. Os managers (gov.br e 
 - 5xx, 408, 429, timeout e conexão: até 3 tentativas (`tries=3, delay=1, backoff=2`, jitter de 0 a 1 s; ~3,5 s de espera no total).
 - `timeout=(5, 15)` (connect, read).
 
-Antes, todo `RequestException` era repetido 5 vezes (`delay=2, backoff=3`, jitter de 1 a 3 s), inclusive 404 e 401: ~116 s de espera por chamada, 86% do tempo faturável do Cloud Run. No EBC o `@retry` envolvia um `try/except` que devolvia None, então nunca repetia; agora `fetch_page` ainda devolve None na falha, mas repete o erro transitório.
+Antes, todo `RequestException` era repetido 5 vezes (`delay=2, backoff=3`, jitter de 1 a 3 s), inclusive 404 e 401: ~116 s de espera por chamada, 86% do tempo faturável do Cloud Run. No EBC o `@retry` envolvia um `try/except` que devolvia None, então nunca repetia; agora `fetch_page` ainda devolve None na falha, mas repete o erro transitório. A primeira página do índice não usa `fetch_page`: a falha vira erro classificado (ver "Classificação de Erros").
 
 ### Fallback Automático (HTML_CHANGED)
 
@@ -268,9 +272,9 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 ### Pub/Sub Events
 
-Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou **ou que ainda não têm tema** (`most_specific_theme_id IS NULL`, o mesmo critério do `is_already_enriched` do enrichment-worker). Re-scrape de artigo já enriquecido e sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
+Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou. Re-scrape sem mudança de conteúdo não republica, tenha o artigo tema ou não: o enrichment-worker pularia o já enriquecido e o bronze-writer reescreveria o mesmo objeto. Com `allow_update=True`, as linhas devolvidas pelo `ON CONFLICT (unique_id) DO UPDATE` continuam sendo publicadas (regravação forçada).
 
-**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (a cada execução da DAG, de 2 em 2 h, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
+**Artigo sem tema (enriquecimento que falhou):** até o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o re-scrape republicava o artigo sem tema (`most_specific_theme_id IS NULL`) a cada execução, porque era a única nova tentativa: o enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG `enrich_news_llm` foi removida (data-science 8f10273) e não havia Cloud Scheduler. Esse critério saiu. O retry passa a ser o reconciliador diário do `/dispatch` (Passo 3): na passada das 03h (modo `live`), republica até 20 notícias sem tema criadas entre 7 dias e 2 h atrás. **Até o Passo 3 estar em `live`, um enriquecimento que falhar não tem retry automático** (republicar à mão em `dgb.news.scraped`).
 
 ```json
 {
@@ -351,8 +355,8 @@ Mesmos campos. Sem `agencies`, as duas fontes ativas do `ebc_urls.yaml`, cada um
 - **Status HTTP:** 200 `completed`, 207 `partial`, 500 `failed` (todas as agências tentadas falharam) ou exceção (`{"detail": ...}`), 422 payload inválido (inclusive data inválida). Novo: só agências puladas pelo disjuntor dá 200 com `status: "skipped"`.
 - **`skipped`:** agências com o circuito aberto cuja sonda ainda não venceu; não foram raspadas e não gravaram `scrape_runs`.
 - **`start_date`/`end_date` da resposta:** a janela explícita ou, com a marca d'água, a menor e a maior data das janelas usadas (`null` se nenhuma agência foi raspada).
-- **`articles_saved`:** linhas gravadas em `news`, inseridas + atualizadas (re-scrape casado por `(agency_key, url)` e, com `allow_update`, o `ON CONFLICT DO UPDATE`). Mantém o significado de sempre.
-- **`articles_new`:** só as linhas de fato inseridas: o `RETURNING` do `ON CONFLICT DO NOTHING` ou, com `allow_update=True`, as linhas com `xmax = 0` no `RETURNING unique_id, (xmax = 0) AS inserted` do `DO UPDATE` (o retry do `UniqueViolation` conta igual). `PostgresManager.insert` devolve `InsertResult(saved, articles, new)` e `StorageAdapter.insert`, `InsertCounts(saved, new)`. Em nov/2026: ~242 notícias novas/dia, contra 2.175 "salvas"/dia só na agencia_brasil.
+- **`articles_saved`:** linhas gravadas em `news`, inseridas + atualizadas. Re-scrape casado por `(agency_key, url)` só conta se o `content_hash` mudou; com `allow_update`, contam todos os casados por URL e o `ON CONFLICT DO UPDATE`. Até o Passo 2 da rearquitetura, todo artigo casado por URL era atualizado e contado, mesmo sem mudança (a agencia_brasil aparecia com ~2.175 "salvas"/dia).
+- **`articles_new`:** só as linhas de fato inseridas: o `RETURNING` do `ON CONFLICT DO NOTHING` ou, com `allow_update=True`, as linhas com `xmax = 0` no `RETURNING unique_id, (xmax = 0) AS inserted` do `DO UPDATE` (o retry do `UniqueViolation` conta igual). `PostgresManager.insert` devolve `InsertResult(saved, articles, new)` e `StorageAdapter.insert`, `InsertCounts(saved, new)`. Em nov/2026, antes do Passo 2: ~242 notícias novas/dia, contra 2.175 "salvas"/dia só na agencia_brasil.
 - **`errors[].category`:** a mesma gravada em `scrape_runs.error_category`, ou `unknown_agency`; `null` em erro sem classificação (ex.: erro de config).
 - **`errors[].retryable`:** `false` em erro permanente; as DAGs falham sem retry. Default `true` (API antiga, sem o campo, é tratada como passageira pelas DAGs).
 
@@ -469,11 +473,11 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 
 **Constraints:** `unique_id` é unique. Deduplicação por `(agency_key, url)` via pré-check + SAVEPOINT.
 
-**Nuance do `allow_update`:** Artigos com mesmo `(agency_key, url)` são **sempre** atualizados via pre-check, independentemente do `allow_update`. O parâmetro controla apenas o comportamento para artigos novos com conflito em `unique_id` (ON CONFLICT DO UPDATE vs DO NOTHING).
+**Nuance do `allow_update`:** Artigo com o mesmo `(agency_key, url)` (pré-check da Phase 1) é atualizado quando o `content_hash` mudou (hash gravado NULL conta como mudança). Com o mesmo hash e `allow_update=False` (o das DAGs), não há UPDATE, a linha não conta em `articles_saved` e não é republicada; os campos fora do hash (`image_url`, `tags`, `category`, `updated_datetime`, `extracted_at`...) ficam como estão, e `extracted_at` passa a ser a primeira extração. Com `allow_update=True` (regravação forçada, ex.: depois de corrigir o parser), todo artigo casado é atualizado, mas só o de hash diferente é republicado. O parâmetro também controla o conflito em `unique_id` dos artigos novos (ON CONFLICT DO UPDATE vs DO NOTHING).
 
 **Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)` e não toca nos temas nem no embedding. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
 
-**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil, re-raspada a cada execução do dia). O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
+**`image_url` também é gravada downstream:** o thumbnail-worker (data-platform) grava a miniatura em artigos com `video_url` e sem imagem (TV Brasil). A proteção vale no UPDATE do re-scrape com conteúdo alterado ou com `allow_update=True`; com o mesmo conteúdo e `allow_update=False` a linha nem é regravada. O scraper entrega `''`/NULL nesses casos, então a Phase 1 usa `COALESCE(NULLIF(v.image_url, ''), news.image_url)` e o `ON CONFLICT` o equivalente com `EXCLUDED` (`_DOWNSTREAM_FILLED_COLUMNS`): vazio não apaga o valor gravado; uma imagem não vazia da fonte prevalece. Efeito colateral aceito: se a fonte remover a imagem, a URL antiga fica (o integrity check a marca se quebrar).
 
 **Edição de conteúdo não regera nada downstream:** quando o `content_hash` muda, o artigo é republicado, mas o enrichment-worker pula o já enriquecido (`skipped/already_enriched`, sem `dgb.news.enriched`), então resumo, temas e embedding ficam os da primeira versão. Por isso o embedding **não é zerado** na edição: o vetor é de título + resumo (`embeddings_client/text_prep.py`), o resumo é preservado, e zerar sem caminho de regeneração (o embeddings-api só assina `dgb.news.enriched`; a DAG `generate_embeddings` saiu) tiraria o artigo da busca semântica para sempre. Só uma edição de título deixa o vetor um pouco desatualizado. Regerar resumo e embedding em edições é evolução downstream (re-enriquecer quando o conteúdo muda), não do scraper.
 
@@ -510,7 +514,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 | `error_category` | text | ErrorCategory value |
 | `error_message` | text | Truncado em 500 chars |
 | `articles_scraped` | int | |
-| `articles_saved` | int | Linhas gravadas: inseridas + atualizadas (re-scrape) |
+| `articles_saved` | int | Linhas gravadas: inseridas + atualizadas (re-scrape com `content_hash` diferente; com `allow_update`, todo re-scrape) |
 | `articles_new` | int | Só as inseridas (migration 037 do data-platform). NULL no modo não sequencial, em erro e nas linhas anteriores à 037 |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
