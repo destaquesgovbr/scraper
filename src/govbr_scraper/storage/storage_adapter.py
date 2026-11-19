@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from loguru import logger
 
 from govbr_scraper.models.news import NewsInsert
+from govbr_scraper.state.model import AgencyState, AttemptContext
+from govbr_scraper.state.repository import StateUnavailable
 from govbr_scraper.storage.event_publisher import EventPublisher
 from govbr_scraper.storage.postgres_manager import PostgresManager
 
@@ -38,16 +40,23 @@ class StorageAdapter:
     - PUBSUB_TOPIC_NEWS_SCRAPED: Pub/Sub topic for scraped events (optional)
     """
 
-    def __init__(self, postgres_manager: PostgresManager | None = None):
+    def __init__(
+        self,
+        postgres_manager: PostgresManager | None = None,
+        attempt_context: AttemptContext | None = None,
+    ):
         """
         Initialize StorageAdapter.
 
         Args:
             postgres_manager: Optional pre-configured PostgresManager.
+            attempt_context: Contexto da requisição de raspagem (janela explícita, force),
+                repassado ao estado por agência em ``record_scrape_run``.
         """
         logger.info("StorageAdapter initialized: backend=postgres")
         self._postgres_manager = postgres_manager
         self._event_publisher = EventPublisher()
+        self.attempt_context = attempt_context or AttemptContext()
 
     @property
     def postgres(self) -> PostgresManager:
@@ -95,8 +104,50 @@ class StorageAdapter:
         return InsertCounts(saved=result.saved, new=result.new)
 
     def record_scrape_run(self, run: "ScrapeRunResult") -> None:
-        """Record a scrape execution result. Delegates to PostgresManager."""
-        self.postgres.record_scrape_run(run)
+        """Record a scrape execution result (e o estado da agência). Delegates to PostgresManager."""
+        self.postgres.record_scrape_run(
+            run,
+            explicit_window=self.attempt_context.explicit_window,
+            forced=self.attempt_context.forced,
+        )
+
+    def load_agency_states(self) -> dict[str, AgencyState] | None:
+        """Estado de todas as agências ({agency_key: AgencyState}), ou None se indisponível.
+
+        Indisponível (migration 038 não aplicada ou banco fora): a API usa a janela de
+        ontem a hoje e não aplica o disjuntor, como antes do estado por agência.
+        """
+        try:
+            states = self.postgres.list_agency_states()
+        except StateUnavailable:
+            logger.warning(
+                "scrape_agency_state indisponível (migration 038 não aplicada?): janela de "
+                "ontem a hoje e sem disjuntor"
+            )
+            return None
+        except Exception as e:
+            logger.warning(
+                f"Falha ao ler scrape_agency_state ({e}): janela de ontem a hoje e sem disjuntor"
+            )
+            return None
+        return {state.agency_key: state for state in states}
+
+    def mark_agency_probe(self, agency_key: str, now: datetime) -> bool:
+        """Põe o circuito aberto em half_open antes da sonda. Erro só vira warning."""
+        try:
+            return self.postgres.mark_agency_probe(agency_key, now)
+        except Exception as e:
+            logger.warning(f"Falha ao marcar a sonda de {agency_key} ({e}); a sonda segue")
+            return False
+
+    def close(self) -> None:
+        """Fecha o pool do Postgres, se foi aberto (fim da requisição)."""
+        if self._postgres_manager is not None:
+            try:
+                self._postgres_manager.close_all()
+            except Exception as e:
+                logger.warning(f"Falha ao fechar o pool do Postgres: {e}")
+            self._postgres_manager = None
 
     def _convert_to_news_insert(self, data: OrderedDict) -> list[NewsInsert]:
         """Convert OrderedDict data to list of NewsInsert objects."""

@@ -6,6 +6,7 @@ Manages news storage in PostgreSQL with connection pooling, caching, and error h
 
 import os
 import subprocess  # nosec B404
+from datetime import UTC, datetime
 
 # Avoid circular import — ScrapeRunResult is used via TYPE_CHECKING
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -16,6 +17,10 @@ from psycopg2 import errors, extensions, pool
 from psycopg2.extras import RealDictCursor, execute_values
 
 from govbr_scraper.models.news import Agency, NewsInsert, Theme
+from govbr_scraper.state import repository as state_repository
+from govbr_scraper.state.model import AgencyState, AttemptOutcome, Transition
+from govbr_scraper.state.repository import StateUnavailable
+from govbr_scraper.state.transitions import apply_attempt
 
 if TYPE_CHECKING:
     from govbr_scraper.models.monitoring import ScrapeRunResult
@@ -682,16 +687,38 @@ class PostgresManager:
 
     # O aviso de scrape_runs sem articles_new sai uma vez por processo, não por agência.
     _warned_missing_articles_new = False
+    # Idem para scrape_agency_state ausente (migration 038 não aplicada).
+    _warned_missing_agency_state = False
 
-    def record_scrape_run(self, run: "ScrapeRunResult") -> None:
-        """Record a scrape execution result.
+    def record_scrape_run(
+        self,
+        run: "ScrapeRunResult",
+        *,
+        started_at: datetime | None = None,
+        explicit_window: bool = False,
+        forced: bool = False,
+    ) -> Transition | None:
+        """Record a scrape execution result and update the agency state.
 
         A coluna articles_new vem da migration 037 do data-platform. Se o banco ainda
         não a tem (deploy do scraper antes da migration), o INSERT é refeito sem ela:
         perder a linha de scrape_runs faria o monitor acusar todas as agências.
 
+        Na mesma transação, depois do INSERT, o estado da agência em scrape_agency_state
+        (migration 038) é atualizado dentro de um SAVEPOINT: se falhar (inclusive sem a
+        tabela), só o estado é desfeito e a linha de scrape_runs é gravada assim mesmo.
+        Depois do commit, uma transição do disjuntor gera o evento circuit_transition e o
+        alerta em dgb.ops.alerts.
+
         Args:
             run: The scrape run result to persist.
+            started_at: Início da tentativa; padrão ``scraped_at − execution_time_seconds``.
+            explicit_window: A requisição trouxe start_date/end_date (backfill/recuperação):
+                o estado não muda.
+            forced: A requisição trouxe force (ignora o disjuntor).
+
+        Returns:
+            A transição do disjuntor, se houve (já anunciada).
         """
         values = {
             "agency_key": run.agency_key,
@@ -705,6 +732,10 @@ class PostgresManager:
             "fallback_triggered": run.fallback_triggered,
             "articles_new": run.articles_new,
         }
+        outcome = AttemptOutcome.from_run(
+            run, started_at=started_at, explicit_window=explicit_window, forced=forced
+        )
+        transition = None
         conn = self.pool.getconn()
         try:
             try:
@@ -716,10 +747,71 @@ class PostgresManager:
                 self._warn_missing_articles_new()
                 values.pop("articles_new")
                 self._insert_scrape_run(conn, values)
+            transition = self._record_agency_state(conn, outcome)
             conn.commit()
         except Exception as e:
             conn.rollback()
             logger.error(f"Error recording scrape run for {run.agency_key}: {e}")
+            raise
+        finally:
+            self.pool.putconn(conn)
+        if transition is not None:
+            from govbr_scraper.state.alerts import announce_transition
+
+            announce_transition(transition)
+        return transition
+
+    def _record_agency_state(self, conn, outcome: AttemptOutcome) -> Transition | None:
+        """Atualiza scrape_agency_state num SAVEPOINT da transação do scrape_runs.
+
+        Erro (tabela ausente, lock, bug) desfaz só o SAVEPOINT e vira warning: a linha de
+        scrape_runs não pode se perder por causa do estado.
+        """
+        now = datetime.now(UTC)
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT agency_state")
+        try:
+            # A linha existe antes do FOR UPDATE: duas tentativas simultâneas da mesma
+            # agência (retry sobreposto, backfill) ficam em série.
+            state_repository.ensure_rows(conn, [outcome.agency_key], now)
+            prev = state_repository.get_state(
+                conn, outcome.agency_key, for_update=True
+            ) or AgencyState.new(outcome.agency_key, now)
+            new_state, transition = apply_attempt(prev, outcome, now)
+            state_repository.upsert_state(conn, new_state)
+            with conn.cursor() as cur:
+                cur.execute("RELEASE SAVEPOINT agency_state")
+        except Exception as e:
+            with conn.cursor() as cur:
+                cur.execute("ROLLBACK TO SAVEPOINT agency_state")
+            if isinstance(e, StateUnavailable):
+                self._warn_missing_agency_state()
+            else:
+                logger.warning(
+                    f"Falha ao atualizar scrape_agency_state de {outcome.agency_key} "
+                    f"(scrape_runs gravado assim mesmo): {e}"
+                )
+            return None
+        return transition
+
+    def list_agency_states(self) -> list[AgencyState]:
+        """Todas as linhas de scrape_agency_state. Sem a tabela: StateUnavailable."""
+        conn = self.pool.getconn()
+        try:
+            return state_repository.list_states(conn)
+        finally:
+            # O putconn desfaz a transação de leitura (ou a abortada).
+            self.pool.putconn(conn)
+
+    def mark_agency_probe(self, agency_key: str, now: datetime) -> bool:
+        """Marca o circuito aberto da agência como half_open (a sonda vai rodar) e comita."""
+        conn = self.pool.getconn()
+        try:
+            changed = state_repository.mark_probe(conn, agency_key, now)
+            conn.commit()
+            return changed
+        except Exception:
+            conn.rollback()
             raise
         finally:
             self.pool.putconn(conn)
@@ -733,6 +825,16 @@ class PostgresManager:
         query = f"INSERT INTO scrape_runs ({columns}) VALUES ({placeholders})"  # nosec B608
         with conn.cursor() as cur:
             cur.execute(query, tuple(values.values()))
+
+    @classmethod
+    def _warn_missing_agency_state(cls) -> None:
+        if cls._warned_missing_agency_state:
+            return
+        cls._warned_missing_agency_state = True
+        logger.warning(
+            "scrape_agency_state ausente (migration 038 do data-platform não aplicada): "
+            "scrape_runs gravado sem o estado por agência"
+        )
 
     @classmethod
     def _warn_missing_articles_new(cls) -> None:

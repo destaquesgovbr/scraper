@@ -30,6 +30,13 @@ def _make_pg_with_mock_pool():
     return pg, mock_conn, mock_cursor
 
 
+@pytest.fixture
+def no_agency_state(monkeypatch):
+    """Isola o INSERT de scrape_runs: o estado por agência tem testes próprios abaixo."""
+    monkeypatch.setattr(PostgresManager, "_record_agency_state", lambda self, conn, outcome: None)
+
+
+@pytest.mark.usefixtures("no_agency_state")
 class TestRecordScrapeRun:
     """PostgresManager.record_scrape_run() persists a ScrapeRunResult."""
 
@@ -93,6 +100,7 @@ class TestRecordScrapeRun:
         assert params[-1] is None
 
 
+@pytest.mark.usefixtures("no_agency_state")
 class TestRecordScrapeRunBeforeMigration037:
     """Scraper no ar antes da migration 037: a linha de scrape_runs não pode se perder."""
 
@@ -204,7 +212,23 @@ class TestStorageAdapterDelegation:
         )
         adapter.record_scrape_run(run)
 
-        mock_pg.record_scrape_run.assert_called_once_with(run)
+        mock_pg.record_scrape_run.assert_called_once_with(run, explicit_window=False, forced=False)
+
+    def test_passes_the_request_context(self):
+        from govbr_scraper.state.model import AttemptContext
+        from govbr_scraper.storage.storage_adapter import StorageAdapter
+
+        mock_pg = MagicMock()
+        adapter = StorageAdapter(
+            postgres_manager=mock_pg,
+            attempt_context=AttemptContext(explicit_window=True, forced=True),
+        )
+        run = ScrapeRunResult(
+            agency_key="mec", status="success", scraped_at=datetime(2026, 4, 6, 12, 0, tzinfo=UTC)
+        )
+        adapter.record_scrape_run(run)
+
+        mock_pg.record_scrape_run.assert_called_once_with(run, explicit_window=True, forced=True)
 
 
 class TestGetRecentRunsExtended:
