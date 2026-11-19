@@ -114,7 +114,7 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria. A col
 
 | Categoria | Na DAG | Ação recomendada |
 |-----------|--------|-----------------|
-| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries, o "Erro de rede ao acessar API" do Plone 6 o `Both scrapers failed` em que o fallback Plone 6 falhou por rede e, na EBC, a 1ª página do índice não baixada depois dos retries |
+| `NETWORK_ERROR` | passageiro: repete | Aguardar; verificar se é transiente. Inclui 408/429, 5xx depois dos retries, o "Erro de rede ao acessar API" do Plone 6 o `Both scrapers failed` em que o fallback Plone 6 falhou por rede e, na EBC, uma página do índice não baixada depois dos retries (nas páginas depois da 1ª, também 4xx: a paginação interrompida não deixa a marca d'água avançar) |
 | `ANTI_BOT` | permanente: falha sem retry | Desativar temporariamente se persistir (ver seção abaixo) |
 | `EMPTY_CONTENT` | passageiro: repete | Normal se agência publica pouco (hoje nenhuma exceção gera esta categoria) |
 | `URL_BROKEN` | permanente: falha sem retry | 404/410 e outros 4xx permanentes (400, 405...): verificar nova URL no site; atualizar YAML ou desativar |

@@ -9,7 +9,9 @@ rearquitetura da ingestão) nunca atuariam para a EBC. Agora a página 0:
 - sem nenhum link de artigo: ``html_changed``;
 - 4xx permanente: ``PermanentHTTPError`` (``url_broken``/``access_denied``), como no gov.br.
 
-Nas páginas seguintes a falha só encerra a paginação, como antes.
+Nas páginas seguintes, a falha de download também levanta erro (``network_error``,
+passageiro): encerrar como sucesso deixaria parte da janela sem raspar, e a marca d'água
+avançaria sobre ela. Página seguinte sem links é o fim da listagem.
 """
 
 from unittest.mock import MagicMock, patch
@@ -27,6 +29,7 @@ from govbr_scraper.storage.storage_adapter import InsertCounts
 BASE_URL = "https://agenciabrasil.ebc.com.br/ultimas"
 ARTICLE_1 = "https://agenciabrasil.ebc.com.br/geral/noticia/2026-11/primeira"
 ARTICLE_2 = "https://agenciabrasil.ebc.com.br/geral/noticia/2026-11/segunda"
+ARTICLE_3 = "https://agenciabrasil.ebc.com.br/geral/noticia/2026-11/terceira"
 
 INDEX_WITH_LINKS = f"""
 <html><body>
@@ -135,15 +138,35 @@ class TestFirstIndexPage:
 
 
 class TestLaterIndexPages:
-    """Depois da página 0, a falha só encerra a paginação e mantém o que foi coletado."""
+    """Depois da página 0, a falha de download é erro passageiro (a janela não foi coberta);
+    página sem links é o fim da listagem e mantém o que foi coletado."""
 
     @pytest.mark.parametrize(
-        "page_1",
-        [_response(503), _response(404), _response(200, INDEX_WITHOUT_LINKS)],
-        ids=["503", "404", "sem-links"],
+        ("page_1", "calls"),
+        [
+            (_response(503), RETRY_TRIES),
+            (requests.exceptions.ReadTimeout("Read timed out"), RETRY_TRIES),
+            (_response(404), 1),
+            (_response(403), 1),
+        ],
+        ids=["503", "timeout", "404", "403"],
     )
-    def test_failure_after_first_page_keeps_collected_articles(self, scraper, page_1):
+    def test_download_failure_after_first_page_is_transient_error(self, scraper, page_1, calls):
         responses = [_response(200, INDEX_WITH_LINKS)] + [page_1] * RETRY_TRIES
+        with (
+            patch("requests.get", side_effect=lambda *a, **k: _raise_or_return(responses.pop(0))),
+            patch.object(scraper, "scrape_news_page", return_value=_article()),
+        ):
+            with pytest.raises(ListingPageError) as exc_info:
+                scraper.scrape_news()
+
+        assert len(responses) == RETRY_TRIES - calls  # 4xx: sem retry
+        assert "page=1" in str(exc_info.value)
+        assert classify_exception(exc_info.value) == ErrorCategory.NETWORK_ERROR
+        assert is_retryable(classify_exception(exc_info.value)) is True
+
+    def test_page_without_links_ends_the_listing(self, scraper):
+        responses = [_response(200, INDEX_WITH_LINKS), _response(200, INDEX_WITHOUT_LINKS)]
         with (
             patch("requests.get", side_effect=responses),
             patch.object(scraper, "scrape_news_page", return_value=_article()),
@@ -151,6 +174,16 @@ class TestLaterIndexPages:
             data = scraper.scrape_news()
 
         assert len(data) == 2
+
+    def test_fence_stops_before_the_next_page(self, scraper):
+        """Execução normal: a cerca para na página 0 e a página 1 nem é pedida."""
+        scraper.known_urls = {ARTICLE_1, ARTICLE_2, ARTICLE_3}
+        index = INDEX_WITH_LINKS.replace(
+            b"</body>", f'<a class="capa-noticia" href="{ARTICLE_3}">T</a></body>'.encode()
+        )
+        with patch("requests.get", side_effect=[_response(200, index)]) as get:
+            assert scraper.scrape_news() == []
+        assert get.call_count == 1
 
     def test_scrape_index_page_still_returns_empty_list_on_failure(self, scraper):
         with patch("requests.get", return_value=_response(503)):
@@ -178,6 +211,30 @@ class TestEbcManagerRecordsListingFailure:
                 agencies=["agencia_brasil"],
             )
         return result, storage
+
+    def test_later_page_failure_is_an_error_and_nothing_is_saved(self):
+        """Página 1 fora do ar: erro passageiro, nada gravado e sem sucesso registrado (a
+        marca d'água não avança sobre a parte da janela que não foi coberta)."""
+        storage = MagicMock()
+        storage.get_recent_urls.return_value = set()
+        responses = [_response(200, INDEX_WITH_LINKS)] + [_response(503)] * RETRY_TRIES
+        with (
+            patch("requests.get", side_effect=responses),
+            patch.object(EBCWebScraper, "scrape_news_page", return_value=_article()),
+        ):
+            result = EBCScrapeManager(storage).run_scraper(
+                min_date="2026-11-17",
+                max_date="2026-11-19",
+                sequential=True,
+                agencies=["agencia_brasil"],
+            )
+
+        assert result["agencies_processed"] == []
+        (error,) = result["errors"]
+        assert (error["category"], error["retryable"]) == ("network_error", True)
+        storage.insert.assert_not_called()
+        run = storage.record_scrape_run.call_args[0][0]
+        assert run.status == "error"
 
     @pytest.mark.parametrize(
         ("response", "category", "retryable"),

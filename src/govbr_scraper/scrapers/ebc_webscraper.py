@@ -229,13 +229,18 @@ class EBCWebScraper:
         """
         Scrape news from EBC website until the min_date is reached.
 
-        A primeira página do índice não pode falhar em silêncio: sem ela a fonte sairia
-        como sucesso com 0 artigos. Nas páginas seguintes, uma falha só encerra a
-        paginação e mantém o que já foi coletado.
+        Nenhuma página do índice pode falhar em silêncio. Na primeira, a fonte sairia como
+        sucesso com 0 artigos. Nas seguintes, como sucesso com só parte da janela: a marca
+        d'água avançaria sobre a parte não coberta e, com a cerca de URLs conhecidas, a
+        execução seguinte pararia nas notícias mais novas, já gravadas, sem nunca chegar
+        nela. Uma página seguinte sem links continua sendo o fim da listagem.
 
         :return: A list of dictionaries containing news data.
         :raises ListingPageError: a primeira página do índice não foi baixada depois dos
-            retries (``network_error``) ou veio sem nenhum link de artigo (``html_changed``).
+            retries (``network_error``) ou veio sem nenhum link de artigo (``html_changed``);
+            uma página seguinte não foi baixada (``network_error``, qualquer que seja o
+            status: a página 0 respondeu, então a falha no meio da paginação é passageira).
+            O que já foi coletado é descartado, como no gov.br.
         :raises PermanentHTTPError: 4xx permanente na primeira página do índice
             (``url_broken`` ou ``access_denied``, como no gov.br).
         """
@@ -252,7 +257,7 @@ class EBCWebScraper:
                 if is_first_page:
                     news_urls = self._scrape_first_index_page(current_page_url)
                 else:
-                    news_urls = self.scrape_index_page(current_page_url)
+                    news_urls = self._scrape_next_index_page(current_page_url)
 
                 if not news_urls:
                     logging.info("No more news URLs found. Stopping.")
@@ -307,6 +312,26 @@ class EBCWebScraper:
                 error_category=ErrorCategory.HTML_CHANGED,
             )
         return news_urls
+
+    def _scrape_next_index_page(self, url: str) -> list[str]:
+        """Página seguinte do índice: falha de download vira exceção passageira.
+
+        A paginação só chega aqui quando a página anterior não bateu na cerca nem na data
+        mínima, ou seja, ainda falta parte da janela. Sem links é o fim da listagem (``[]``).
+
+        :raises ListingPageError: ``network_error`` se a página não foi baixada (depois dos
+            retries, ou 4xx): a página 0 respondeu, então é falha passageira; 24 h dela
+            seguidas abrem o circuito.
+        """
+        try:
+            response = self._get(url)
+        except (requests.exceptions.RequestException, PermanentHTTPError) as e:
+            raise ListingPageError(
+                f"Failed to fetch page after retries for EBC index {url} (paginação "
+                f"interrompida; a janela não foi coberta): {e}",
+                error_category=ErrorCategory.NETWORK_ERROR,
+            ) from e
+        return self._extract_index_urls(response)
 
     def _extract_index_urls(self, response: requests.Response) -> list[str]:
         """Links de artigo de uma página do índice (lista vazia se não achar nenhum)."""
