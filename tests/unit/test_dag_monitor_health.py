@@ -634,6 +634,7 @@ class TestDagWiring:
             registry["check_consecutive_failures"].return_value,
             registry["check_stale_agencies"].return_value,
             registry["check_silent_agencies"].return_value,
+            registry["check_open_circuits"].return_value,
         )
 
 
@@ -722,13 +723,29 @@ FAILURE_ROWS = [
     }
 ]
 STALE_ROWS = [{"agency_key": "funai", "last_success_at": datetime(2026, 11, 10, 8, 0)}]
+OPEN_CIRCUIT_ROWS = [
+    {
+        "agency_key": "mec",
+        "circuit_state": "open",
+        "circuit_opened_at": datetime(2026, 11, 19, 10, 5),
+        "next_due_at": datetime(2026, 11, 20, 10, 5),
+        "last_error_category": "html_changed",
+    },
+    {
+        "agency_key": "antaq",
+        "circuit_state": "half_open",
+        "circuit_opened_at": None,
+        "next_due_at": None,
+        "last_error_category": None,
+    },
+]
 
 
 class TestAlertDigest:
     def test_lists_sorted_keys_of_silent_and_failures_only(self):
         mod = _load_module()
         digest = mod._alert_digest(FAILURE_ROWS, list(reversed(SILENT_ROWS)))
-        assert digest == {"silent": ["aids", "inma"], "failures": ["mec"]}
+        assert digest == {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
 
     def test_ignores_timestamps(self):
         mod = _load_module()
@@ -736,7 +753,15 @@ class TestAlertDigest:
         assert mod._alert_digest([], SILENT_ROWS) == mod._alert_digest([], later)
 
     def test_empty(self):
-        assert _load_module()._alert_digest([], []) == {"silent": [], "failures": []}
+        assert _load_module()._alert_digest([], []) == {
+            "silent": [],
+            "failures": [],
+            "open_circuits": [],
+        }
+
+    def test_open_circuits_enter_the_digest(self):
+        digest = _load_module()._alert_digest([], [], OPEN_CIRCUIT_ROWS)
+        assert digest["open_circuits"] == ["antaq", "mec"]
 
 
 class TestShouldSend:
@@ -825,46 +850,46 @@ class TestSendAlertsDedup:
         send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS)
         send_alert.assert_called_once()
         state = store.state()
-        assert state["digest"] == {"silent": ["aids", "inma"], "failures": ["mec"]}
+        assert state["digest"] == {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
         assert abs(datetime.now(UTC) - datetime.fromisoformat(state["sent_at"])) < timedelta(
             minutes=1
         )
 
     def test_same_findings_within_24h_are_not_resent(self):
-        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 2)})
         send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
         send_alert.assert_not_called()
         assert store.set_calls == []
 
     def test_stale_only_change_does_not_trigger(self):
-        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 2)})
         more_stale = STALE_ROWS + [{"agency_key": "ibama", "last_success_at": None}]
         send_alert, _ = self._run(FAILURE_ROWS, more_stale, SILENT_ROWS, store)
         send_alert.assert_not_called()
 
     def test_new_silent_agency_triggers(self):
-        digest = {"silent": ["aids"], "failures": ["mec"]}
+        digest = {"silent": ["aids"], "failures": ["mec"], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
         send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
         send_alert.assert_called_once()
         assert store.state()["digest"]["silent"] == ["aids", "inma"]
 
     def test_failures_change_triggers(self):
-        digest = {"silent": ["aids", "inma"], "failures": []}
+        digest = {"silent": ["aids", "inma"], "failures": [], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
         send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
         send_alert.assert_called_once()
 
     def test_same_findings_are_resent_after_24h(self):
-        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 25)})
         send_alert, _ = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS, store)
         send_alert.assert_called_once()
 
     def test_repeat_hours_variable(self):
-        digest = {"silent": ["aids", "inma"], "failures": ["mec"]}
+        digest = {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
         store = _VariableStore(
             {
                 "scraper_monitor_last_alert": _state_json(digest, 7),
@@ -878,7 +903,7 @@ class TestSendAlertsDedup:
         send_alert, store = self._run([], STALE_ROWS, [])
         send_alert.assert_called_once()
         assert "Agencias Sem Noticias" in send_alert.call_args.kwargs["message"]
-        assert store.state()["digest"] == {"silent": [], "failures": []}
+        assert store.state()["digest"] == {"silent": [], "failures": [], "open_circuits": []}
 
         send_alert, _ = self._run([], STALE_ROWS + STALE_ROWS, [], store)
         send_alert.assert_not_called()
@@ -906,7 +931,7 @@ class TestSendAlertsDedup:
         assert store.set_calls == []
 
     def test_no_findings_resets_state(self):
-        digest = {"silent": ["aids"], "failures": []}
+        digest = {"silent": ["aids"], "failures": [], "open_circuits": []}
         store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
         send_alert, store = self._run([], [], [], store)
         send_alert.assert_not_called()
@@ -916,6 +941,104 @@ class TestSendAlertsDedup:
         send_alert, store = self._run([], [], [])
         send_alert.assert_not_called()
         assert store.set_calls == []
+
+
+class TestOpenCircuitSection:
+    """Circuito aberto: seção própria no alerta e no dedup. O alerta 🔴 do scraper-api é
+    publicado uma vez só, sem retry; se ele se perde, esta seção é o único aviso de que a
+    agência está fora da raspagem regular."""
+
+    def _send(self, open_circuits, store=None, failures=None, silent=None):
+        store = store or _VariableStore()
+        _, registry, mocks = _load_module_with_registry()
+        variable = mocks["airflow.models"].Variable
+        variable.get = MagicMock(side_effect=store.get)
+        variable.set = MagicMock(side_effect=store.set)
+        send_alert = mocks["scraper.notify"].send_alert
+        with patch.dict(sys.modules, mocks):
+            registry["send_alerts"]._original_fn(failures or [], [], silent or [], open_circuits)
+        return send_alert, store
+
+    def test_message_lists_open_circuits(self):
+        message = _load_module()._build_alert_message([], [], [], 3, OPEN_CIRCUIT_ROWS)
+        assert "Circuito Aberto (disjuntor)" in message
+        assert "2 agencia(s) fora da raspagem regular" in message
+        assert "<b>mec</b>: html_changed, aberto em 2026-11-19 10:05:00" in message
+        assert "proxima sonda em 2026-11-20 10:05:00" in message
+        assert "<b>antaq</b>: sem categoria" in message
+
+    def test_only_open_circuits_is_sent_and_saved(self):
+        send_alert, store = self._send(OPEN_CIRCUIT_ROWS)
+        send_alert.assert_called_once()
+        assert store.state()["digest"]["open_circuits"] == ["antaq", "mec"]
+
+    def test_same_open_circuits_are_reminded_after_24h(self):
+        digest = {"silent": [], "failures": [], "open_circuits": ["antaq", "mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 2)})
+        send_alert, _ = self._send(OPEN_CIRCUIT_ROWS, store)
+        send_alert.assert_not_called()
+
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 25)})
+        send_alert, _ = self._send(OPEN_CIRCUIT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_new_open_circuit_triggers(self):
+        digest = {"silent": [], "failures": [], "open_circuits": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
+        send_alert, _ = self._send(OPEN_CIRCUIT_ROWS, store)
+        send_alert.assert_called_once()
+
+    def test_state_from_before_the_section_resends_once(self):
+        """Estado gravado antes da seção (sem a chave open_circuits): reenvia uma vez."""
+        digest = {"silent": [], "failures": ["mec"]}
+        store = _VariableStore({"scraper_monitor_last_alert": _state_json(digest, 1)})
+        send_alert, _ = self._send([], store, failures=FAILURE_ROWS)
+        send_alert.assert_called_once()
+
+
+class TestCheckOpenCircuitsTask:
+    def _run(self, open_circuits=(), state_error=None, active=("mec", "nova")):
+        mod, registry, mocks = _load_module_with_registry()
+        mocks["airflow.models"].Variable.get = MagicMock(
+            side_effect=_variables({"scraper_database_url": "postgresql://monitor"})
+        )
+        conn, _ = _mock_connection([], open_circuits, state_error)
+        with (
+            patch.dict(sys.modules, mocks),
+            patch("psycopg2.connect", return_value=conn),
+            patch.object(mod, "_load_active_agencies", return_value=list(active)),
+        ):
+            result = registry["check_open_circuits"]._original_fn()
+        return result, conn
+
+    def test_only_active_gov_br_and_ebc_sources(self):
+        """Agência desativada no YAML com o circuito aberto não é mais raspada: fica de fora."""
+        result, conn = self._run(open_circuits=["mec", "nova", "sri", "tvbrasil"])
+        assert [r["agency_key"] for r in result] == ["mec", "nova", "tvbrasil"]
+        conn.close.assert_called_once()
+
+    def test_missing_table_is_empty_and_rolls_back(self):
+        result, conn = self._run(state_error=errors.UndefinedTable("scrape_agency_state"))
+        assert result == []
+        conn.rollback.assert_called_once()
+
+    def test_ebc_sources_match_scrape_ebc(self):
+        monitor = _load_module()
+        mocks = _make_airflow_mocks()
+        mocks["airflow.exceptions"] = MagicMock()
+        for key in list(sys.modules):
+            if key.startswith("dags.scrape_ebc"):
+                del sys.modules[key]
+        try:
+            with patch.dict(sys.modules, mocks):
+                import dags.scrape_ebc as scrape_ebc
+
+                sources = list(scrape_ebc.EBC_SOURCES)
+        finally:
+            for key in list(sys.modules):
+                if key.startswith("dags.scrape_ebc"):
+                    del sys.modules[key]
+        assert list(monitor._EBC_SOURCES) == sources
 
 
 class TestSendAlertsChannels:

@@ -96,30 +96,37 @@ CONSECUTIVE_FAILURES_QUERY = """
 
 # Agências com o disjuntor aberto (open ou half_open) em scrape_agency_state (migration 038
 # do data-platform). Saem de "Agências Sem Execução" e das falhas consecutivas: a API pula a
-# agência sem gravar scrape_run e o alerta do circuito (dgb.ops.alerts) já cobre. Sem a
+# agência sem gravar scrape_run. No lugar delas, o monitor lista os circuitos abertos numa
+# seção própria (o alerta de abertura do scraper-api sai uma vez só, sem retry). Sem a
 # tabela, nada muda.
 #
 # NOTE: This query is duplicated in dags/monitor_scraping_health.py
 # (_OPEN_CIRCUIT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
 OPEN_CIRCUIT_AGENCIES_QUERY = """
-    SELECT agency_key
+    SELECT agency_key, circuit_state, circuit_opened_at, next_due_at, last_error_category
     FROM scrape_agency_state
     WHERE circuit_state <> 'closed'
+    ORDER BY agency_key
 """
 
 
-def find_open_circuit_agencies(conn) -> set[str]:
-    """Agências com o disjuntor aberto; vazio se scrape_agency_state não existe.
+def find_open_circuits(conn) -> list[dict]:
+    """Agências com o disjuntor aberto, com estado, abertura, próxima sonda e último erro.
 
-    Tabela ausente (038 não aplicada): rollback da transação abortada e conjunto vazio.
+    Tabela ausente (038 não aplicada): rollback da transação abortada e lista vazia.
     """
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(OPEN_CIRCUIT_AGENCIES_QUERY)
-            return {row["agency_key"] for row in cur.fetchall()}
+            return [dict(row) for row in cur.fetchall()]
     except errors.UndefinedTable:
         conn.rollback()
-        return set()
+        return []
+
+
+def find_open_circuit_agencies(conn) -> set[str]:
+    """Siglas das agências com o disjuntor aberto; vazio se scrape_agency_state não existe."""
+    return {row["agency_key"] for row in find_open_circuits(conn)}
 
 
 def _without_open_circuits(conn, rows: list[dict]) -> list[dict]:

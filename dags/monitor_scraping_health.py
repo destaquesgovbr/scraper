@@ -9,10 +9,13 @@ Roda 30 min depois de cada execucao do scraping (``30 6-22/2 * * *``: 06h30, 08h
 2. Agencias com N falhas consecutivas, ou com erro permanente (sem retry) na ultima execucao
 3. Agencias sem noticias em X horas
 
-Agencias com o disjuntor aberto em scrape_agency_state (circuito open/half_open; migration
-038 do data-platform) saem das secoes 1 e 2: a API pula a agencia (sem scrape_run) e o
-alerta de abertura do circuito (dgb.ops.alerts, pelo scraper-api) ja cobre. Sem a tabela,
-nada muda.
+4. Agencias com o disjuntor aberto em scrape_agency_state (circuito open/half_open;
+   migration 038 do data-platform)
+
+As agencias da secao 4 saem das secoes 1 e 2: a API pula a agencia (sem scrape_run). O
+alerta de abertura do circuito (dgb.ops.alerts, pelo scraper-api) sai uma vez so, sem
+retry; a secao 4 entra no resumo do dedup, entao a agencia fora da raspagem regular volta a
+ser lembrada a cada scraper_alert_repeat_hours. Sem a tabela, nada muda.
 
 Envia o alerta agregado via notify.send_alert (Telegram > Pub/Sub dgb.ops.alerts >
 webhook > log), sem repetir o mesmo alerta a cada execucao: ver send_alerts.
@@ -130,21 +133,26 @@ _SILENT_AGENCIES_QUERY = """
 
 
 # Agencias com o disjuntor aberto (open ou half_open) em scrape_agency_state (migration 038
-# do data-platform). Saem de "Agencias Sem Execucao" e das falhas consecutivas: a API pula a
-# agencia sem gravar scrape_run e o alerta do circuito ja cobre. Sem a tabela, nada muda
-# (_open_circuit_agencies devolve vazio).
+# do data-platform). Saem de "Agencias Sem Execucao" e das falhas consecutivas (a API pula a
+# agencia sem gravar scrape_run) e vao para a secao "Circuito Aberto". Sem a tabela, nada
+# muda (_open_circuits devolve vazio).
 #
 # NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
 # (OPEN_CIRCUIT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
 _OPEN_CIRCUIT_AGENCIES_QUERY = """
-    SELECT agency_key
+    SELECT agency_key, circuit_state, circuit_opened_at, next_due_at, last_error_category
     FROM scrape_agency_state
     WHERE circuit_state <> 'closed'
+    ORDER BY agency_key
 """
 
+# Fontes EBC ativas: as mesmas de dags/scrape_ebc.py (EBC_SOURCES). Tambem tem linha em
+# scrape_agency_state; o site_urls.yaml so tem as gov.br.
+_EBC_SOURCES = ("agencia_brasil", "tvbrasil")
 
-def _open_circuit_agencies(conn) -> set[str]:
-    """Agencias com o disjuntor aberto; vazio se scrape_agency_state nao existe.
+
+def _open_circuits(conn) -> list[dict]:
+    """Agencias com o disjuntor aberto (linhas da query); vazio sem scrape_agency_state.
 
     Tabela ausente (038 nao aplicada): rollback da transacao abortada e nenhuma exclusao.
     """
@@ -154,15 +162,20 @@ def _open_circuit_agencies(conn) -> set[str]:
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(_OPEN_CIRCUIT_AGENCIES_QUERY)
-            return {row["agency_key"] for row in cur.fetchall()}
+            return [dict(row) for row in cur.fetchall()]
     except psycopg2.errors.UndefinedTable:
         conn.rollback()
         logger.info("scrape_agency_state ausente (migration 038): sem filtro de circuito aberto")
-        return set()
+        return []
+
+
+def _open_circuit_agencies(conn) -> set[str]:
+    """Siglas das agencias com o disjuntor aberto; vazio sem scrape_agency_state."""
+    return {row["agency_key"] for row in _open_circuits(conn)}
 
 
 def _without_open_circuits(rows: list[dict], open_circuits: set[str], section: str) -> list[dict]:
-    """Tira das linhas as agencias com o disjuntor aberto (o alerta do circuito cobre)."""
+    """Tira das linhas as agencias com o disjuntor aberto (vao para "Circuito Aberto")."""
     kept = [r for r in rows if r["agency_key"] not in open_circuits]
     removed = sorted({r["agency_key"] for r in rows} & open_circuits)
     if removed:
@@ -212,15 +225,19 @@ def _get_repeat_hours() -> int:
         return _DEFAULT_ALERT_REPEAT_HOURS
 
 
-def _alert_digest(failures: list[dict], silent: list[dict]) -> dict[str, list[str]]:
+def _alert_digest(
+    failures: list[dict], silent: list[dict], open_circuits: list[dict] | None = None
+) -> dict[str, list[str]]:
     """Resumo do que dispara um envio: secao -> chaves de agencia ordenadas, sem horarios.
 
-    So entram as secoes acionaveis (sem execucao e falhas consecutivas). As agencias sem
-    noticias (~48 cronicas) vao na mensagem, mas mudanca so nelas nao reenvia o alerta.
+    So entram as secoes acionaveis (sem execucao, falhas consecutivas e circuito aberto). As
+    agencias sem noticias (~48 cronicas) vao na mensagem, mas mudanca so nelas nao reenvia o
+    alerta.
     """
     return {
         "silent": sorted({_sanitize(r["agency_key"]) for r in silent or []}),
         "failures": sorted({_sanitize(r["agency_key"]) for r in failures or []}),
+        "open_circuits": sorted({_sanitize(r["agency_key"]) for r in open_circuits or []}),
     }
 
 
@@ -304,6 +321,7 @@ def _build_alert_message(
     stale: list[dict],
     silent: list[dict] | None = None,
     silent_hours: int = _DEFAULT_SILENT_HOURS,
+    open_circuits: list[dict] | None = None,
 ) -> str | None:
     """Monta o alerta agregado (HTML do Telegram, so com <b>), ou None se nao ha o que alertar.
 
@@ -340,6 +358,26 @@ def _build_alert_message(
             "<b>Alerta: Falhas Consecutivas no Scraper</b>\n\n" + "\n".join(_capped(lines))
         )
 
+    if open_circuits:
+        header = (
+            "<b>Alerta: Circuito Aberto (disjuntor)</b>\n"
+            f"{len(open_circuits)} agencia(s) fora da raspagem regular: a API as pula e so as "
+            "sondas (2h, 6h, 24h e depois a cada 24h) tentam de novo. Ver docs/runbook.md, "
+            "secao 'Disjuntor e Marca d'Agua'."
+        )
+        lines = []
+        for r in open_circuits:
+            line = (
+                f"- <b>{_sanitize(r['agency_key'])}</b>: "
+                f"{_sanitize(r.get('last_error_category')) or 'sem categoria'}"
+            )
+            if r.get("circuit_opened_at") is not None:
+                line += f", aberto em {r['circuit_opened_at']}"
+            if r.get("next_due_at") is not None:
+                line += f", proxima sonda em {r['next_due_at']}"
+            lines.append(line)
+        parts.append(header + "\n\n" + "\n".join(_capped(lines)))
+
     if stale:
         lines = [
             f"- <b>{_sanitize(r['agency_key'])}</b>: ultima noticia em {r['last_success_at']}"
@@ -355,8 +393,8 @@ def _build_alert_message(
 @dag(
     dag_id="monitor_scraping_health",
     description=(
-        "Monitora saude do scraper: agencias sem execucao, falhas consecutivas "
-        "e agencias sem noticias"
+        "Monitora saude do scraper: agencias sem execucao, falhas consecutivas, "
+        "circuito aberto e agencias sem noticias"
     ),
     schedule="30 6-22/2 * * *",
     start_date=datetime(2025, 1, 1),
@@ -504,11 +542,53 @@ def monitor_scraping_health_dag():
         return results
 
     @task
-    def send_alerts(failures: list[dict], stale: list[dict], silent: list[dict]):
+    def check_open_circuits() -> list[dict]:
+        """Agencias ativas com o disjuntor aberto (gov.br do site_urls.yaml e fontes EBC).
+
+        Saem de "Agencias Sem Execucao" e das falhas consecutivas e vem para esta secao. O
+        alerta de abertura do scraper-api e publicado uma vez so, sem retry: se ele se perde,
+        esta secao e o unico aviso de que a agencia esta fora da raspagem regular. Agencia
+        desativada no YAML com o circuito aberto fica de fora (nao e mais raspada).
+        """
+        import psycopg2
+        from airflow.models import Variable
+
+        database_url = Variable.get("scraper_database_url", default_var="")
+        if not database_url:
+            raise ValueError("Missing required Airflow Variable: scraper_database_url")
+
+        active = set(_load_active_agencies()) | set(_EBC_SOURCES)
+        conn = psycopg2.connect(database_url)
+        try:
+            rows = _open_circuits(conn)
+        finally:
+            conn.close()
+        results = [r for r in rows if r["agency_key"] in active]
+
+        if results:
+            logger.warning(f"Agencias com o circuito aberto: {len(results)}")
+            for r in results:
+                logger.warning(
+                    f"  {_sanitize(r['agency_key'])}: {_sanitize(r.get('last_error_category'))} "
+                    f"(aberto em {r.get('circuit_opened_at')}, proxima sonda em "
+                    f"{r.get('next_due_at')})"
+                )
+        else:
+            logger.info("Nenhuma agencia ativa com o circuito aberto.")
+        return results
+
+    @task
+    def send_alerts(
+        failures: list[dict],
+        stale: list[dict],
+        silent: list[dict],
+        open_circuits: list[dict] | None = None,
+    ):
         """Envia o alerta agregado (Telegram > Pub/Sub > webhook > log), sem repetir.
 
-        Dedup: o resumo das secoes acionaveis (agencias sem execucao e com falhas
-        consecutivas, sem horarios) e comparado com o do ultimo envio, guardado na
+        Dedup: o resumo das secoes acionaveis (agencias sem execucao, com falhas
+        consecutivas e com o circuito aberto, sem horarios) e comparado com o do ultimo envio,
+        guardado na
         Variable scraper_monitor_last_alert. Reenvia quando o resumo muda ou quando o
         ultimo envio tem scraper_alert_repeat_hours (default 24h). Mudanca so nas agencias
         sem noticias nao reenvia. O estado so e gravado quando algum canal entregou: no
@@ -517,7 +597,9 @@ def monitor_scraping_health_dag():
         from airflow.models import Variable
         from scraper.notify import default_alert_topic, send_alert
 
-        message = _build_alert_message(failures, stale, silent, _get_silent_hours())
+        message = _build_alert_message(
+            failures, stale, silent, _get_silent_hours(), open_circuits
+        )
         state = _read_alert_state()
         if message is None:
             logger.info("Sem alertas para enviar.")
@@ -527,13 +609,15 @@ def monitor_scraping_health_dag():
             return
 
         now = datetime.now(timezone.utc)  # noqa: UP017
-        digest = _alert_digest(failures, silent)
+        digest = _alert_digest(failures, silent, open_circuits)
         if not _should_send(digest, state, now, _get_repeat_hours()):
             logger.info(
-                "Alerta igual ao enviado em %s (sem execucao: %d, falhas: %d); nao reenviado.",
+                "Alerta igual ao enviado em %s (sem execucao: %d, falhas: %d, circuito "
+                "aberto: %d); nao reenviado.",
                 state.get("sent_at"),
                 len(digest["silent"]),
                 len(digest["failures"]),
+                len(digest["open_circuits"]),
             )
             return
 
@@ -558,7 +642,8 @@ def monitor_scraping_health_dag():
     failures = check_consecutive_failures()
     stale = check_stale_agencies()
     silent = check_silent_agencies()
-    send_alerts(failures, stale, silent)
+    open_circuits = check_open_circuits()
+    send_alerts(failures, stale, silent, open_circuits)
 
 
 dag_instance = monitor_scraping_health_dag()

@@ -26,6 +26,7 @@ from govbr_scraper.monitoring.health_checks import (
     compute_coverage_report,
     find_consecutive_failures,
     find_open_circuit_agencies,
+    find_open_circuits,
     find_silent_agencies,
     find_stale_agencies,
 )
@@ -315,6 +316,31 @@ class TestOpenCircuitExclusionPostgres:
             db, threshold=3, window_hours=6, skip_open_circuits=False
         )
         assert {r["agency_key"] for r in all_failures} == {"mec", "antaq", "mds"}
+
+    def test_find_open_circuits_returns_the_section_columns(self, db, agency_state):
+        """A seção "Circuito Aberto" do monitor: a query roda no DDL real da 038."""
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO scrape_agency_state (agency_key, circuit_state, circuit_opened_at, "
+                "next_due_at, last_error_category) VALUES "
+                "('mec', 'open', NOW() - INTERVAL '1 hour', NOW() + INTERVAL '1 hour', "
+                "'html_changed'), ('antaq', 'half_open', NULL, NOW(), NULL), "
+                "('mds', 'closed', NULL, NOW(), NULL)"
+            )
+        rows = find_open_circuits(db)
+        assert [r["agency_key"] for r in rows] == ["antaq", "mec"]
+        assert set(rows[0]) == {
+            "agency_key",
+            "circuit_state",
+            "circuit_opened_at",
+            "next_due_at",
+            "last_error_category",
+        }
+        assert (rows[1]["circuit_state"], rows[1]["last_error_category"]) == (
+            "open",
+            "html_changed",
+        )
+        assert rows[1]["circuit_opened_at"] < rows[1]["next_due_at"]
 
     def test_dag_query_runs_in_a_transaction_without_table(self, db, base_dsn):
         """No monitor a conexão não é autocommit: o rollback libera a transação abortada."""

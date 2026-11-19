@@ -13,6 +13,7 @@ from govbr_scraper.monitoring.health_checks import (
     compute_coverage_report,
     find_consecutive_failures,
     find_open_circuit_agencies,
+    find_open_circuits,
     find_silent_agencies,
     find_stale_agencies,
 )
@@ -186,8 +187,19 @@ class TestOpenCircuitExclusion:
     def test_query_reads_non_closed_circuits(self):
         normalized = " ".join(OPEN_CIRCUIT_AGENCIES_QUERY.split())
         assert normalized == (
-            "SELECT agency_key FROM scrape_agency_state WHERE circuit_state <> 'closed'"
+            "SELECT agency_key, circuit_state, circuit_opened_at, next_due_at, "
+            "last_error_category FROM scrape_agency_state WHERE circuit_state <> 'closed' "
+            "ORDER BY agency_key"
         )
+
+    def test_find_open_circuits_returns_rows(self):
+        conn, _ = _make_conn([], open_circuits=["antaq", "mec"])
+        assert find_open_circuits(conn) == [{"agency_key": "antaq"}, {"agency_key": "mec"}]
+
+    def test_find_open_circuits_missing_table(self):
+        conn, _ = _make_conn([], state_error=errors.UndefinedTable("no scrape_agency_state"))
+        assert find_open_circuits(conn) == []
+        conn.rollback.assert_called_once()
 
     def test_find_open_circuit_agencies(self):
         conn, _ = _make_conn([], open_circuits=["mec", "antaq"])
