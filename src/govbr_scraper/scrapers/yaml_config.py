@@ -109,3 +109,12 @@ def is_agency_inactive(agency_key: str, agency_data: dict[str, Any]) -> bool:
         logging.debug(f"Skipping inactive agency '{agency_key}': {reason}")
 
     return not is_active
+
+
+def active_agency_keys(file_name: str) -> list[str]:
+    """Chaves ativas de um YAML de agências desta pasta (site_urls.yaml ou ebc_urls.yaml).
+
+    :param file_name: Nome do arquivo em ``scrapers/config``.
+    :return: As chaves ativas, ordenadas.
+    """
+    return sorted(load_urls_from_yaml(get_config_dir(__file__), file_name))

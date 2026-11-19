@@ -1,12 +1,23 @@
 """Tests for Scraper API endpoints — HTTP status codes and response structure."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from govbr_scraper.api import app
+from govbr_scraper.storage.storage_adapter import StorageAdapter
 
 client = TestClient(app)
+
+
+def _storage_without_state():
+    """StorageAdapter mockado com scrape_agency_state indisponível (sem a migration 038):
+    sem disjuntor, e a janela sem datas é ontem→hoje. O estado tem testes próprios em
+    test_api_agency_state.py."""
+    cls = create_autospec(StorageAdapter)
+    cls.return_value.load_agency_states.return_value = None
+    return cls
 
 
 # =============================================================================
@@ -41,8 +52,18 @@ def _mock_run_scraper(
     }
 
 
+def _per_agency(results: dict[str, dict]):
+    """side_effect de run_scraper: as métricas de cada agência (a API chama uma a uma)."""
+
+    def run_scraper(*, agencies, **kwargs):
+        (agency,) = agencies
+        return results[agency]
+
+    return run_scraper
+
+
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_completed_returns_200(mock_storage_cls, mock_manager_cls):
     """Successful scraping should return HTTP 200."""
     mock_manager = MagicMock()
@@ -64,15 +85,17 @@ def test_scrape_agencies_completed_returns_200(mock_storage_cls, mock_manager_cl
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_partial_returns_207(mock_storage_cls, mock_manager_cls):
     """Partial failure (some agencies OK, some failed) should return HTTP 207."""
     mock_manager = MagicMock()
-    mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=5,
-        articles_saved=5,
-        agencies_processed=["mec"],
-        errors=[{"agency": "mds", "error": "Connection timeout"}],
+    mock_manager.run_scraper.side_effect = _per_agency(
+        {
+            "mec": _mock_run_scraper(
+                articles_scraped=5, articles_saved=5, agencies_processed=["mec"]
+            ),
+            "mds": _mock_run_scraper(errors=[{"agency": "mds", "error": "Connection timeout"}]),
+        }
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -87,7 +110,7 @@ def test_scrape_agencies_partial_returns_207(mock_storage_cls, mock_manager_cls)
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_failed_returns_500(mock_storage_cls, mock_manager_cls):
     """Total failure (all agencies failed) should return HTTP 500."""
     mock_manager = MagicMock()
@@ -105,7 +128,7 @@ def test_scrape_agencies_failed_returns_500(mock_storage_cls, mock_manager_cls):
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_exception_returns_500(mock_storage_cls, mock_manager_cls):
     """Unhandled exception (e.g. storage init failure) should return HTTP 500."""
     mock_storage_cls.side_effect = RuntimeError("DB connection failed")
@@ -117,7 +140,7 @@ def test_scrape_agencies_exception_returns_500(mock_storage_cls, mock_manager_cl
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_no_articles_returns_200(mock_storage_cls, mock_manager_cls):
     """No articles found (but no errors) is still a success."""
     mock_manager = MagicMock()
@@ -135,7 +158,7 @@ def test_scrape_agencies_no_articles_returns_200(mock_storage_cls, mock_manager_
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_end_date_defaults_to_start(mock_storage_cls, mock_manager_cls):
     """When end_date is omitted, it should default to start_date."""
     mock_manager = MagicMock()
@@ -160,14 +183,24 @@ EBC_PAYLOAD = {"start_date": "2025-01-01", "sequential": True}
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_completed_returns_200(mock_storage_cls, mock_manager_cls):
     mock_manager = MagicMock()
-    mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=20,
-        articles_saved=18,
-        articles_new=4,
-        agencies_processed=["agencia_brasil", "tvbrasil"],
+    mock_manager.run_scraper.side_effect = _per_agency(
+        {
+            "agencia_brasil": _mock_run_scraper(
+                articles_scraped=15,
+                articles_saved=14,
+                articles_new=3,
+                agencies_processed=["agencia_brasil"],
+            ),
+            "tvbrasil": _mock_run_scraper(
+                articles_scraped=5,
+                articles_saved=4,
+                articles_new=1,
+                agencies_processed=["tvbrasil"],
+            ),
+        }
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -179,14 +212,16 @@ def test_scrape_ebc_completed_returns_200(mock_storage_cls, mock_manager_cls):
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_partial_returns_207(mock_storage_cls, mock_manager_cls):
     mock_manager = MagicMock()
-    mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=10,
-        articles_saved=10,
-        agencies_processed=["agencia_brasil"],
-        errors=[{"agency": "tvbrasil", "error": "Timeout"}],
+    mock_manager.run_scraper.side_effect = _per_agency(
+        {
+            "agencia_brasil": _mock_run_scraper(
+                articles_scraped=10, articles_saved=10, agencies_processed=["agencia_brasil"]
+            ),
+            "tvbrasil": _mock_run_scraper(errors=[{"agency": "tvbrasil", "error": "Timeout"}]),
+        }
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -197,11 +232,16 @@ def test_scrape_ebc_partial_returns_207(mock_storage_cls, mock_manager_cls):
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_failed_returns_500(mock_storage_cls, mock_manager_cls):
     mock_manager = MagicMock()
-    mock_manager.run_scraper.return_value = _mock_run_scraper(
-        errors=[{"agency": "agencia_brasil", "error": "DNS resolution failed"}],
+    mock_manager.run_scraper.side_effect = _per_agency(
+        {
+            "agencia_brasil": _mock_run_scraper(
+                errors=[{"agency": "agencia_brasil", "error": "DNS resolution failed"}]
+            ),
+            "tvbrasil": _mock_run_scraper(errors=[{"agency": "tvbrasil", "error": "Timeout"}]),
+        }
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -214,7 +254,7 @@ def test_scrape_ebc_failed_returns_500(mock_storage_cls, mock_manager_cls):
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_exception_returns_500(mock_storage_cls, mock_manager_cls):
     """Unhandled exception during EBC scraping should return HTTP 500."""
     mock_storage_cls.side_effect = RuntimeError("DB connection failed")
@@ -231,7 +271,7 @@ def test_scrape_ebc_exception_returns_500(mock_storage_cls, mock_manager_cls):
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_errors_carry_category_and_retryable(mock_storage_cls, mock_manager_cls):
     """O status HTTP não muda (500 se todas falharam); o corpo diz se vale repetir."""
     mock_manager = MagicMock()
@@ -261,7 +301,7 @@ def test_scrape_agencies_errors_carry_category_and_retryable(mock_storage_cls, m
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_error_without_category_defaults_to_retryable(
     mock_storage_cls, mock_manager_cls
 ):
@@ -278,7 +318,7 @@ def test_scrape_agencies_error_without_category_defaults_to_retryable(
     assert error["retryable"] is True
 
 
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_unknown_agency_is_permanent(mock_storage_cls):
     """ScrapeManager real com o site_urls.yaml real: agência fora do YAML."""
     payload = {**AGENCIES_PAYLOAD, "agencies": ["nao_existe_xyz"]}
@@ -294,7 +334,7 @@ def test_scrape_agencies_unknown_agency_is_permanent(mock_storage_cls):
     assert error["retryable"] is False
 
 
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_unknown_agency_is_permanent(mock_storage_cls):
     response = client.post("/scrape/ebc", json={**EBC_PAYLOAD, "agencies": ["memoria-ebc"]})
 
@@ -305,22 +345,28 @@ def test_scrape_ebc_unknown_agency_is_permanent(mock_storage_cls):
 
 
 @patch("govbr_scraper.scrapers.ebc_scrape_manager.EBCScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_ebc_partial_keeps_207_with_categories(mock_storage_cls, mock_manager_cls):
     mock_manager = MagicMock()
-    mock_manager.run_scraper.return_value = _mock_run_scraper(
-        articles_scraped=10,
-        articles_saved=10,
-        articles_new=2,
-        agencies_processed=["agencia_brasil"],
-        errors=[
-            {
-                "agency": "tvbrasil",
-                "error": "Read timed out",
-                "category": "network_error",
-                "retryable": True,
-            }
-        ],
+    mock_manager.run_scraper.side_effect = _per_agency(
+        {
+            "agencia_brasil": _mock_run_scraper(
+                articles_scraped=10,
+                articles_saved=10,
+                articles_new=2,
+                agencies_processed=["agencia_brasil"],
+            ),
+            "tvbrasil": _mock_run_scraper(
+                errors=[
+                    {
+                        "agency": "tvbrasil",
+                        "error": "Read timed out",
+                        "category": "network_error",
+                        "retryable": True,
+                    }
+                ]
+            ),
+        }
     )
     mock_manager_cls.return_value = mock_manager
 
@@ -334,7 +380,7 @@ def test_scrape_ebc_partial_keeps_207_with_categories(mock_storage_cls, mock_man
 
 
 @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-@patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+@patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
 def test_scrape_agencies_old_manager_metrics_without_articles_new(
     mock_storage_cls, mock_manager_cls
 ):
@@ -361,27 +407,42 @@ def test_scrape_agencies_old_manager_metrics_without_articles_new(
 class TestPayloadValidation:
     """Tests for request payload validation."""
 
-    def test_missing_start_date_returns_422(self):
-        """Missing required start_date field should return HTTP 422."""
-        response = client.post("/scrape/agencies", json={"agencies": ["mec"]})
-
-        assert response.status_code == 422
-        detail = response.json()["detail"]
-        assert any("start_date" in str(err).lower() for err in detail)
-
     @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
-    def test_invalid_start_date_format_returns_500(self, mock_storage_cls, mock_manager_cls):
-        """Invalid date format passes Pydantic (start_date is str) but fails in the scraper, returning HTTP 500."""
+    @patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
+    def test_dates_are_optional(self, mock_storage_cls, mock_manager_cls):
+        """Sem datas, a janela vem da marca d'água (estado indisponível: ontem→hoje)."""
         mock_manager = MagicMock()
-        mock_manager.run_scraper.side_effect = ValueError("invalid date format: not-a-date")
+        mock_manager.run_scraper.return_value = _mock_run_scraper(agencies_processed=["mec"])
         mock_manager_cls.return_value = mock_manager
 
+        for payload in ({"agencies": ["mec"]}, {"start_date": None, "agencies": ["mec"]}):
+            response = client.post("/scrape/agencies", json=payload)
+            assert response.status_code == 200
+
+    @pytest.mark.parametrize(
+        "start_date", ["not-a-date", "2025-13-01", "2025-02-30", "01/02/2025", ""]
+    )
+    def test_invalid_start_date_returns_422(self, start_date):
+        """Datas são validadas como date: formato inválido não chega ao scraper (era 500)."""
         response = client.post(
-            "/scrape/agencies", json={"start_date": "not-a-date", "agencies": ["mec"]}
+            "/scrape/agencies", json={"start_date": start_date, "agencies": ["mec"]}
         )
 
-        assert response.status_code == 500
+        assert response.status_code == 422
+        assert any("start_date" in str(err) for err in response.json()["detail"])
+
+    def test_invalid_end_date_returns_422(self):
+        response = client.post(
+            "/scrape/ebc", json={"start_date": "2025-01-01", "end_date": "ontem"}
+        )
+
+        assert response.status_code == 422
+
+    def test_end_date_without_start_date_returns_422(self):
+        response = client.post("/scrape/agencies", json={"end_date": "2025-01-01"})
+
+        assert response.status_code == 422
+        assert "end_date exige start_date" in str(response.json()["detail"])
 
     def test_invalid_json_returns_422(self):
         """Malformed JSON should return HTTP 422."""
@@ -393,17 +454,23 @@ class TestPayloadValidation:
 
         assert response.status_code == 422
 
-    def test_empty_payload_returns_422(self):
-        """Empty payload should return HTTP 422."""
+    @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
+    def test_empty_payload_scrapes_every_active_agency(self, mock_storage_cls, mock_manager_cls):
+        """{} é válido: todas as agências ativas do site_urls.yaml, uma a uma."""
+        from govbr_scraper.scrapers.yaml_config import active_agency_keys
+
+        mock_manager = MagicMock()
+        mock_manager.run_scraper.side_effect = lambda agencies, **kw: _mock_run_scraper(
+            agencies_processed=agencies
+        )
+        mock_manager_cls.return_value = mock_manager
+
         response = client.post("/scrape/agencies", json={})
 
-        assert response.status_code == 422
-
-    def test_null_start_date_returns_422(self):
-        """Null start_date should return HTTP 422."""
-        response = client.post("/scrape/agencies", json={"start_date": None, "agencies": ["mec"]})
-
-        assert response.status_code == 422
+        assert response.status_code == 200
+        called = [c.kwargs["agencies"] for c in mock_manager.run_scraper.call_args_list]
+        assert called == [[key] for key in active_agency_keys("site_urls.yaml")]
 
     def test_agencies_as_string_instead_of_list_returns_422(self):
         """agencies as string instead of list should return HTTP 422."""
@@ -431,7 +498,7 @@ class TestPayloadValidation:
         assert response.status_code == 422
 
     @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
     def test_extra_fields_are_ignored(self, mock_storage_cls, mock_manager_cls):
         """Extra fields in payload should be ignored gracefully."""
         mock_manager = MagicMock()
@@ -452,7 +519,7 @@ class TestPayloadValidation:
         assert response.status_code == 200
 
     @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
     def test_future_start_date_is_accepted(self, mock_storage_cls, mock_manager_cls):
         """Future dates should be accepted (validation is up to business logic)."""
         mock_manager = MagicMock()
@@ -469,7 +536,7 @@ class TestPayloadValidation:
         assert response.status_code == 200
 
     @patch("govbr_scraper.scrapers.scrape_manager.ScrapeManager", autospec=True)
-    @patch("govbr_scraper.storage.StorageAdapter", autospec=True)
+    @patch("govbr_scraper.storage.StorageAdapter", new_callable=_storage_without_state)
     def test_end_date_before_start_date_accepted_at_api_layer(
         self, mock_storage_cls, mock_manager_cls
     ):
