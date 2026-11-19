@@ -230,9 +230,9 @@ RECOMMENDATION: Update site_urls.yaml to set scraper_type: plone6_api
 
 ### Pub/Sub Events
 
-Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou **ou que ainda não têm tema** (`most_specific_theme_id IS NULL`, o mesmo critério do `is_already_enriched` do enrichment-worker). Re-scrape de artigo já enriquecido e sem mudança de conteúdo atualiza a linha (e conta em `articles_saved`), mas não republica: o enrichment-worker pularia (já enriquecido) e o bronze-writer reescreveria o mesmo objeto.
+Após persistir artigos, `EventPublisher` publica no tópico `dgb.news.scraped` os artigos novos e os existentes (casados por `(agency_key, url)`) cujo `content_hash` mudou. Re-scrape sem mudança de conteúdo não republica, tenha o artigo tema ou não: o enrichment-worker pularia o já enriquecido e o bronze-writer reescreveria o mesmo objeto. Com `allow_update=True`, as linhas devolvidas pelo `ON CONFLICT (unique_id) DO UPDATE` continuam sendo publicadas (regravação forçada).
 
-**Por que o artigo sem tema continua sendo republicado:** a republicação do re-scrape é a única nova tentativa automática de um enriquecimento que falhou (throttling/timeout do Bedrock, modelo fora, erro de DB, publish perdido). O enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG de reconciliação `enrich_news_llm` foi removida (data-science 8f10273) e não há Cloud Scheduler. Custo enquanto o modelo estiver fora: 1 chamada combinada por artigo sem tema a cada re-scrape (a cada execução da DAG, de 2 em 2 h, limitado à janela de re-scrape; o NER roda no máximo 1x por uid). Só dá para suprimir também esse caso depois que existir um retry agendado e limitado (ex.: `reenrich_combined_window --select null-theme` com governador) ou o worker devolver 5xx em erro transitório.
+**Artigo sem tema (enriquecimento que falhou):** até o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o re-scrape republicava o artigo sem tema (`most_specific_theme_id IS NULL`) a cada execução, porque era a única nova tentativa: o enrichment-worker responde 200/ACK até em exceção e em `classification_failed` (o `max_delivery_attempts` da assinatura nunca atua), a DAG `enrich_news_llm` foi removida (data-science 8f10273) e não havia Cloud Scheduler. Esse critério saiu. O retry passa a ser o reconciliador diário do `/dispatch` (Passo 3): na passada das 03h (modo `live`), republica até 20 notícias sem tema criadas entre 7 dias e 2 h atrás. **Até o Passo 3 estar em `live`, um enriquecimento que falhar não tem retry automático** (republicar à mão em `dgb.news.scraped`).
 
 ```json
 {
@@ -303,7 +303,7 @@ A API roda no Cloud Run e é chamada pelas DAGs Airflow.
 ```
 
 - **Status HTTP inalterados:** 200 `completed`, 207 `partial`, 500 `failed` (todas as agências falharam) ou exceção (`{"detail": ...}`), 422 payload inválido.
-- **`articles_saved`:** linhas gravadas em `news`, inseridas + atualizadas (re-scrape casado por `(agency_key, url)` e, com `allow_update`, o `ON CONFLICT DO UPDATE`). Mantém o significado de sempre.
+- **`articles_saved`:** linhas gravadas em `news`, inseridas + atualizadas. Re-scrape casado por `(agency_key, url)` só conta se o `content_hash` mudou; com `allow_update`, contam todos os casados por URL e o `ON CONFLICT DO UPDATE`. Até o Passo 2 da rearquitetura, todo artigo casado por URL era atualizado e contado, mesmo sem mudança (a agencia_brasil aparecia com ~2.175 "salvas"/dia).
 - **`articles_new`:** só as linhas de fato inseridas: o `RETURNING` do `ON CONFLICT DO NOTHING` ou, com `allow_update=True`, as linhas com `xmax = 0` no `RETURNING unique_id, (xmax = 0) AS inserted` do `DO UPDATE` (o retry do `UniqueViolation` conta igual). `PostgresManager.insert` devolve `InsertResult(saved, articles, new)` e `StorageAdapter.insert`, `InsertCounts(saved, new)`. Em nov/2026: ~242 notícias novas/dia, contra 2.175 "salvas"/dia só na agencia_brasil.
 - **`errors[].category`:** a mesma gravada em `scrape_runs.error_category`, ou `unknown_agency`; `null` em erro sem classificação (ex.: erro de config).
 - **`errors[].retryable`:** `false` em erro permanente; as DAGs falham sem retry. Default `true` (API antiga, sem o campo, é tratada como passageira pelas DAGs).
@@ -411,7 +411,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 
 **Constraints:** `unique_id` é unique. Deduplicação por `(agency_key, url)` via pré-check + SAVEPOINT.
 
-**Nuance do `allow_update`:** Artigos com mesmo `(agency_key, url)` são **sempre** atualizados via pre-check, independentemente do `allow_update`. O parâmetro controla apenas o comportamento para artigos novos com conflito em `unique_id` (ON CONFLICT DO UPDATE vs DO NOTHING).
+**Nuance do `allow_update`:** Artigo com o mesmo `(agency_key, url)` (pré-check da Phase 1) é atualizado quando o `content_hash` mudou (hash gravado NULL conta como mudança). Com o mesmo hash e `allow_update=False` (o das DAGs), não há UPDATE, a linha não conta em `articles_saved` e não é republicada; os campos fora do hash (`image_url`, `tags`, `category`, `updated_datetime`, `extracted_at`...) ficam como estão, e `extracted_at` passa a ser a primeira extração. Com `allow_update=True` (regravação forçada, ex.: depois de corrigir o parser), todo artigo casado é atualizado, mas só o de hash diferente é republicado. O parâmetro também controla o conflito em `unique_id` dos artigos novos (ON CONFLICT DO UPDATE vs DO NOTHING).
 
 **Colunas do enriquecimento:** `summary`, `theme_*_id`/`most_specific_theme_id` e `content_embedding`/`embedding_generated_at` são gravadas pelos workers downstream, nunca pelo scraper. O UPDATE da Phase 1 (re-scrape casado por URL) usa `COALESCE(v.summary, news.summary)` e não toca nos temas nem no embedding. No `ON CONFLICT DO UPDATE` do `allow_update=True`, resumo e temas usam `COALESCE(EXCLUDED.col, news.col)` (`_ENRICHED_COLUMNS`). Antes disso, o re-scrape apagava o resumo e o embedding (~6.935 artigos de 02/06 a 06/10/2026).
 
@@ -452,7 +452,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 | `error_category` | text | ErrorCategory value |
 | `error_message` | text | Truncado em 500 chars |
 | `articles_scraped` | int | |
-| `articles_saved` | int | Linhas gravadas: inseridas + atualizadas (re-scrape) |
+| `articles_saved` | int | Linhas gravadas: inseridas + atualizadas (re-scrape com `content_hash` diferente; com `allow_update`, todo re-scrape) |
 | `articles_new` | int | Só as inseridas (migration 037 do data-platform). NULL no modo não sequencial, em erro e nas linhas anteriores à 037 |
 | `execution_time_seconds` | float | |
 | `scraped_at` | timestamptz | |
