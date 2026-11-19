@@ -125,14 +125,36 @@ Ver CLAUDE.md § Classificação de Erros para detalhes de cada categoria. A col
 
 ### 3. Verificar logs no Cloud Run
 
+Os logs do scraper-api saem em JSON (`jsonPayload`, com `severity`). Cada agência gera um evento `scrape_attempt` por tentativa (inclusive quando pulada pelo disjuntor) e cada abertura/fechamento do disjuntor um `circuit_transition`:
+
 ```bash
-gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="destaquesgovbr-scraper-api"' --project=destaquesgovbr --limit=50 --format=json
+# Tentativas de uma agência (outcome, category, duração, faixa, janela)
+gcloud logging read 'resource.type="cloud_run_revision"
+  AND resource.labels.service_name="destaquesgovbr-scraper-api"
+  AND jsonPayload.event="scrape_attempt" AND jsonPayload.agency="mec"' \
+  --project=inspire-7-finep --freshness=1d --limit=20 \
+  --format='value(timestamp,jsonPayload.outcome,jsonPayload.category,jsonPayload.window_start)'
+
+# Transições do disjuntor
+gcloud logging read 'resource.type="cloud_run_revision"
+  AND resource.labels.service_name="destaquesgovbr-scraper-api"
+  AND jsonPayload.event="circuit_transition"' \
+  --project=inspire-7-finep --freshness=7d --limit=50 \
+  --format='value(timestamp,jsonPayload.agency,jsonPayload.to_state,jsonPayload.reason)'
 ```
 
 ### 4. Testar localmente
 
 ```bash
-# Chamar API local para uma agência específica
+# Logs legíveis no terminal (o padrão é JSON)
+export LOG_FORMAT=text
+
+# Chamar API local para uma agência específica (sem datas: janela pela marca d'água)
+curl -X POST http://localhost:8000/scrape/agencies \
+  -H "Content-Type: application/json" \
+  -d '{"agencies": ["mec"]}'
+
+# Janela explícita (não mexe no estado da agência)
 curl -X POST http://localhost:8000/scrape/agencies \
   -H "Content-Type: application/json" \
   -d '{"start_date": "2026-05-18", "agencies": ["mec"]}'
@@ -145,9 +167,46 @@ Cada item de `errors[]` da resposta de `/scrape/agencies` e `/scrape/ebc` traz `
 - **Permanente** (`retryable: false`): `url_broken`, `access_denied`, `html_changed`, `anti_bot` e `unknown_agency`. Repetir na mesma execução não resolve. A task levanta `AirflowFailException` e falha **numa tentativa só**, com a agência e a categoria na mensagem (`Scraping failed for <sigla>: erro permanente (<categoria>), sem retry: ...`). Antes, cada agência quebrada gastava 2 retries de 5 min por execução.
 - **Passageiro** (`retryable: true`): `network_error`, `unknown`, `empty_content`, erro sem categoria. A task repete como antes: 2x, a cada 5 min.
 - **Sem decisão possível**, também repete: corpo que não é JSON (página de erro do Cloud Run, 503), `{"detail": ...}` de exceção do manager, timeout ou erro de conexão do httpx e API antiga, sem `retryable`.
+- **Pulada pelo disjuntor** (agência em `skipped[]`, circuito aberto): a API não raspou e responde 200 (`status: "skipped"` se todas foram puladas). A task termina **skipped**, sem retry. Na `scrape_ebc`, uma fonte pulada não falha a task; as duas puladas, a task fica skipped.
 - Na `scrape_agencies` só contam os erros da própria agência da task. Na `scrape_ebc` (duas fontes numa task), a task só falha sem retry se **todos** os erros forem permanentes.
 
 Limpar (Clear) uma task que falhou por erro permanente não adianta: corrija o YAML ou o parser ("Debugar Scraper em Falha"), ou desative a agência.
+
+## Disjuntor e Marca d'Água (`scrape_agency_state`)
+
+Desde o Passo 2 da rearquitetura da ingestão (`_plan/rearquitetura-ingestao.md`), o scraper-api guarda o estado de cada agência na tabela `scrape_agency_state` (migration 038 do data-platform), atualizado na mesma transação do `scrape_runs`.
+
+**Janela pela marca d'água.** As DAGs não mandam mais datas. Cada agência raspa desde `(last_success_at − 1 h)` (em datas de Brasília), limitado a 7 dias, até hoje. Uma queda de até 7 dias se recupera sozinha na execução seguinte; antes, a janela fixa de 9 h perdia o que caísse fora dela. Sem a tabela (038 não aplicada) ou sem histórico da agência, a janela é de ontem a hoje.
+
+**Disjuntor.**
+
+- **Abre** com 2 erros permanentes (`url_broken`, `access_denied`, `html_changed`, `anti_bot`) desde o último sucesso, ou com 24 h de falhas seguidas de qualquer tipo. Sai um alerta 🔴 `Disjuntor aberto: <sigla>` no Telegram da equipe (via `dgb.ops.alerts`, publicado pelo scraper-api).
+- **Aberto**, a agência não é raspada: a API responde `skipped` (`reason: circuit_open`, `next_probe_at`), não grava `scrape_runs`, e a task mapeada da `scrape_agencies` termina **skipped** (rosa na UI), sem contar como falha na `summarize`. O monitor também a tira de "Agências Sem Execução" e de "Falhas Consecutivas".
+- **Sondas:** a primeira 2 h depois da abertura; depois de cada sonda que falha, 6 h, 24 h e daí em diante a cada 24 h. Com as DAGs de 2 em 2 h, a sonda roda na primeira execução depois do vencimento (tolerância de 7 min). Sonda que falha não gera alerta.
+- **Fecha** na primeira sonda com sucesso: alerta 🟢 `Disjuntor fechado: <sigla>`.
+
+**Consultar o estado** (somente leitura):
+
+```sql
+SELECT agency_key, circuit_state, next_due_at, circuit_failed_probes,
+       consecutive_permanent_failures, last_success_at, last_error_category,
+       LEFT(last_error_message, 120) AS erro
+FROM scrape_agency_state
+WHERE circuit_state <> 'closed' OR consecutive_permanent_failures > 0
+ORDER BY circuit_state, agency_key;
+```
+
+Ou `GET /agencies/state` do scraper-api (com ID token; é o que o painel "Ingestão" do streamlit-infra-health lê).
+
+**Depois de corrigir a agência** (YAML ou parser, ver "Debugar Scraper em Falha"), não é preciso esperar a sonda: dispare a `scrape_agencies` (ou a `scrape_ebc`) com o param **`force: true`**. Ele ignora o disjuntor em todas as agências da execução; o sucesso fecha o circuito (`forced_success`, alerta 🟢). Pela CLI, na VM:
+
+```bash
+af dags trigger scrape_agencies --conf '{"force": true}'
+```
+
+Com `start_date`/`end_date` (janela explícita, para recuperar um período), a tentativa grava `scrape_runs`, mas **não mexe no estado**: não move a marca d'água nem fecha o circuito. Para fechar e recuperar, rode primeiro com `force: true` e depois com as datas.
+
+**Alerta que não chegou.** Sem a env `PUBSUB_TOPIC_OPS_ALERTS` no scraper-api (Terraform, repo `infra`) ou sem `roles/pubsub.publisher` da SA dele em `dgb.ops.alerts`, o alerta só aparece no log (`... não definido: alerta não publicado` ou `Falha ao publicar alerta`). O evento `circuit_transition` sai no log de qualquer forma.
 
 ## Execução Vermelha da `scrape_agencies` (task `summarize`)
 
@@ -156,20 +215,23 @@ A task `summarize` (`trigger_rule="all_done"`, `retries=0`) roda depois de todas
 O log da `summarize` resume a execução:
 
 ```
-Resumo scrape_agencies: 140/147 agências OK, 7 com falha (4.8%, limite 10%); 231 notícias novas, 260 linhas gravadas
-Agências com falha: antaq, mec, ...
+Resumo scrape_agencies: 140/147 agências OK, 5 com falha (3.5% das tentadas, limite 10%), 2 puladas (circuito aberto); 231 notícias novas, 260 linhas gravadas
+Agências com falha: anvisa, capes, ...
+Agências puladas (circuito aberto): antaq, mec
 ```
+
+Agência pulada pelo disjuntor (ver "Disjuntor e Marca d'Água") não é falha: a task mapeada termina skipped e a `summarize` a conta à parte, pela XCom `skipped` que a task grava antes de pular.
 
 Ela só falha (`AirflowFailException`, execução vermelha) se:
 
-- **nenhuma agência funcionou** (`Nenhuma agência raspada com sucesso`): scraper-api fora do ar, token IAM, `scraper_api_url` errada, gov.br inteiro fora ou nosso IP bloqueado;
-- **a fração de agências com falha passou de `scraper_max_failed_ratio`** (Airflow Variable, fração entre 0 e 1, padrão `0.10`; valor inválido vale 0,10). Mensagem: `N de M agências falharam (X%, acima do limite de Y%): <siglas>`.
+- **nenhuma agência funcionou** (`Nenhuma agência raspada com sucesso`): scraper-api fora do ar, token IAM, `scraper_api_url` errada, gov.br inteiro fora ou nosso IP bloqueado. Se todas foram puladas pelo disjuntor (nenhuma tentada), fica verde;
+- **a fração de agências com falha, entre as tentadas (sem as puladas), passou de `scraper_max_failed_ratio`** (Airflow Variable, fração entre 0 e 1, padrão `0.10`; valor inválido vale 0,10). Mensagem: `N de M agências tentadas falharam (X%, acima do limite de Y%): <siglas>`.
 
 Vermelho, portanto, quer dizer problema de plataforma: comece pelo scraper-api (logs do Cloud Run) e pela taxa de `network_error` em `scrape_runs`. Para mudar o limite, edite a Variable (ex.: `0.15` num período de instabilidade conhecida do gov.br) e volte ao padrão depois.
 
-**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa a janela de 9 h e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`), na VM do Airflow. Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
+**Recuperar uma execução vermelha.** Muitas vezes não precisa: a execução seguinte, 2 h depois, raspa cada agência desde o último sucesso dela (marca d'água, até 7 dias) e cobre a que falhou. Para refazer a própria execução (depois de corrigir a causa), limpe as `scrape` com falha **junto com a `summarize`**. Limpar só as `scrape` raspa as agências de novo, mas o DagRun termina `failed` outra vez: a `summarize`, única folha, continua `failed` e o resumo não é recalculado. Comandos em "Agências Sem Execução", Correção: a CLI com `-d` ou as duas chamadas da REST API (`scrape` e depois `summarize`), na VM do Airflow. Na UI, limpe primeiro as tasks `failed` em Mapped Tasks e depois a `summarize` (Clear sem Upstream/Downstream). Se a `summarize` for limpa antes das `scrape`, ela roda na hora (`all_done`) e falha de novo.
 
-As falhas são deduzidas pela ausência: cada `scrape` com sucesso devolve `{agency, articles_new, articles_saved}` por XCom, e a `summarize` compara com a lista de agências ativas do parse. Uma agência que falhou não deixa XCom (o Airflow só grava o retorno de task com sucesso).
+As falhas são deduzidas pela ausência: cada `scrape` com sucesso devolve `{agency, articles_new, articles_saved}` por XCom, e a `summarize` compara com a lista de agências ativas do parse. Uma agência que falhou não deixa XCom (o Airflow só grava o retorno de task com sucesso); a pulada deixa só a XCom `skipped`.
 
 ## Concorrência (`SCRAPE_MAX_CONCURRENT_AGENCIES`)
 
@@ -187,7 +249,7 @@ Desde nov/2026 (infra#223) o scraping gov.br é **uma DAG só**, `scrape_agencie
 
 Desde 18/11/2026 tudo roda no Airflow próprio (3.1.8) da VM `destaquesgovbr-airflow`; o Cloud Composer foi desligado. UI em `https://airflow.dgb.app.gov.br` (via IAP). A VM não tem IP público: a CLI do Airflow e o banco de metadados só se alcançam por SSH via IAP, nos containers do docker compose em `/opt/airflow` (`airflow-airflow-scheduler-1`, `-apiserver-1`, `-dag-processor-1`, `airflow-postgres-1`, `airflow-dag-sync-1`).
 
-**Sintoma.** O `monitor_scraping_health` (às 06h30, 08h30, ..., 22h30) alerta "Agencias Sem Execucao": a agência está ativa no `site_urls.yaml`, mas não tem nenhum `scrape_run` (sucesso ou erro) nas últimas `scraper_silent_hours` (default 3 h). As outras checagens não veem o caso, porque partem de `scrape_runs`, e a chamada à API nem chegou a acontecer. Com o scraping de 2 em 2 h, o alerta sai quando a agência perde duas execuções seguidas, ou só a das 06h (a anterior é a das 22h do dia anterior).
+**Sintoma.** O `monitor_scraping_health` (às 06h30, 08h30, ..., 22h30) alerta "Agencias Sem Execucao": a agência está ativa no `site_urls.yaml`, mas não tem nenhum `scrape_run` (sucesso ou erro) nas últimas `scraper_silent_hours` (default 3 h). Agência com o disjuntor aberto também não grava `scrape_run` (a API a pula), mas fica fora desse alerta: o alerta do disjuntor cobre (ver "Disjuntor e Marca d'Água"). As outras checagens não veem o caso, porque partem de `scrape_runs`, e a chamada à API nem chegou a acontecer. Com o scraping de 2 em 2 h, o alerta sai quando a agência perde duas execuções seguidas, ou só a das 06h (a anterior é a das 22h do dia anterior).
 
 **Primeiro passo: todas ou só algumas?**
 
@@ -318,7 +380,7 @@ SQL
 2. O erro `not found in serialized_dag table` some do log do scheduler (no caso do zumbi).
 3. O próximo `monitor_scraping_health` não lista mais as agências.
 
-**Recuperar o período perdido (execução manual com params).** A execução normal raspa a janela de 9 h antes da `logical_date`. Para recuperar uma queda, dispare a DAG com os params opcionais `start_date` e `end_date` (YYYY-MM-DD, datas de Brasília, os dois juntos). Eles substituem a janela calculada em todas as agências:
+**Recuperar o período perdido.** Quedas de até 7 dias se recuperam sozinhas: a execução normal raspa cada agência desde o último sucesso dela (marca d'água). Para um período mais antigo, ou para forçar uma janela, dispare a DAG com os params opcionais `start_date` e `end_date` (YYYY-MM-DD, datas de Brasília, os dois juntos). Eles mandam a mesma janela explícita para todas as agências, que **não mexe no estado** (marca d'água e disjuntor); agência com o circuito aberto continua pulada, a não ser com `force: true`:
 
 - **UI:** DAG `scrape_agencies` → **Trigger** → preencha "Data inicial (recuperação)" e "Data final (recuperação)".
 - **CLI:**
@@ -328,7 +390,7 @@ SQL
     --conf '{"start_date": "2026-11-15", "end_date": "2026-11-17"}'
   ```
 
-Data em outro formato é recusada no disparo. Só uma das duas ou início depois do fim falham as tasks na hora, sem retry e sem chamar a API. Com `max_active_runs=1`, o run manual espera a execução agendada em andamento terminar. Sem `allow_update`, o re-scrape só insere o que falta. Cada task tem timeout de 10 min, então em quedas longas (mais de ~3 dias) divida em várias execuções, ou use o re-scrape dirigido por agência ("Forçar Re-scrape Completo"). A `scrape_ebc` aceita os mesmos params.
+Data em outro formato é recusada no disparo (e a API recusa data inválida com 422). Só uma das duas ou início depois do fim falham as tasks na hora, sem retry e sem chamar a API. Com `max_active_runs=1`, o run manual espera a execução agendada em andamento terminar. Sem `allow_update`, o re-scrape só insere o que falta. Cada task tem timeout de 10 min, então em quedas longas (mais de ~3 dias) divida em várias execuções, ou use o re-scrape dirigido por agência ("Forçar Re-scrape Completo"). A `scrape_ebc` aceita os mesmos params.
 
 **Depois de deploys que mudam as DAGs** (`site_urls.yaml`, schedule, `default_args`): confira que a próxima execução da `scrape_agencies` criou task instances e acompanhe o monitor seguinte.
 
@@ -361,7 +423,7 @@ curl -X POST https://{API_URL}/scrape/agencies \
   -d '{"start_date": "2026-01-01", "end_date": "2026-05-18", "agencies": ["mec"], "allow_update": true}'
 ```
 
-`allow_update: true` faz `ON CONFLICT (unique_id) DO UPDATE` em vez de `DO NOTHING`. Na resposta, `articles_saved` conta as linhas gravadas (inseridas + atualizadas) e `articles_new` só as inseridas (o `RETURNING ... (xmax = 0)` separa as duas).
+`allow_update: true` faz `ON CONFLICT (unique_id) DO UPDATE` em vez de `DO NOTHING`. Na resposta, `articles_saved` conta as linhas gravadas (inseridas + atualizadas) e `articles_new` só as inseridas (o `RETURNING ... (xmax = 0)` separa as duas). Com datas a janela é explícita e não mexe no estado da agência; com o circuito aberto a agência volta em `skipped`, a não ser com `"force": true`.
 
 ## Verificar Alertas
 
@@ -376,8 +438,9 @@ curl -X POST https://{API_URL}/scrape/agencies \
 
 ### Tipos
 
-- **Agências sem execução:** agência ativa sem nenhum `scrape_run` (sucesso ou erro) em X horas (`scraper_silent_hours`, default 3 h). A task mapeada da agência na `scrape_agencies` não chamou a API; ver "Agências Sem Execução (DAG `scrape_agencies`)". Vem primeiro na mensagem.
-- **Falhas consecutivas:** agência com N+ erros seguidos (`scraper_consecutive_failure_threshold`, default 3) na janela `scraper_failure_window_hours` (default 6 h), **ou** cujo `scrape_run` mais recente é um erro permanente (`url_broken`, `access_denied`, `html_changed`, `anti_bot`). Erro passageiro grava até 3 erros por execução, um por tentativa, e 3 seguidos bastam. Erro permanente falha a task sem retry e grava 1 por execução: sem o segundo critério, a agência quebrada só entraria depois de 3 execuções (4 h ou mais) e sairia da seção toda manhã (às 06h30 a janela só tem a execução das 06h, às 08h30 as das 06h e 08h), mudando o resumo do alerta e reenviando-o duas vezes por dia.
+- **Disjuntor** (scraper-api, direto no `dgb.ops.alerts`, sem passar pelo monitor): 🔴 ao abrir e 🟢 ao fechar o circuito de uma agência, com o motivo e a categoria. Ver "Disjuntor e Marca d'Água".
+- **Agências sem execução:** agência ativa sem nenhum `scrape_run` (sucesso ou erro) em X horas (`scraper_silent_hours`, default 3 h). A task mapeada da agência na `scrape_agencies` não chamou a API; ver "Agências Sem Execução (DAG `scrape_agencies`)". Vem primeiro na mensagem. Agência com o disjuntor aberto fica de fora.
+- **Falhas consecutivas** (sem as agências com o disjuntor aberto): agência com N+ erros seguidos (`scraper_consecutive_failure_threshold`, default 3) na janela `scraper_failure_window_hours` (default 6 h), **ou** cujo `scrape_run` mais recente é um erro permanente (`url_broken`, `access_denied`, `html_changed`, `anti_bot`). Erro passageiro grava até 3 erros por execução, um por tentativa, e 3 seguidos bastam. Erro permanente falha a task sem retry e grava 1 por execução: sem o segundo critério, a agência quebrada só entraria depois de 3 execuções (4 h ou mais) e sairia da seção toda manhã (às 06h30 a janela só tem a execução das 06h, às 08h30 as das 06h e 08h), mudando o resumo do alerta e reenviando-o duas vezes por dia.
 - **Agências stale:** sem notícia **nova** em X horas (`scraper_stale_hours`, default 24). Conta `articles_new` (linhas de fato inseridas; migration 037 do data-platform); linhas anteriores à 037 (`articles_new` NULL) usam `articles_saved`. Antes valia `articles_saved`, que soma as linhas atualizadas por re-scrape: a EBC e as agências em fallback Plone 6 relêem a janela inteira e nunca apareciam.
 - **Cobertura baixa** (`scraper_coverage_report`, 08h): menos de 80% das agências com sucesso em 24 h. O "Total artigos" do relatório soma `COALESCE(articles_new, articles_saved)` (notícias novas, ~242/dia em nov/2026).
 
