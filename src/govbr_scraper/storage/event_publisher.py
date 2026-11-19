@@ -10,6 +10,7 @@ import json
 import os
 import time
 import uuid
+from concurrent import futures as concurrent_futures
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,6 +23,8 @@ class EventPublisher:
 
     Requires PUBSUB_TOPIC_NEWS_SCRAPED env var.
     If not set or Pub/Sub client unavailable, all publishes are no-ops.
+
+    ``close()`` (fim da requisição) espera as publicações pendentes e fecha o cliente.
     """
 
     # Publicação em lotes de BATCH_SIZE, com BATCH_PAUSE_SECONDS entre eles. O
@@ -32,6 +35,12 @@ class EventPublisher:
     # (poucas notícias novas por agência) não há pausa.
     BATCH_SIZE = 20
     BATCH_PAUSE_SECONDS = 30.0
+
+    # Futures das publicações ainda não confirmadas (esperadas no close). Atributo de classe
+    # como padrão para instâncias criadas sem __init__ (testes).
+    _pending: list | None = None
+    # Espera máxima pelas publicações pendentes no close().
+    CLOSE_TIMEOUT_SECONDS = 10
 
     def __init__(self) -> None:
         self._topic: str | None = os.getenv("PUBSUB_TOPIC_NEWS_SCRAPED")
@@ -94,12 +103,15 @@ class EventPublisher:
                     "scraped_at": datetime.now(UTC).isoformat(),
                 }
 
-                self._client.publish(
+                future = self._client.publish(
                     self._topic,
                     json.dumps(message).encode("utf-8"),
                     trace_id=trace_id,
                     event_version="1.0",
                 )
+                if self._pending is None:
+                    self._pending = []
+                self._pending.append(future)
                 published += 1
 
             except Exception as e:
@@ -109,3 +121,42 @@ class EventPublisher:
             logger.info(f"Published {published}/{len(inserted_ids)} events to {self._topic}")
 
         return published
+
+    def close(self, timeout: float | None = None) -> None:
+        """Espera as publicações pendentes (até ``timeout`` s) e fecha o cliente.
+
+        No Cloud Run a CPU é cortada depois da resposta: sem esperar, uma mensagem ainda no
+        lote do cliente pode sair atrasada ou se perder. Nunca levanta exceção; publicações
+        que falharam ou não confirmaram a tempo só viram warning (as notícias já estão no
+        Postgres). Depois do close, o publisher fica desativado.
+        """
+        if not self._enabled or self._client is None:
+            return
+        pending = list(self._pending or [])
+        self._pending = []
+        self._enabled = False
+        timeout = self.CLOSE_TIMEOUT_SECONDS if timeout is None else timeout
+        try:
+            self._client.stop()  # envia o lote pendente
+        except Exception as e:
+            logger.warning(f"Falha ao encerrar o publisher do Pub/Sub: {e}")
+        all_done = True
+        if pending:
+            try:
+                done, not_done = concurrent_futures.wait(pending, timeout=timeout)
+                failed = sum(1 for f in done if f.exception() is not None)
+                all_done = not not_done
+                if failed or not_done:
+                    logger.warning(
+                        f"Pub/Sub: {failed} publicação(ões) com erro e {len(not_done)} sem "
+                        f"confirmação em {timeout:.0f} s ({self._topic})"
+                    )
+            except Exception as e:
+                all_done = False
+                logger.warning(f"Falha ao esperar as publicações pendentes: {e}")
+        if all_done:
+            # Só com tudo confirmado: fechar o canal antes cancelaria o que falta.
+            try:
+                self._client.transport.close()
+            except Exception as e:  # o cliente sai de cena de qualquer jeito
+                logger.debug(f"Falha ao fechar o canal do Pub/Sub: {e}")

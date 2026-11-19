@@ -141,7 +141,12 @@ class StorageAdapter:
             return False
 
     def close(self) -> None:
-        """Fecha o pool do Postgres, se foi aberto (fim da requisição)."""
+        """Fim da requisição: espera as publicações pendentes em dgb.news.scraped e fecha o
+        publisher, e fecha o pool do Postgres, se foi aberto. Nunca levanta exceção."""
+        try:
+            self._event_publisher.close()
+        except Exception as e:
+            logger.warning(f"Falha ao fechar o publisher do Pub/Sub: {e}")
         if self._postgres_manager is not None:
             try:
                 self._postgres_manager.close_all()

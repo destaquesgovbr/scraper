@@ -233,5 +233,14 @@ class TestStorageAdapterState:
         adapter.close()
         pg.close_all.assert_called_once()
 
+    def test_close_also_closes_the_event_publisher(self):
+        pg = MagicMock()
+        adapter = StorageAdapter(postgres_manager=pg)
+        adapter._event_publisher = MagicMock()
+        adapter._event_publisher.close.side_effect = RuntimeError("x")  # não impede o pool
+        adapter.close()
+        adapter._event_publisher.close.assert_called()
+        pg.close_all.assert_called_once()
+
     def test_close_without_pool_is_noop(self):
         StorageAdapter().close()
