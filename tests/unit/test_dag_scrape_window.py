@@ -3,7 +3,7 @@ Janela, payload e agenda das DAGs de scraping (scrape_agencies e scrape_ebc).
 
 Desde o Passo 2 da rearquitetura da ingestão a DAG não calcula mais a janela: sem datas no
 corpo, a API usa a marca d'água de cada agência (scrape_agency_state: desde o último
-sucesso, até 7 dias). Os params start_date/end_date continuam para recuperar um período
+sucesso, até 7 dias ou ~80 notícias da agência). Os params start_date/end_date continuam para recuperar um período
 (janela explícita, que não mexe no estado) e o param force ignora o disjuntor.
 """
 
@@ -215,31 +215,43 @@ def ebc():
             del sys.modules[key]
 
 
-def _run_ebc(module, context):
+def _run_ebc(module, context, agency_key="agencia_brasil"):
     variable = module._test_mocks["airflow.models"].Variable
     variable.get = MagicMock(return_value="https://scraper.run.app")
     response = MagicMock()
     response.status_code = 200
     response.json.return_value = {"status": "completed", "articles_saved": 0, "errors": []}
+    module._test_mocks["airflow.sdk"].get_current_context = MagicMock(return_value=context)
     with (
         patch.dict(sys.modules, module._test_mocks),
         patch("google.oauth2.id_token.fetch_id_token", return_value="tok"),
         patch("google.auth.transport.requests.Request"),
         patch("httpx.post", return_value=response) as post,
     ):
-        module._test_tasks["scrape_ebc"]._original_fn(**context)
+        module._test_tasks["scrape_ebc"]._original_fn(agency_key)
     return post
 
 
-def test_ebc_manda_as_duas_fontes_sem_datas(ebc):
-    post = _run_ebc(ebc, {"logical_date": SIX_AM, "params": {}})
+@pytest.mark.parametrize("source", ["agencia_brasil", "tvbrasil"])
+def test_ebc_uma_chamada_por_fonte_sem_datas(ebc, source):
+    """Cada fonte na própria requisição, com o próprio limite de 900 s do Cloud Run."""
+    context = {"logical_date": SIX_AM, "params": {}}
+    post = _run_ebc(ebc, context, source)
     assert post.call_args[0][0] == "https://scraper.run.app/scrape/ebc"
     assert post.call_args[1]["json"] == {
-        "agencies": ["agencia_brasil", "tvbrasil"],
+        "agencies": [source],
         "allow_update": False,
         "sequential": True,
         "force": False,
     }
+    assert post.call_args[1]["timeout"] == 900.0
+    assert context["agency_key"] == source  # map_index_template
+
+
+def test_ebc_timeout_da_task_logo_acima_do_limite_da_requisicao(ebc):
+    (kwargs,) = ebc._test_dag_calls
+    timeout = kwargs["default_args"]["execution_timeout"]
+    assert ebc._API_TIMEOUT_SECONDS < timeout.total_seconds() <= ebc._API_TIMEOUT_SECONDS + 120
 
 
 def test_ebc_params_vao_explicitos(ebc):
@@ -253,3 +265,10 @@ def test_ebc_params_vao_explicitos(ebc):
 def test_ebc_params_invalidos_falham_sem_retry(ebc):
     with pytest.raises(AirflowFailException):
         _run_ebc(ebc, {"logical_date": SIX_AM, "params": {"end_date": "2026-11-02"}})
+
+
+def test_ajuda_do_force_diz_que_com_datas_o_estado_nao_muda(dag_module):
+    (kwargs,) = dag_module._test_dag_calls
+    help_text = kwargs["params"]["force"].schema["description"]
+    assert "Sem datas, um sucesso fecha o circuito" in help_text
+    assert "start_date/end_date o estado da agência não muda" in help_text

@@ -13,7 +13,7 @@ A coleta é orquestrada por **DAGs Airflow** (Airflow 3.1.8 próprio, na VM `des
 ```
 DAGs Airflow (Airflow próprio, VM destaquesgovbr-airflow)
 │   ├── scrape_agencies (06h–22h de 2 em 2 h, 1 task mapeada por agência + summarize)
-│   ├── scrape_ebc (06h–22h de 2 em 2 h)
+│   ├── scrape_ebc (06h–22h de 2 em 2 h, 1 task mapeada por fonte)
 │   ├── monitor_scraping_health (06h30–22h30 de 2 em 2 h)
 │   ├── cleanup_old_scrape_runs (diário 03h)
 │   └── scraper_coverage_report (diário 08h)
@@ -90,7 +90,7 @@ scraper/
 │       └── structured_log.py         # Log estruturado, record_scrape_run e eventos (scrape_attempt, circuit_transition)
 ├── dags/
 │   ├── scrape_agencies.py             # 1 DAG, 1 task mapeada por agência ativa + summarize
-│   ├── scrape_ebc.py                  # 1 DAG para sites EBC
+│   ├── scrape_ebc.py                  # 1 DAG, 1 task mapeada por fonte EBC
 │   ├── monitor_scraping_health.py     # Monitoramento: sem execução + falhas + stale
 │   ├── cleanup_old_scrape_runs.py     # Retenção: delete > N dias
 │   ├── scraper_coverage_report.py     # Relatório diário + alerta cobertura
@@ -405,7 +405,7 @@ Só leitura, para o painel "Ingestão" do streamlit-infra-health (que chama com 
 | DAG | Schedule (BRT) | Descrição |
 |-----|----------|-----------|
 | `scrape_agencies` | `0 6-22/2 * * *` (06h–22h, 9x/dia) | 1 task mapeada (`scrape`) por agência gov.br ativa (~147) + `summarize` (única folha) |
-| `scrape_ebc` | `0 6-22/2 * * *` | Sites EBC |
+| `scrape_ebc` | `0 6-22/2 * * *` | 1 task mapeada por fonte EBC (`agencia_brasil`, `tvbrasil`) |
 | `monitor_scraping_health` | `30 6-22/2 * * *` | Agências sem execução + falhas consecutivas + agências stale |
 | `cleanup_old_scrape_runs` | Diário 03h | Delete registros > retention_days |
 | `scraper_coverage_report` | Diário 08h | Cobertura 24h + alerta se < threshold |
@@ -424,11 +424,11 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 - Task final `summarize` (`trigger_rule="all_done"`, `retries=0`), **única folha** (a cor do DagRun é a dela): itera o `LazyXComSequence` da `scrape` (só tem os resultados das tasks com sucesso, compactados; **nunca fatiar**, `results[:]` levanta TypeError no Airflow 3.0.1), deduz as falhas como ativas − ok − puladas (XCom `skipped`), loga contagens, agências com falha, puladas e notícias novas. Só falha se nenhuma agência funcionou (só puladas fica verde) ou se a fração de falhas entre as tentadas passar da Variable `scraper_max_failed_ratio` (padrão 0,10). Agência quebrada fica vermelha só na task mapeada dela, até o disjuntor abrir; daí em diante a task fica skipped
 - Retry: 2x com delay fixo de 5min (agências e EBC), só para erro passageiro
   - **Nunca use `retry_exponential_backoff` nem `max_retry_delay` em task mapeada (nem em `default_args`):** no Airflow 3.1.0 do Composer, o scheduler lê `task.max_retry_delay` de uma task mapeada em retry, o `MappedOperator` não tem esse atributo e o `AttributeError` derruba o loop do scheduler inteiro (todas as DAGs paradas de 18/11/2026 02:00Z a 09:00Z). Teste de regressão por AST nas duas DAGs
-- Timeout: 10min por agência / 30min (EBC)
+- Timeout: 10 min por agência / 16 min por fonte EBC (a requisição tem 900 s no Cloud Run e no httpx)
 - Janela: **a DAG não manda datas** (Passo 2 da rearquitetura). A API usa a marca d'água de cada agência (`scrape_agency_state.last_success_at`, até 7 dias; ver "Estado por agência, marca d'água e disjuntor"). O `_scrape_window` de 9 h saiu.
 - Params opcionais `start_date`/`end_date` (YYYY-MM-DD, os dois juntos) mandam uma janela explícita num disparo manual, para recuperar um período (runbook, "Agências Sem Execução"); a janela explícita não mexe no estado da agência. Formato inválido é recusado no disparo (`Param` com `format: date`); só um dos dois ou início depois do fim falham a task sem retry (`AirflowFailException`). Param `force` (boolean, padrão `false`): ignora o disjuntor.
 - **Agência pulada pelo disjuntor** (em `skipped[]` da resposta): a task grava a XCom `skipped` (`{agency, next_probe_at}`) e levanta `AirflowSkipException`. A `summarize` recebe `scraped["skipped"]` (um `LazyXComSequence` dessa chave nas tasks mapeadas, que inclui as puladas) e as conta à parte: pulada não é falha, a fração de falhas é sobre as agências tentadas, e só puladas fica verde.
-- `scrape_ebc` tem a mesma agenda, os mesmos params e a mesma leitura da resposta (cópia das funções: cada arquivo de DAG é autocontido, não importa outro módulo de DAG nem o pacote `govbr_scraper`). Manda `agencies: ["agencia_brasil", "tvbrasil"]` explicitamente. Uma task para as duas fontes: se algum erro é passageiro, repete; se todos são permanentes, falha sem retry; fonte pulada não falha a task, e as duas puladas dão skipped.
+- `scrape_ebc` tem a mesma agenda, os mesmos params e a mesma leitura da resposta (cópia das funções: cada arquivo de DAG é autocontido, não importa outro módulo de DAG nem o pacote `govbr_scraper`). Uma task mapeada por fonte (`EBC_SOURCES = ["agencia_brasil", "tvbrasil"]`, a sigla como map index), cada uma com a própria chamada a `/scrape/ebc` (`agencies: [fonte]`) e a mesma leitura da `scrape_agencies`: erro permanente falha sem retry, passageiro repete, circuito aberto dá skipped. Com as duas fontes numa requisição só, a API as raspava em série dentro do mesmo limite de 900 s do Cloud Run, e uma recuperação de alguns dias cortava a segunda sem gravar nada. `execution_timeout` de 16 min, logo acima dos 900 s da requisição (httpx e Cloud Run).
 - Um DagRun zumbi agora para todas as agências de uma vez, e o monitor acusa na execução seguinte. Com uma DAG por agência, ele parava uma agência só, em silêncio (`scrape_esg`, sem execução desde 11/11/2026).
 
 ### DAGs de manutenção

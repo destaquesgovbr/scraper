@@ -167,8 +167,8 @@ Cada item de `errors[]` da resposta de `/scrape/agencies` e `/scrape/ebc` traz `
 - **Permanente** (`retryable: false`): `url_broken`, `access_denied`, `html_changed`, `anti_bot` e `unknown_agency`. Repetir na mesma execução não resolve. A task levanta `AirflowFailException` e falha **numa tentativa só**, com a agência e a categoria na mensagem (`Scraping failed for <sigla>: erro permanente (<categoria>), sem retry: ...`). Antes, cada agência quebrada gastava 2 retries de 5 min por execução.
 - **Passageiro** (`retryable: true`): `network_error`, `unknown`, `empty_content`, erro sem categoria. A task repete como antes: 2x, a cada 5 min.
 - **Sem decisão possível**, também repete: corpo que não é JSON (página de erro do Cloud Run, 503), `{"detail": ...}` de exceção do manager, timeout ou erro de conexão do httpx e API antiga, sem `retryable`.
-- **Pulada pelo disjuntor** (agência em `skipped[]`, circuito aberto): a API não raspou e responde 200 (`status: "skipped"` se todas foram puladas). A task termina **skipped**, sem retry. Na `scrape_ebc`, uma fonte pulada não falha a task; as duas puladas, a task fica skipped.
-- Na `scrape_agencies` só contam os erros da própria agência da task. Na `scrape_ebc` (duas fontes numa task), a task só falha sem retry se **todos** os erros forem permanentes.
+- **Pulada pelo disjuntor** (agência em `skipped[]`, circuito aberto): a API não raspou e responde 200 (`status: "skipped"` se todas foram puladas). A task termina **skipped**, sem retry. A `scrape_ebc` também tem uma task mapeada por fonte (`agencia_brasil`, `tvbrasil`).
+- Só contam os erros da própria agência (ou fonte EBC) da task.
 
 Limpar (Clear) uma task que falhou por erro permanente não adianta: corrija o YAML ou o parser ("Debugar Scraper em Falha"), ou desative a agência.
 

@@ -20,7 +20,7 @@ DAG única de scraping das agências gov.br: ``scrape_agencies``.
   da Variable ``scraper_max_failed_ratio`` (padrão 0,10). Vermelho = problema de plataforma;
   a agência quebrada aparece na própria task mapeada.
 - Janela: a DAG não manda datas; a API usa a marca d'água de cada agência (desde o último
-  sucesso, até 7 dias; estado por agência em scrape_agency_state).
+  sucesso, até 7 dias ou ~80 notícias da agência; estado por agência em scrape_agency_state).
 - Disjuntor: com o circuito da agência aberto e a sonda ainda não vencida, a API pula a
   agência (``skipped``) e a task termina como skipped (``AirflowSkipException``), sem contar
   como falha na ``summarize``.
@@ -364,11 +364,12 @@ _DATE_PARAM_HELP = (
     "Opcional, YYYY-MM-DD, em datas de Brasília. Para recuperar um período depois de uma "
     "queda, informe start_date e end_date juntos: a janela vai explícita e não mexe no "
     "estado da agência. Vazios, a API usa a marca d'água de cada agência (desde o último "
-    "sucesso, até 7 dias)."
+    "sucesso, até 7 dias ou ~80 notícias da agência)."
 )
 _FORCE_PARAM_HELP = (
     "Ignora o disjuntor: raspa também as agências com o circuito aberto (erro permanente "
-    "seguido). Um sucesso fecha o circuito."
+    "seguido). Sem datas, um sucesso fecha o circuito; com start_date/end_date o estado da "
+    "agência não muda (o circuito continua aberto)."
 )
 
 

@@ -1,17 +1,23 @@
 """DAG para scraping de notícias EBC (Agência Brasil, TV Brasil) via Cloud Run API.
 
 Mesma agenda da ``scrape_agencies``: a cada 2 horas, das 06h às 22h em horário de Brasília
-(``0 6-22/2 * * *``). Manda as duas fontes explicitamente (``agencies: ["agencia_brasil",
-"tvbrasil"]``) e sem datas: a API usa a marca d'água de cada fonte. Params opcionais
-``start_date``/``end_date`` (YYYY-MM-DD) para recuperar um período depois de uma queda
-(janela explícita, que não mexe no estado) e ``force`` (ignora o disjuntor).
+(``0 6-22/2 * * *``). Uma task mapeada por fonte (``agencia_brasil`` e ``tvbrasil``, a sigla
+como map index na UI), cada uma com a própria chamada a ``/scrape/ebc`` sem datas: a API usa
+a marca d'água da fonte. Params opcionais ``start_date``/``end_date`` (YYYY-MM-DD) para
+recuperar um período depois de uma queda (janela explícita, que não mexe no estado) e
+``force`` (ignora o disjuntor).
 
-Fonte com o circuito aberto é pulada pela API (``skipped``) e não falha a task; com as duas
-puladas, a task termina como skipped (``AirflowSkipException``).
+Uma chamada por fonte: com as duas numa requisição só, a API as raspava em série dentro do
+mesmo limite de 900 s do Cloud Run, e uma recuperação de alguns dias cortava a segunda fonte
+sem gravar nem registrar nada. ``execution_timeout`` (16 min) fica logo acima desse limite
+e do timeout do httpx (900 s).
 
-Erro permanente (todos os ``errors[]`` com ``retryable: false``) falha sem retry
-(``AirflowFailException``); se algum erro é passageiro, o corpo não é JSON ou a API é antiga
-(sem ``retryable``), a task repete (2x, a cada 5 min), como antes.
+Fonte com o circuito aberto é pulada pela API (``skipped``): a task dela termina como
+skipped (``AirflowSkipException``).
+
+Erro permanente (todos os ``errors[]`` da fonte com ``retryable: false``) falha sem retry
+(``AirflowFailException``); erro passageiro, corpo que não é JSON ou API antiga (sem
+``retryable``) repetem (2x, a cada 5 min), como antes.
 
 As funções de janela e de leitura da resposta são cópia das de ``scrape_agencies.py`` de
 propósito: cada arquivo de DAG é autocontido (não importa outro módulo de DAG).
@@ -30,6 +36,11 @@ logger = logging.getLogger(__name__)
 
 # As fontes ativas do ebc_urls.yaml do scraper-api, cada uma com o próprio estado.
 EBC_SOURCES = ["agencia_brasil", "tvbrasil"]
+
+# Limite de uma requisição ao scraper-api: o timeout do Cloud Run (repo infra,
+# scraper-api.tf) e o do httpx. A task tem 1 min de folga para o token e a leitura da resposta.
+_API_TIMEOUT_SECONDS = 900.0
+_TASK_TIMEOUT = timedelta(minutes=16)
 
 # status do corpo de /scrape/ebc que indica falha (a API também responde 500/207).
 _FAILED_BODY_STATUSES = ("failed", "partial")
@@ -87,16 +98,22 @@ def _scrape_payload(agency_keys: list[str], params=None) -> dict:
 
 
 def _on_scrape_failure(context):
-    """Callback para log estruturado de falha na DAG de scraping."""
+    """Callback para log estruturado de falha de uma task de scraping (com a fonte)."""
     ti = context.get("task_instance")
     dag_id = ti.dag_id if ti else "unknown"
     task_id = ti.task_id if ti else "unknown"
+    map_index = getattr(ti, "map_index", -1) if ti else -1
+    # A task grava a sigla no contexto (map_index_template); o rendered_map_index é o
+    # mesmo valor, já renderizado pelo Airflow.
+    agency = context.get("agency_key") or (getattr(ti, "rendered_map_index", None) if ti else None)
     exception = context.get("exception", "unknown")
     try_number = ti.try_number if ti else 0
     logger.error(
-        "Scrape DAG failure: dag=%s task=%s try=%d error=%s",
+        "Scrape DAG failure: dag=%s task=%s agency=%s map_index=%s try=%d error=%s",
         dag_id,
         task_id,
+        agency or "unknown",
+        map_index,
         try_number,
         exception,
     )
@@ -205,11 +222,12 @@ _DATE_PARAM_HELP = (
     "Opcional, YYYY-MM-DD, em datas de Brasília. Para recuperar um período depois de uma "
     "queda, informe start_date e end_date juntos: a janela vai explícita e não mexe no "
     "estado da agência. Vazios, a API usa a marca d'água de cada agência (desde o último "
-    "sucesso, até 7 dias)."
+    "sucesso, até 7 dias ou ~80 notícias da agência)."
 )
 _FORCE_PARAM_HELP = (
     "Ignora o disjuntor: raspa também as agências com o circuito aberto (erro permanente "
-    "seguido). Um sucesso fecha o circuito."
+    "seguido). Sem datas, um sucesso fecha o circuito; com start_date/end_date o estado da "
+    "agência não muda (o circuito continua aberto)."
 )
 
 
@@ -246,23 +264,31 @@ _FORCE_PARAM_HELP = (
     default_args={
         "owner": "scraper",
         "retries": 2,
+        # Intervalo fixo, SEM retry_exponential_backoff: a task é mapeada, e no Airflow 3.1.0
+        # o scheduler lê task.max_retry_delay de uma task mapeada em retry; o MappedOperator
+        # não tem o atributo e o AttributeError derruba o loop do scheduler (18/11/2026).
         "retry_delay": timedelta(minutes=5),
-        "execution_timeout": timedelta(minutes=30),
+        "execution_timeout": _TASK_TIMEOUT,
         "on_failure_callback": _on_scrape_failure,
     },
 )
 def scrape_ebc_dag():
-    @task
-    def scrape_ebc(**context):
-        """Chama Scraper API no Cloud Run para scraping EBC."""
+    @task(map_index_template="{{ agency_key }}")
+    def scrape_ebc(agency_key: str):
+        """Chama a Scraper API no Cloud Run para a fonte EBC desta task mapeada."""
         import google.auth.transport.requests
         import google.oauth2.id_token
         import httpx
         from airflow.exceptions import AirflowFailException, AirflowSkipException
         from airflow.models import Variable
+        from airflow.sdk import get_current_context
+
+        context = get_current_context()
+        # Renderiza o map_index_template: a UI mostra a sigla no lugar do índice.
+        context["agency_key"] = agency_key
 
         try:
-            payload = _scrape_payload(EBC_SOURCES, context.get("params"))
+            payload = _scrape_payload([agency_key], context.get("params"))
         except ValueError as e:
             # Params inválidos no disparo manual: repetir não adianta.
             raise AirflowFailException(str(e)) from e
@@ -279,14 +305,14 @@ def scrape_ebc_dag():
             if "start_date" in payload
             else "marca d'água"
         )
-        logger.info(f"Calling scraper API for EBC ({', '.join(EBC_SOURCES)}): janela {window}")
+        logger.info(f"Calling scraper API for EBC ({agency_key}): janela {window}")
 
         # Erro de rede/timeout do httpx propaga e o Airflow repete.
         response = httpx.post(
             f"{scraper_api_url}/scrape/ebc",
             json=payload,
             headers={"Authorization": f"Bearer {token}"},
-            timeout=900.0,
+            timeout=_API_TIMEOUT_SECONDS,
         )
         # O corpo vem antes do status HTTP: o 500/207 traz os erros e se vale repetir.
         try:
@@ -305,22 +331,19 @@ def scrape_ebc_dag():
                 json.dumps(result, indent=2, ensure_ascii=False),
             )
 
-        # Fonte com o circuito aberto não é raspada e não falha a task. As duas puladas: a
-        # task termina como skipped.
-        skipped = {s.get("agency") for s in _response_skipped(result)}
+        # Circuito aberto: a API não raspou e a task fica skipped.
+        skipped = _response_skipped(result, agency_key)
         if skipped:
-            logger.info("Fontes puladas (circuito aberto): %s", ", ".join(sorted(skipped)))
-        if set(EBC_SOURCES) <= skipped:
             raise AirflowSkipException(
-                f"EBC: circuito aberto em todas as fontes ({', '.join(EBC_SOURCES)})"
+                f"{agency_key}: circuito aberto ({skipped[0].get('reason')}), "
+                f"próxima sonda em {skipped[0].get('next_probe_at')}"
             )
 
-        # Duas fontes (agencia_brasil e tvbrasil): só falha sem retry se todos os erros
-        # forem permanentes; se algum for passageiro, repete a task.
-        _check_scrape_response(response.status_code, result, None)
-        return _scrape_result("ebc", result)
+        # Erro permanente: AirflowFailException (sem retry). O resto: AirflowException.
+        _check_scrape_response(response.status_code, result, agency_key)
+        return _scrape_result(agency_key, result)
 
-    scrape_ebc()
+    scrape_ebc.expand(agency_key=EBC_SOURCES)
 
 
 dag_instance = scrape_ebc_dag()
