@@ -524,7 +524,7 @@ Até nov/2026 eram ~147 DAGs `scrape_<agencia>`, cada uma a cada 10 min (96,7% d
 
 ### Tabela `scrape_agency_state` (migration 038 do data-platform)
 
-Uma linha por `agency_key` (sem FK para `agencies`: `ansn` e `povosindigenas` não estão lá). Escrita pelo `record_scrape_run` (SAVEPOINT na transação do `scrape_runs`) e, no Passo 3, pelo `/dispatch`. O DDL é copiado à mão em `tests/integration/test_postgres_agency_state.py`.
+Uma linha por `agency_key` (sem FK para `agencies`: `ansn` e `povosindigenas` não estão lá). Escrita pelo `record_scrape_run` (SAVEPOINT na transação do `scrape_runs`) e, no Passo 3, pelo `/dispatch`. O DDL é copiado à mão em `tests/integration/migration_038.py` (`MIGRATION_038`), usado pelos testes `postgres`.
 
 | Coluna | Notas |
 |--------|-------|
@@ -612,7 +612,7 @@ A SA do Airflow (`destaquesgovbr-composer`, nome herdado do Composer; hoje é a 
 
 - **30 unit tests** (`tests/unit/`) — cobertura de API, scrapers, storage, monitoring, DAGs
 - **3 integration tests** (`tests/integration/`) — requerem DB real, marcados com `@pytest.mark.integration`
-- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`, `test_postgres_health_checks.py`, `test_postgres_scrape_runs.py`, este com `scrape_runs` antes e depois da migration 037, e `test_postgres_agency_state.py`, com e sem a 038) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
+- **Postgres descartável** (`tests/integration/test_postgres_rescrape.py`, `test_postgres_health_checks.py`, `test_postgres_scrape_runs.py`, este com `scrape_runs` antes e depois da migration 037, `test_postgres_agency_state.py`, com e sem a 038, e `test_postgres_ebc.py`, a EBC de ponta a ponta, inclusive pela rota `/scrape/ebc` com o estado por agência) — marcados com `integration` e `postgres`; pulados sem `SCRAPER_TEST_POSTGRES_URL`. Cada execução cria e remove um schema próprio (`scraper_it_*`) com DDL, então a guarda (`tests/integration/postgres_guard.py`) é dupla, porque "host local" não basta (o Cloud SQL Proxy de produção escuta em `127.0.0.1:5432`):
   - antes de conectar: host local explícito, sem `hostaddr`/`service` no DSN nem `PGHOSTADDR`/`PGSERVICE` no ambiente, porta ≠ 5432 (explícita, omitida ou via `PGPORT`) e dbname que não seja `destaquesgovbr`/`govbrnews`;
   - depois de conectar e antes de qualquer DDL: `current_database()` que não seja de produção, sem o papel `cloudsqlsuperuser` (instância Cloud SQL) e sem tabela `news` fora dos schemas `scraper_it_*`.
   - No CI (`tests.yaml`) rodam num service container pgvector. Com a variável definida e sem pgvector, o fixture falha (não pula), para o CI não passar em silêncio.
@@ -671,6 +671,7 @@ Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor rep
 2. infra PR I-1 aplicado: `PUBSUB_TOPIC_OPS_ALERTS` e `roles/pubsub.publisher` do scraper-api em `dgb.ops.alerts`. Sem ele os alertas do disjuntor só vão para o log.
 3. Merge do scraper fora da janela :00–:10 das horas pares: a API e as DAGs sobem no mesmo push. Uma DAG nova contra a API antiga recebe 422 (falta `start_date`) e entra em retry (5 min) até a API nova subir.
 4. Na execução seguinte, conferir `scrape_agency_state` atualizada e `mec`/`antaq` abrindo o circuito depois de 2 execuções, com 2 alertas 🔴.
+5. A partir deste merge o re-scrape não republica mais o artigo sem tema (ver "Pub/Sub Events"): até o reconciliador do `/dispatch` (Passo 3) estar em `live`, um enriquecimento que falhar só é refeito à mão.
 
 ## Desenvolvimento Local
 
