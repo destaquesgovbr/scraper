@@ -567,7 +567,7 @@ O workflow `composer-deploy-dags.yaml` chama a reusable `destaquesgovbr/reusable
 gcloud storage rsync --recursive --delete-unmatched-destination-objects dags/ gs://destaquesgovbr-airflow/dags/scraper/
 ```
 
-Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor reparseia cada arquivo a cada 180 s: uma mudança numa DAG existente pode levar até ~4 min para valer. A lista de buckets é o default da reusable workflow (tag `v3`), e o bucket do Composer sai dela só lá; este repo não a define. O nome `composer-deploy-dags.yaml` ficou do Composer.
+Na VM, o container `dag-sync` espelha o bucket a cada 60 s e o dag-processor reparseia cada arquivo a cada 180 s: uma mudança numa DAG existente pode levar até ~4 min para valer. A lista de buckets é o default da reusable workflow (tag `v3`); este repo não a define. O bucket do Composer sai desse default na reusable-workflows#7: até a tag `v3` apontar para essa versão, o deploy também publica nele, e apagar o bucket antes disso faz o deploy falhar. O nome `composer-deploy-dags.yaml` ficou do Composer.
 
 ### Ordem de deploy (Passo 1 da rearquitetura da ingestão, `_plan/rearquitetura-ingestao.md`)
 
