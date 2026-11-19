@@ -30,6 +30,10 @@ class AirflowFailException(AirflowException):
     pass
 
 
+class AirflowSkipException(AirflowException):
+    pass
+
+
 def _airflow_mocks(tasks):
     def fake_dag(**kwargs):
         return lambda fn: fn
@@ -55,6 +59,7 @@ def _airflow_mocks(tasks):
     exceptions = types.ModuleType("airflow.exceptions")
     exceptions.AirflowException = AirflowException
     exceptions.AirflowFailException = AirflowFailException
+    exceptions.AirflowSkipException = AirflowSkipException
 
     return {
         "airflow": MagicMock(),
@@ -106,6 +111,28 @@ class TestResponseErrors:
         body = {"errors": [_error("html_changed", False), "boom", _error("x", True, "mds")]}
         assert dag_module._response_errors(body, "mec") == [_error("html_changed", False)]
         assert len(dag_module._response_errors(body)) == 2
+
+
+class TestResponseSkipped:
+    @pytest.mark.parametrize("body", [None, "texto", {"detail": "x"}, {"skipped": "x"}])
+    def test_body_without_skipped(self, dag_module, body):
+        assert dag_module._response_skipped(body) == []
+
+    def test_filters_by_agency(self, dag_module):
+        body = {
+            "skipped": [
+                {"agency": "mec", "reason": "circuit_open", "next_probe_at": "2026-11-19T16:00Z"},
+                {"agency": "mds", "reason": "circuit_open"},
+                "lixo",
+            ]
+        }
+        assert [s["agency"] for s in dag_module._response_skipped(body)] == ["mec", "mds"]
+        assert [s["agency"] for s in dag_module._response_skipped(body, "mec")] == ["mec"]
+
+    def test_skipped_only_body_passes_the_check(self, dag_module):
+        """status "skipped" com HTTP 200 não é falha: quem decide o skip é a task."""
+        body = {"status": "skipped", "errors": [], "skipped": [{"agency": "mec"}]}
+        dag_module._check_scrape_response(200, body, "mec")
 
 
 class TestAllPermanent:
@@ -209,6 +236,37 @@ def _run_ebc(module, status_code=200, body=None):
 
 
 class TestScrapeEbcTask:
+    def test_both_sources_skipped_skips_the_task(self, ebc):
+        body = {
+            "status": "skipped",
+            "errors": [],
+            "skipped": [
+                {"agency": "agencia_brasil", "reason": "circuit_open"},
+                {"agency": "tvbrasil", "reason": "circuit_open"},
+            ],
+        }
+        with pytest.raises(AirflowSkipException, match="todas as fontes"):
+            _run_ebc(ebc, 200, body)
+
+    def test_one_source_skipped_does_not_fail(self, ebc):
+        body = {
+            "status": "completed",
+            "articles_new": 2,
+            "articles_saved": 2,
+            "errors": [],
+            "skipped": [{"agency": "tvbrasil", "reason": "circuit_open"}],
+        }
+        assert _run_ebc(ebc, 200, body)["articles_new"] == 2
+
+    def test_one_skipped_and_other_permanent_error_fails_without_retry(self, ebc):
+        body = {
+            "status": "failed",
+            "errors": [_error("html_changed", False, "agencia_brasil")],
+            "skipped": [{"agency": "tvbrasil", "reason": "circuit_open"}],
+        }
+        with pytest.raises(AirflowFailException):
+            _run_ebc(ebc, 500, body)
+
     def test_success_returns_result(self, ebc):
         body = {"status": "completed", "articles_new": 7, "articles_saved": 40, "errors": []}
         assert _run_ebc(ebc, 200, body) == {

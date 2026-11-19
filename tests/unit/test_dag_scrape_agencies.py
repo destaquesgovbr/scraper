@@ -64,6 +64,10 @@ class AirflowFailException(AirflowException):
     pass
 
 
+class AirflowSkipException(AirflowException):
+    pass
+
+
 def _make_airflow_mocks(dag_calls, tasks, context):
     def fake_dag(**kwargs):
         dag_calls.append(kwargs)
@@ -91,6 +95,7 @@ def _make_airflow_mocks(dag_calls, tasks, context):
     exceptions = types.ModuleType("airflow.exceptions")
     exceptions.AirflowException = AirflowException
     exceptions.AirflowFailException = AirflowFailException
+    exceptions.AirflowSkipException = AirflowSkipException
 
     return {
         "airflow": MagicMock(),
@@ -232,14 +237,17 @@ class TestSingleDag:
         assert args["execution_timeout"].total_seconds() == 10 * 60
         assert args["on_failure_callback"] is loaded.mod._on_scrape_failure
 
-    def test_optional_catch_up_params(self, load):
+    def test_optional_catch_up_and_force_params(self, load):
         params = load().dag_kwargs["params"]
-        assert set(params) == {"start_date", "end_date"}
-        for param in params.values():
+        assert set(params) == {"start_date", "end_date", "force"}
+        for name in ("start_date", "end_date"):
+            param = params[name]
             assert param.value is None
             assert param.schema["type"] == ["null", "string"]
             assert param.schema["format"] == "date"
             assert "YYYY-MM-DD" in param.schema["description"]
+        assert params["force"].value is False
+        assert params["force"].schema["type"] == "boolean"
 
 
 class TestMappedTask:
@@ -324,6 +332,7 @@ def _body(loaded, agency_key="mec", context=None, response=None, api_url="https:
         if context is not None
         else {"logical_date": datetime(2026, 11, 17, 17, 0, tzinfo=UTC), "params": {}}
     )
+    loaded.context.setdefault("ti", MagicMock(name="ti"))
     variable = loaded.mocks["airflow.models"].Variable
     variable.get = MagicMock(side_effect=lambda key, default_var=None: api_url or default_var)
     if response is None:
@@ -338,7 +347,8 @@ def _body(loaded, agency_key="mec", context=None, response=None, api_url="https:
 
 
 class TestScrapeTaskBody:
-    def test_posts_same_payload_for_one_agency(self, load):
+    def test_posts_payload_without_dates_for_one_agency(self, load):
+        """Sem datas: a API usa a marca d'água da agência (scrape_agency_state)."""
         loaded = load()
         post, fetch, response = _body(loaded)
 
@@ -348,13 +358,11 @@ class TestScrapeTaskBody:
         url = post.call_args[0][0]
         kwargs = post.call_args[1]
         assert url == "https://scraper.run.app/scrape/agencies"
-        # 14:00 BRT de 17/11: janela de 9 h ainda no mesmo dia
         assert kwargs["json"] == {
-            "start_date": "2026-11-17",
-            "end_date": "2026-11-17",
             "agencies": ["mec"],
             "allow_update": False,
             "sequential": True,
+            "force": False,
         }
         assert kwargs["headers"] == {"Authorization": "Bearer id-token"}
         assert kwargs["timeout"] == 900.0
@@ -377,16 +385,7 @@ class TestScrapeTaskBody:
         _body(loaded, agency_key="mds")
         assert loaded.context["agency_key"] == "mds"
 
-    def test_six_am_run_includes_previous_day(self, load):
-        loaded = load()
-        post, _, _ = _body(
-            loaded,
-            context={"logical_date": datetime(2026, 11, 17, 9, 0, tzinfo=UTC), "params": {}},
-        )
-        payload = post.call_args[1]["json"]
-        assert (payload["start_date"], payload["end_date"]) == ("2026-11-16", "2026-11-17")
-
-    def test_params_override_window(self, load):
+    def test_params_send_explicit_window(self, load):
         loaded = load()
         post, _, _ = _body(
             loaded,
@@ -397,6 +396,43 @@ class TestScrapeTaskBody:
         )
         payload = post.call_args[1]["json"]
         assert (payload["start_date"], payload["end_date"]) == ("2026-11-12", "2026-11-14")
+
+    def test_force_param_is_sent(self, load):
+        loaded = load()
+        post, _, _ = _body(loaded, context={"params": {"force": True}})
+        assert post.call_args[1]["json"]["force"] is True
+
+    def test_skipped_agency_raises_skip_and_pushes_xcom(self, load):
+        loaded = load()
+        body = {
+            "status": "skipped",
+            "errors": [],
+            "agencies_processed": [],
+            "skipped": [
+                {"agency": "mec", "reason": "circuit_open", "next_probe_at": "2026-11-17T19:00:00Z"}
+            ],
+        }
+        ti = MagicMock()
+        with pytest.raises(AirflowSkipException, match="circuito aberto") as exc:
+            _body(loaded, context={"params": {}, "ti": ti}, response=_response(200, body))
+        assert "2026-11-17T19:00:00Z" in str(exc.value)
+        ti.xcom_push.assert_called_once_with(
+            key="skipped", value={"agency": "mec", "next_probe_at": "2026-11-17T19:00:00Z"}
+        )
+
+    def test_skip_even_if_xcom_push_fails(self, load):
+        loaded = load()
+        body = {"status": "skipped", "errors": [], "skipped": [{"agency": "mec"}]}
+        ti = MagicMock()
+        ti.xcom_push.side_effect = RuntimeError("API do Airflow fora")
+        with pytest.raises(AirflowSkipException):
+            _body(loaded, context={"params": {}, "ti": ti}, response=_response(200, body))
+
+    def test_other_agency_skipped_is_ignored(self, load):
+        loaded = load()
+        body = dict(OK_BODY, skipped=[{"agency": "mds", "reason": "circuit_open"}])
+        _body(loaded, response=_response(200, body))
+        assert loaded.last_result["agency"] == "mec"
 
     def test_invalid_params_fail_without_retry_and_without_calling_api(self, load):
         loaded = load()
@@ -410,13 +446,6 @@ class TestScrapeTaskBody:
             )
         # A sigla já está no contexto: a task falha aparece com o map index certo.
         assert loaded.context["agency_key"] == "mec"
-
-    def test_manual_run_without_logical_date_uses_run_after(self, load):
-        loaded = load()
-        dag_run = MagicMock(run_after=datetime(2026, 11, 17, 9, 30, tzinfo=UTC))
-        post, _, _ = _body(loaded, context={"logical_date": None, "dag_run": dag_run, "params": {}})
-        payload = post.call_args[1]["json"]
-        assert (payload["start_date"], payload["end_date"]) == ("2026-11-16", "2026-11-17")
 
     @pytest.mark.parametrize(("status", "http"), [("failed", 500), ("partial", 207)])
     def test_raises_on_logical_failure(self, load, status, http):
@@ -551,10 +580,10 @@ def _ok(agency, new=1, saved=2):
     return {"agency": agency, "articles_new": new, "articles_saved": saved}
 
 
-def _summarize(loaded, results, expected, ratio_var="0.10"):
+def _summarize(loaded, results, expected, ratio_var="0.10", skipped=None):
     variable = loaded.mocks["airflow.models"].Variable
     variable.get = MagicMock(return_value=ratio_var)
-    return loaded.summarize._original_fn(results, expected)
+    return loaded.summarize._original_fn(results, expected, skipped)
 
 
 AGENCIES_20 = [f"ag{i:02d}" for i in range(20)]
@@ -570,12 +599,16 @@ class TestSummarizeTask:
         assert "retry_exponential_backoff" not in kwargs
         assert "max_retry_delay" not in kwargs
 
-    def test_consumes_mapped_scrape_output_and_active_list(self, load):
+    def test_consumes_mapped_scrape_output_active_list_and_skipped_xcom(self, load):
         loaded = load()
         (call,) = loaded.summarize.calls
         args, kwargs = call
-        assert args[0] is loaded.scrape.expand_results[0]
+        mapped = loaded.scrape.expand_results[0]
+        assert args[0] is mapped
         assert list(args[1]) == loaded.mod.ACTIVE_AGENCY_KEYS == ["mds", "mec", "no_active_field"]
+        # XCom "skipped" das tasks mapeadas (mapped["skipped"] = PlainXComArg com essa chave).
+        assert args[2] is mapped["skipped"]
+        mapped.__getitem__.assert_called_with("skipped")
         assert kwargs == {}
         # scrape só é expandida, nunca chamada direto (senão viraria outra folha).
         assert loaded.scrape.calls == []
@@ -588,6 +621,7 @@ class TestSummarizeTask:
             "total": 2,
             "ok": 2,
             "failed": [],
+            "skipped": [],
             "failed_ratio": 0.0,
             "articles_new": 2,
             "articles_saved": 4,
@@ -609,7 +643,7 @@ class TestSummarizeTask:
     def test_failures_above_ratio_fail_the_run(self, load):
         loaded = load()
         results = [_ok(a) for a in AGENCIES_20[3:]]  # 3 de 20 = 15% > 10%
-        with pytest.raises(AirflowFailException, match="3 de 20 agências falharam") as exc:
+        with pytest.raises(AirflowFailException, match="3 de 20 agências tentadas falharam") as exc:
             _summarize(loaded, LazySequenceLike(results), AGENCIES_20)
         assert "ag00, ag01, ag02" in str(exc.value)
 
@@ -659,6 +693,49 @@ class TestSummarizeTask:
         assert summary["failed"] == []
         assert summary["agencies_without_articles_new"] == 1
         assert summary["articles_new"] == 4
+
+    def test_skipped_agencies_are_not_failures(self, load, caplog):
+        """Circuito aberto: a task fica skipped e só a XCom "skipped" diz que não é falha."""
+        loaded = load()
+        results = [_ok(a) for a in AGENCIES_20[3:]]
+        skipped = LazySequenceLike(
+            [{"agency": a, "next_probe_at": None} for a in ("ag00", "ag01", "ag02")]
+        )
+        with caplog.at_level(logging.INFO):
+            summary = _summarize(loaded, LazySequenceLike(results), AGENCIES_20, skipped=skipped)
+        assert summary["failed"] == []
+        assert summary["skipped"] == ["ag00", "ag01", "ag02"]
+        assert summary["failed_ratio"] == 0.0
+        assert "puladas (circuito aberto): ag00, ag01, ag02" in caplog.text
+
+    def test_failed_ratio_is_over_attempted_agencies(self, load):
+        loaded = load()
+        results = [_ok(a) for a in AGENCIES_20[4:]]  # ag00..ag03 sem resultado
+        skipped = [{"agency": a} for a in ("ag00", "ag01")]
+        summary = _summarize(loaded, results, AGENCIES_20, ratio_var="0.2", skipped=skipped)
+        assert summary["failed"] == ["ag02", "ag03"]
+        assert summary["failed_ratio"] == round(2 / 18, 4)
+        with pytest.raises(AirflowFailException, match="2 de 18 agências tentadas"):
+            _summarize(loaded, results, AGENCIES_20, ratio_var="0.1", skipped=skipped)
+
+    def test_skipped_item_with_result_or_outside_list_is_ignored(self, load):
+        loaded = load()
+        skipped = [{"agency": "mec"}, {"agency": "fora_da_lista"}, None, {"x": 1}]
+        summary = _summarize(loaded, [_ok("mec"), _ok("mds")], ["mds", "mec"], skipped=skipped)
+        assert summary["skipped"] == []
+        assert summary["ok"] == 2
+
+    def test_all_skipped_stays_green(self, load):
+        loaded = load()
+        skipped = [{"agency": "mds"}, {"agency": "mec"}]
+        summary = _summarize(loaded, LazySequenceLike([]), ["mds", "mec"], skipped=skipped)
+        assert summary["ok"] == 0
+        assert summary["skipped"] == ["mds", "mec"]
+
+    def test_none_ok_with_some_skipped_and_some_failed_fails(self, load):
+        loaded = load()
+        with pytest.raises(AirflowFailException, match="Nenhuma agência"):
+            _summarize(loaded, [], ["mds", "mec"], ratio_var="1", skipped=[{"agency": "mec"}])
 
     def test_never_slices_the_lazy_sequence(self, load):
         loaded = load()
