@@ -86,6 +86,33 @@ class TestConfigureLogging:
         assert lines and lines[0]["severity"] == "WARNING"
         assert lines[0]["stdlib_logger"] == "govbr_scraper.teste"
 
+    def test_stdlib_log_points_to_the_caller(self, json_logs):
+        """A origem é quem chamou o logging (não o callHandlers da stdlib), e o logger é o
+        nome do logger da stdlib."""
+
+        def chamador():
+            logging.getLogger("govbr_scraper.teste").warning("origem")
+
+        chamador()
+        lines = [x for x in json_logs() if x["message"] == "origem"]
+        assert lines
+        source = lines[0]["logging.googleapis.com/sourceLocation"]
+        assert source["file"] == __file__
+        assert source["function"] == "chamador"
+        assert lines[0]["logger"] == "govbr_scraper.teste"
+
+    def test_stdlib_exception_keeps_the_caller(self, json_logs):
+        def chamador():
+            try:
+                raise ValueError("falhou")
+            except ValueError:
+                logging.getLogger("govbr_scraper.teste").exception("com traceback")
+
+        chamador()
+        (line,) = [x for x in json_logs() if x["message"].startswith("com traceback")]
+        assert "ValueError: falhou" in line["message"]
+        assert line["logging.googleapis.com/sourceLocation"]["function"] == "chamador"
+
     def test_text_mode_is_not_json(self, capsys):
         configure_logging("text")
         capsys.readouterr()

@@ -13,6 +13,7 @@ para saírem em JSON com severity.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -49,7 +50,8 @@ def json_log_line(record: dict[str, Any]) -> str:
         "severity": _SEVERITY.get(record["level"].name, "DEFAULT"),
         "message": message,
         "time": record["time"].astimezone(UTC).isoformat(),
-        "logger": record["name"],
+        # Registro da stdlib (interceptado): o nome do logger de origem, não o do módulo.
+        "logger": record["extra"].get("stdlib_logger") or record["name"],
         _SOURCE_LOCATION: {
             "file": record["file"].path if record.get("file") else None,
             "line": record["line"],
@@ -76,8 +78,11 @@ class _InterceptHandler(logging.Handler):
             level: str | int = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        frame, depth = logging.currentframe(), 2
-        while frame is not None and frame.f_code.co_filename == logging.__file__:
+        # Sobe até o primeiro frame fora do módulo logging (quem chamou logger.info etc.),
+        # para a origem do log ser a do chamador. A receita antiga (logging.currentframe()
+        # com depth=2) parava no callHandlers do logging/__init__.py no Python 3.12.
+        frame, depth = inspect.currentframe(), 0
+        while frame is not None and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
         logger.opt(depth=depth, exception=record.exc_info).bind(stdlib_logger=record.name).log(
