@@ -24,9 +24,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from govbr_scraper.dispatch.config import dispatch_mode_from_env
+from govbr_scraper.dispatch.tasks_client import DEDUP_KEY_PATTERN
 from govbr_scraper.models.monitoring import UNKNOWN_AGENCY
 from govbr_scraper.monitoring.structured_log import (
     OUTCOME_FAILED,
@@ -791,7 +792,8 @@ class DispatchRequest(BaseModel):
     """Corpo de /dispatch: ``{"reason": "tick"}`` (Scheduler) ou o backfill da DAG.
 
     No backfill, ``start_date`` e ``end_date`` são obrigatórios e ``agencies`` vazio = todas
-    as ativas. ``dry_run`` rebaixa o modo live para dry_run nesta chamada.
+    as ativas; ``dedup_key`` (opcional) vai no nome das tarefas. ``dry_run`` rebaixa o modo
+    live para dry_run nesta chamada.
     """
 
     reason: Literal["tick", "backfill"] = "tick"
@@ -800,6 +802,9 @@ class DispatchRequest(BaseModel):
     end_date: date | None = None
     force: bool = False
     dry_run: bool = False
+    # Backfill: sufixo estável do nome das tarefas (a DAG manda um hash do run_id). Sem ele,
+    # vale o HHmm do relógio, e uma repetição recriaria todas as tarefas.
+    dedup_key: str | None = Field(default=None, pattern=DEDUP_KEY_PATTERN)
 
     @model_validator(mode="after")
     def _backfill_window(self):
@@ -865,6 +870,7 @@ def dispatch(req: DispatchRequest | None = None):
                     start_date=req.start_date,
                     end_date=req.end_date,
                     force=req.force,
+                    dedup_key=req.dedup_key,
                 )
             else:
                 outcome = dispatcher.tick()

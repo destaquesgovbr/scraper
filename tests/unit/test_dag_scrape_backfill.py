@@ -1,10 +1,13 @@
 """Tests for dags/scrape_backfill.py — DAG manual que chama POST /dispatch com reason=backfill."""
 
+import re
 import sys
 import types
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from govbr_scraper.dispatch.tasks_client import DEDUP_KEY_PATTERN
 
 
 class FakeParam:
@@ -125,9 +128,11 @@ def _live_body(**overrides):
     return body
 
 
-def _run(loaded, params=None, response=None, api_url="https://scraper.run.app"):
+def _run(loaded, params=None, response=None, api_url="https://scraper.run.app", run_id=None):
     loaded.context.clear()
     loaded.context["params"] = dict(PARAMS if params is None else params)
+    if run_id is not None:
+        loaded.context["run_id"] = run_id
     variable = loaded.mocks["airflow.models"].Variable
     variable.get = MagicMock(side_effect=lambda key, default_var=None: api_url or default_var)
     with (
@@ -185,6 +190,16 @@ class TestPayload:
             "dry_run": False,
         }
 
+    def test_dedup_key_is_stable_per_run(self, loaded):
+        run_id = "manual__2026-11-19T12:34:56.789012+00:00"
+        first = loaded.mod._backfill_payload(PARAMS, run_id)
+        again = loaded.mod._backfill_payload(PARAMS, run_id)  # repetição da task
+        other = loaded.mod._backfill_payload(PARAMS, "manual__2026-11-19T13:00:00+00:00")
+        assert first["dedup_key"] == again["dedup_key"]
+        assert first["dedup_key"] != other["dedup_key"]
+        assert re.fullmatch(r"[0-9a-f]{12}", first["dedup_key"])
+        assert re.fullmatch(DEDUP_KEY_PATTERN, first["dedup_key"])
+
     @pytest.mark.parametrize(
         ("agencies", "expected"),
         [
@@ -230,6 +245,12 @@ class TestTaskBody:
         assert post.call_args.kwargs["timeout"] == 300.0
         assert result["dispatched"] == 2
         assert result["failed"] == []
+
+    def test_sends_the_dedup_key_of_the_run(self, loaded):
+        _, post, _ = _run(loaded, run_id="manual__2026-11-19T12:34:56+00:00")
+        _, again, _ = _run(loaded, run_id="manual__2026-11-19T12:34:56+00:00")
+        key = post.call_args.kwargs["json"]["dedup_key"]
+        assert key == again.call_args.kwargs["json"]["dedup_key"]
 
     def test_invalid_params_fail_without_calling_api(self, loaded):
         with pytest.raises(AirflowFailException):

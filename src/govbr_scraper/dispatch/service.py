@@ -464,6 +464,7 @@ class Dispatcher:
         start_date: date,
         end_date: date,
         force: bool = False,
+        dedup_key: str | None = None,
     ) -> DispatchOutcome:
         """Uma tarefa por agência com a janela explícita (não mexe no estado da agência).
 
@@ -472,6 +473,9 @@ class Dispatcher:
         vai para ``skipped_circuit``, a não ser com ``force``. Não marca ``last_dispatched_at``:
         a janela explícita não move ``last_attempt_at``, e a agência pareceria em voo por
         30 min, fora do tick regular.
+
+        ``dedup_key`` (da DAG, estável por execução) entra no nome no lugar do ``HHmm``: a
+        repetição da task depois de um timeout ou 5xx recebe 409 nas tarefas já criadas.
         """
         out = DispatchOutcome(
             mode=self.mode.value,
@@ -503,7 +507,8 @@ class Dispatcher:
             }
             if force:
                 body["force"] = True
-            items.append((key, backfill_task_id(key, start_date, end_date, self.now), body))
+            task_id = backfill_task_id(key, start_date, end_date, self.now, suffix=dedup_key)
+            items.append((key, task_id, body))
         results = self._create_tasks(items)
         for key, result in zip(selected, results, strict=True):
             entry = {"agency": key, "task": result.task_id, "result": result.status}

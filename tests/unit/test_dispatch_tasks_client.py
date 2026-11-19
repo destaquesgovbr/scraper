@@ -69,6 +69,16 @@ class TestTaskIds:
             == "backfill-agencia_brasil-20261101-20261103-1442"
         )
 
+    def test_backfill_suffix_replaces_the_clock(self):
+        # O dedup_key da DAG: a repetição da task, minutos depois, gera o mesmo nome (409).
+        start, end = date(2026, 11, 1), date(2026, 11, 3)
+        first = datetime(2026, 11, 19, 17, 42, tzinfo=UTC)
+        retry = datetime(2026, 11, 19, 17, 47, tzinfo=UTC)
+        names = {
+            backfill_task_id("mec", start, end, at, suffix="execucao-01") for at in (first, retry)
+        }
+        assert names == {"backfill-mec-20261101-20261103-execucao-01"}
+
 
 class TestBuildTask:
     def test_http_request_with_oidc_and_deadline(self):

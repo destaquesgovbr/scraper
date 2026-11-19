@@ -491,6 +491,17 @@ class TestBackfill:
         body = out.response()
         assert (body["start_date"], body["end_date"]) == ("2026-11-01", "2026-11-03")
 
+    def test_dedup_key_replaces_the_clock_in_the_task_name(self, env):
+        env([])
+        dispatcher, _, tasks = _dispatcher(DispatchMode.LIVE, now=_brt(14, 42), keys=["mec"])
+        dispatcher.backfill(
+            agencies=["mec"],
+            start_date=date(2026, 11, 1),
+            end_date=date(2026, 11, 3),
+            dedup_key="execucao-01",
+        )
+        assert tasks.calls[0][0] == "backfill-mec-20261101-20261103-execucao-01"
+
     def test_empty_agencies_means_all_active(self, env):
         env([])
         dispatcher, _, tasks = _dispatcher(DispatchMode.LIVE, keys=["mec", "mds"])

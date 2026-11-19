@@ -206,11 +206,25 @@ class TestBackfill:
             start_date=date(2026, 11, 1),
             end_date=date(2026, 11, 3),
             force=True,
+            dedup_key=None,
         )
         api.dispatcher.tick.assert_not_called()
         body = response.json()
         assert (body["reason"], body["start_date"]) == ("backfill", "2026-11-01")
         assert api.log.call_args.kwargs["reason"] == "backfill"
+
+    def test_dedup_key_is_passed_to_the_backfill(self, monkeypatch):
+        api = Api(monkeypatch, mode="live")
+        response = api.post(
+            {
+                "reason": "backfill",
+                "start_date": "2026-11-01",
+                "end_date": "2026-11-01",
+                "dedup_key": "execucao-01",
+            }
+        )
+        assert response.status_code == 200
+        assert api.dispatcher.backfill.call_args.kwargs["dedup_key"] == "execucao-01"
 
     @pytest.mark.parametrize(
         "payload",
@@ -220,6 +234,12 @@ class TestBackfill:
             {"reason": "backfill", "start_date": "2026-11-05", "end_date": "2026-11-01"},
             {"reason": "backfill", "start_date": "ontem", "end_date": "2026-11-01"},
             {"reason": "outra"},
+            {
+                "reason": "backfill",
+                "start_date": "2026-11-01",
+                "end_date": "2026-11-01",
+                "dedup_key": "manual__2026-11-19T12:00:00+00:00",
+            },
         ],
     )
     def test_invalid_backfill_is_422(self, monkeypatch, payload):

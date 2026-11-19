@@ -34,6 +34,10 @@ FAILED = "failed"
 # Nome de tarefa: letras, dígitos, hífen e sublinhado (até 500 caracteres).
 _INVALID_TASK_ID_CHARS = re.compile(r"[^A-Za-z0-9_-]")
 
+# Sufixo do nome das tarefas de backfill passado pela DAG (hash do run_id): a repetição da
+# mesma execução gera os mesmos nomes, e o Cloud Tasks responde 409 (duplicada).
+DEDUP_KEY_PATTERN = r"^[A-Za-z0-9_-]{1,40}$"
+
 
 def _safe(value: str) -> str:
     return _INVALID_TASK_ID_CHARS.sub("-", value)
@@ -56,9 +60,16 @@ def tick_task_id(agency_key: str, now: datetime) -> str:
     return f"scrape-{_safe(agency_key)}-{local:%Y%m%d%H%M}"
 
 
-def backfill_task_id(agency_key: str, start: date, end: date, now: datetime) -> str:
-    """``backfill-<agência>-<início>-<fim>-<HHmm em BRT>`` (datas em ``YYYYMMDD``)."""
-    return f"backfill-{_safe(agency_key)}-{start:%Y%m%d}-{end:%Y%m%d}-{_brt(now):%H%M}"
+def backfill_task_id(
+    agency_key: str, start: date, end: date, now: datetime, *, suffix: str | None = None
+) -> str:
+    """``backfill-<agência>-<início>-<fim>-<sufixo>`` (datas em ``YYYYMMDD``).
+
+    O sufixo é o ``suffix`` (o ``dedup_key`` da DAG, estável por execução: a repetição da
+    task gera os mesmos nomes e recebe 409) ou, sem ele, o ``HHmm`` do relógio em BRT.
+    """
+    tail = _safe(suffix) if suffix else f"{_brt(now):%H%M}"
+    return f"backfill-{_safe(agency_key)}-{start:%Y%m%d}-{end:%Y%m%d}-{tail}"
 
 
 @dataclass(frozen=True)

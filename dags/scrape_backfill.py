@@ -13,6 +13,9 @@ Tasks. Esta DAG fica com o backfill:
   token, na Variable ``scraper_api_url`` (a mesma das outras DAGs). O ``/dispatch`` cria uma
   tarefa por agência com a janela explícita, que não mexe no estado da agência
   (``scrape_agency_state``), e responde na hora: a raspagem roda depois, na fila.
+- ``dedup_key`` (hash do ``run_id``) vai no nome das tarefas: a repetição da task na mesma
+  execução (timeout ou 5xx depois de criar parte das tarefas) recebe 409 nas já criadas, que
+  contam como duplicadas, em vez de raspar a mesma janela duas vezes.
 - Falha sem retry (``AirflowFailException``): params inválidos, 4xx, despacho em ``off``
   (pausado), despacho fora de ``live`` sem ``dry_run`` (nada criado) e tarefas que o Cloud
   Tasks recusou (a mensagem lista as agências, para disparar de novo só com elas). Erro de
@@ -23,6 +26,7 @@ O resultado de cada agência sai no log do Cloud Run (``jsonPayload.event="scrap
 ``trigger="backfill"``). Ver docs/runbook.md, "Backfill (DAG scrape_backfill)".
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -72,14 +76,21 @@ def _parse_agencies(value) -> list[str]:
     return list(dict.fromkeys(agencies))
 
 
-def _backfill_payload(params=None) -> dict:
+def _dedup_key(run_id) -> str | None:
+    """Sufixo estável do nome das tarefas: 12 hex do sha256 do ``run_id`` (None sem ele)."""
+    if not run_id:
+        return None
+    return hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()[:12]
+
+
+def _backfill_payload(params=None, run_id=None) -> dict:
     """Corpo de ``POST /dispatch`` para o backfill. Params inválidos levantam ValueError."""
     params = params or {}
     start = _parse_param_date(params.get("start_date"), "start_date")
     end = _parse_param_date(params.get("end_date"), "end_date")
     if start > end:
         raise ValueError(f"start_date ({start}) é posterior a end_date ({end})")
-    return {
+    payload = {
         "reason": "backfill",
         "agencies": _parse_agencies(params.get("agencies")),
         "start_date": start.isoformat(),
@@ -87,6 +98,10 @@ def _backfill_payload(params=None) -> dict:
         "force": params.get("force") is True,
         "dry_run": params.get("dry_run") is True,
     }
+    key = _dedup_key(run_id)
+    if key:
+        payload["dedup_key"] = key
+    return payload
 
 
 def _check_dispatch_response(status_code: int, body, payload: dict) -> dict:
@@ -96,8 +111,8 @@ def _check_dispatch_response(status_code: int, body, payload: dict) -> dict:
     - 5xx ou corpo que não é JSON de objeto: ``AirflowException`` (repete 1 vez).
     - ``mode`` off: ``AirflowFailException`` (despacho pausado).
     - ``mode`` dry_run sem o param ``dry_run``: ``AirflowFailException`` (nada foi criado).
-    - ``failed`` > 0: ``AirflowFailException`` com as agências recusadas (repetir a task
-      recriaria as que deram certo; dispare de novo só com as listadas).
+    - ``failed`` > 0: ``AirflowFailException`` com as agências recusadas (um disparo novo é
+      outra execução, com outro ``dedup_key``: dispare de novo só com as listadas).
     """
     from airflow.exceptions import AirflowException, AirflowFailException
 
@@ -207,7 +222,7 @@ def scrape_backfill_dag():
 
         context = get_current_context()
         try:
-            payload = _backfill_payload(context.get("params"))
+            payload = _backfill_payload(context.get("params"), context.get("run_id"))
         except ValueError as e:
             # Params inválidos no disparo manual: repetir não adianta.
             raise AirflowFailException(str(e)) from e
