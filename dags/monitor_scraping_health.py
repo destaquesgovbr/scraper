@@ -597,9 +597,7 @@ def monitor_scraping_health_dag():
         from airflow.models import Variable
         from scraper.notify import default_alert_topic, send_alert
 
-        message = _build_alert_message(
-            failures, stale, silent, _get_silent_hours(), open_circuits
-        )
+        message = _build_alert_message(failures, stale, silent, _get_silent_hours(), open_circuits)
         state = _read_alert_state()
         if message is None:
             logger.info("Sem alertas para enviar.")

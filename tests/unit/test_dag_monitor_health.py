@@ -850,7 +850,11 @@ class TestSendAlertsDedup:
         send_alert, store = self._run(FAILURE_ROWS, STALE_ROWS, SILENT_ROWS)
         send_alert.assert_called_once()
         state = store.state()
-        assert state["digest"] == {"silent": ["aids", "inma"], "failures": ["mec"], "open_circuits": []}
+        assert state["digest"] == {
+            "silent": ["aids", "inma"],
+            "failures": ["mec"],
+            "open_circuits": [],
+        }
         assert abs(datetime.now(UTC) - datetime.fromisoformat(state["sent_at"])) < timedelta(
             minutes=1
         )

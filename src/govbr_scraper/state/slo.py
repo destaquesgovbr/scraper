@@ -46,9 +46,7 @@ def night_minutes(start: datetime, end: datetime) -> float:
     return total.total_seconds() / 60
 
 
-def within_slo(
-    state: AgencyState, now: datetime, *, min_interval_minutes: int = 0
-) -> bool | None:
+def within_slo(state: AgencyState, now: datetime, *, min_interval_minutes: int = 0) -> bool | None:
     """True se o último sucesso está dentro da tolerância do SLO.
 
     Tolerância = 2 × max(intervalo efetivo, ``min_interval_minutes``) + os minutos de noite
