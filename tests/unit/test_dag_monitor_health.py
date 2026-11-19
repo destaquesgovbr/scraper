@@ -10,10 +10,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from psycopg2 import errors
 
 from govbr_scraper.models.monitoring import PERMANENT_ERROR_CATEGORIES
 from govbr_scraper.monitoring.health_checks import (
     CONSECUTIVE_FAILURES_QUERY,
+    OPEN_CIRCUIT_AGENCIES_QUERY,
     SILENT_AGENCIES_QUERY,
     STALE_AGENCIES_QUERY,
     find_consecutive_failures,
@@ -302,9 +304,24 @@ def _variables(values: dict):
     return _get
 
 
-def _mock_connection(rows):
+def _mock_connection(rows, open_circuits=(), state_error=None):
+    """Conexão mockada: a query de scrape_agency_state devolve as agências com o circuito
+    aberto (ou levanta state_error); as outras devolvem ``rows``."""
     cursor = MagicMock()
-    cursor.fetchall.return_value = rows
+    last = {"sql": ""}
+
+    def execute(sql, params=None):
+        last["sql"] = sql
+        if "scrape_agency_state" in sql and state_error is not None:
+            raise state_error
+
+    def fetchall():
+        if "scrape_agency_state" in last["sql"]:
+            return [{"agency_key": k} for k in open_circuits]
+        return rows
+
+    cursor.execute.side_effect = execute
+    cursor.fetchall.side_effect = fetchall
     conn = MagicMock()
     conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
@@ -381,6 +398,61 @@ class TestConsecutiveFailuresQueryParity:
         assert match
         listed = {item.strip().strip("'") for item in match.group(1).split(",")}
         assert listed == {str(c) for c in PERMANENT_ERROR_CATEGORIES}
+
+
+class TestOpenCircuitQueryParity:
+    def test_dag_query_matches_health_checks(self):
+        """A query vive duplicada (o pacote não é instalado na VM): não pode divergir."""
+        mod = _load_module()
+        assert " ".join(mod._OPEN_CIRCUIT_AGENCIES_QUERY.split()) == " ".join(
+            OPEN_CIRCUIT_AGENCIES_QUERY.split()
+        )
+
+
+class TestOpenCircuitExclusionInTasks:
+    """Circuito aberto: fora de "Agências Sem Execução" e das falhas (o alerta do disjuntor
+    cobre). Sem scrape_agency_state (038 não aplicada), nada muda."""
+
+    FAILURES = [
+        {"agency_key": "mec", "last_error": "html_changed", "last_failure_at": None},
+        {"agency_key": "mds", "last_error": "network_error", "last_failure_at": None},
+    ]
+
+    def _run(self, task, rows, open_circuits=(), state_error=None):
+        _, registry, mocks = _load_module_with_registry()
+        mocks["airflow.models"].Variable.get = MagicMock(
+            side_effect=_variables({"scraper_database_url": "postgresql://monitor"})
+        )
+        conn, cursor = _mock_connection(rows, open_circuits, state_error)
+        with patch.dict(sys.modules, mocks), patch("psycopg2.connect", return_value=conn):
+            result = registry[task]._original_fn()
+        return result, conn, cursor
+
+    def test_silent_excludes_open_circuits(self):
+        result, conn, _ = self._run("check_silent_agencies", SILENT_ROWS, open_circuits=["inma"])
+        assert [r["agency_key"] for r in result] == ["aids"]
+        conn.close.assert_called_once()
+
+    def test_failures_exclude_open_circuits(self):
+        result, _, _ = self._run(
+            "check_consecutive_failures", self.FAILURES, open_circuits=["mec", "antaq"]
+        )
+        assert [r["agency_key"] for r in result] == ["mds"]
+
+    @pytest.mark.parametrize("task", ["check_silent_agencies", "check_consecutive_failures"])
+    def test_missing_table_changes_nothing_and_rolls_back(self, task):
+        rows = SILENT_ROWS if task == "check_silent_agencies" else self.FAILURES
+        result, conn, _ = self._run(
+            task, rows, state_error=errors.UndefinedTable('relation "scrape_agency_state"')
+        )
+        assert result == rows
+        conn.rollback.assert_called_once()
+
+    def test_stale_is_not_filtered(self):
+        rows = [{"agency_key": "mec", "last_success_at": None}]
+        result, _, cursor = self._run("check_stale_agencies", rows, open_circuits=["mec"])
+        assert result == rows
+        assert cursor.execute.call_count == 1
 
 
 class TestStaleQueryParity:
@@ -532,7 +604,7 @@ class TestCheckSilentAgenciesTask:
             {"scraper_database_url": "postgresql://monitor", "scraper_silent_hours": "3"}
         )
         connect.assert_called_once_with("postgresql://monitor")
-        sql, params = cursor.execute.call_args[0]
+        sql, params = cursor.execute.call_args_list[0][0]
         assert sql == mod._SILENT_AGENCIES_QUERY
         assert params == {"agencies": mod._load_active_agencies(), "silent_hours": 3}
         assert result == SILENT_ROWS
@@ -541,14 +613,14 @@ class TestCheckSilentAgenciesTask:
     def test_default_window_is_3_hours(self):
         """Scraping de 2 em 2 h + 1 h de folga."""
         _, _, _, _, cursor = self._run({"scraper_database_url": "postgresql://monitor"}, rows=[])
-        assert cursor.execute.call_args[0][1]["silent_hours"] == 3
+        assert cursor.execute.call_args_list[0][0][1]["silent_hours"] == 3
 
     def test_window_below_one_hour_is_clamped(self):
         """Janela 0 marcaria todas as agências como silenciosas."""
         _, _, _, _, cursor = self._run(
             {"scraper_database_url": "postgresql://monitor", "scraper_silent_hours": "0"}, rows=[]
         )
-        assert cursor.execute.call_args[0][1]["silent_hours"] == 1
+        assert cursor.execute.call_args_list[0][0][1]["silent_hours"] == 1
 
     def test_requires_database_url(self):
         with pytest.raises(ValueError, match="scraper_database_url"):
@@ -621,7 +693,7 @@ class TestCheckConsecutiveFailuresTask:
         conn, cursor = _mock_connection([])
         with patch.dict(sys.modules, mocks), patch("psycopg2.connect", return_value=conn):
             registry["check_consecutive_failures"]._original_fn()
-        return cursor.execute.call_args[0][1]
+        return cursor.execute.call_args_list[0][0][1]
 
     def test_default_window_6h_and_threshold_3(self):
         params = self._run({"scraper_database_url": "postgresql://monitor"})

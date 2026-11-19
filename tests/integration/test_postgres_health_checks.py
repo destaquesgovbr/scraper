@@ -25,6 +25,7 @@ from psycopg2.extensions import make_dsn
 from govbr_scraper.monitoring.health_checks import (
     compute_coverage_report,
     find_consecutive_failures,
+    find_open_circuit_agencies,
     find_silent_agencies,
     find_stale_agencies,
 )
@@ -273,3 +274,59 @@ class TestFindConsecutiveFailuresPostgres:
         _error(db, "ctir", 0.5, "html_changed")
         result = self._failures(db)
         assert result["ctir"]["consecutive_failures"] == 1
+
+
+class TestOpenCircuitExclusionPostgres:
+    """Com a migration 038, agência com o disjuntor aberto sai de "Agências Sem Execução" e
+    das falhas consecutivas; sem a tabela, nada muda (UndefinedTable tratado)."""
+
+    @pytest.fixture
+    def agency_state(self, db):
+        from tests.integration.test_postgres_agency_state import _MIGRATION_038
+
+        with db.cursor() as cur:
+            cur.execute(_MIGRATION_038)
+        yield
+        with db.cursor() as cur:
+            cur.execute("DROP TABLE IF EXISTS scrape_agency_state, scrape_dispatch_meta")
+
+    @staticmethod
+    def _circuit(db, agency_key: str, state: str) -> None:
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO scrape_agency_state (agency_key, circuit_state) VALUES (%s, %s)",
+                (agency_key, state),
+            )
+
+    def test_without_table_nothing_changes(self, db):
+        assert find_open_circuit_agencies(db) == set()
+        assert _silent(db, ["mec"]) == {"mec": None}
+
+    def test_open_and_half_open_are_excluded(self, db, agency_state):
+        self._circuit(db, "mec", "open")
+        self._circuit(db, "antaq", "half_open")
+        self._circuit(db, "mds", "closed")
+        for agency in ("mec", "antaq", "mds"):
+            _error(db, agency, 0.5, "html_changed")
+        assert find_open_circuit_agencies(db) == {"mec", "antaq"}
+        assert _silent(db, ["mec", "antaq", "mds", "inma"]) == {"inma": None}
+        failures = find_consecutive_failures(db, threshold=3, window_hours=6)
+        assert {r["agency_key"] for r in failures} == {"mds"}
+        all_failures = find_consecutive_failures(
+            db, threshold=3, window_hours=6, skip_open_circuits=False
+        )
+        assert {r["agency_key"] for r in all_failures} == {"mec", "antaq", "mds"}
+
+    def test_dag_query_runs_in_a_transaction_without_table(self, db):
+        """No monitor a conexão não é autocommit: o rollback libera a transação abortada."""
+        dsn = db.dsn
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            assert find_open_circuit_agencies(conn) == set()
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM scrape_runs")
+                assert cur.fetchone()[0] == 0
+        finally:
+            conn.close()

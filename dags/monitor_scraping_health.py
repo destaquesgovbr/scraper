@@ -9,6 +9,11 @@ Roda 30 min depois de cada execucao do scraping (``30 6-22/2 * * *``: 06h30, 08h
 2. Agencias com N falhas consecutivas, ou com erro permanente (sem retry) na ultima execucao
 3. Agencias sem noticias em X horas
 
+Agencias com o disjuntor aberto em scrape_agency_state (circuito open/half_open; migration
+038 do data-platform) saem das secoes 1 e 2: a API pula a agencia (sem scrape_run) e o
+alerta de abertura do circuito (dgb.ops.alerts, pelo scraper-api) ja cobre. Sem a tabela,
+nada muda.
+
 Envia o alerta agregado via notify.send_alert (Telegram > Pub/Sub dgb.ops.alerts >
 webhook > log), sem repetir o mesmo alerta a cada execucao: ver send_alerts.
 """
@@ -122,6 +127,52 @@ _SILENT_AGENCIES_QUERY = """
        OR last_run.scraped_at < NOW() - INTERVAL '1 hour' * %(silent_hours)s
     ORDER BY k.agency_key
 """
+
+
+# Agencias com o disjuntor aberto (open ou half_open) em scrape_agency_state (migration 038
+# do data-platform). Saem de "Agencias Sem Execucao" e das falhas consecutivas: a API pula a
+# agencia sem gravar scrape_run e o alerta do circuito ja cobre. Sem a tabela, nada muda
+# (_open_circuit_agencies devolve vazio).
+#
+# NOTE: This query is duplicated in src/govbr_scraper/monitoring/health_checks.py
+# (OPEN_CIRCUIT_AGENCIES_QUERY). tests/unit/test_dag_monitor_health.py checks they match.
+_OPEN_CIRCUIT_AGENCIES_QUERY = """
+    SELECT agency_key
+    FROM scrape_agency_state
+    WHERE circuit_state <> 'closed'
+"""
+
+
+def _open_circuit_agencies(conn) -> set[str]:
+    """Agencias com o disjuntor aberto; vazio se scrape_agency_state nao existe.
+
+    Tabela ausente (038 nao aplicada): rollback da transacao abortada e nenhuma exclusao.
+    """
+    import psycopg2.errors
+    from psycopg2.extras import RealDictCursor
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(_OPEN_CIRCUIT_AGENCIES_QUERY)
+            return {row["agency_key"] for row in cur.fetchall()}
+    except psycopg2.errors.UndefinedTable:
+        conn.rollback()
+        logger.info("scrape_agency_state ausente (migration 038): sem filtro de circuito aberto")
+        return set()
+
+
+def _without_open_circuits(rows: list[dict], open_circuits: set[str], section: str) -> list[dict]:
+    """Tira das linhas as agencias com o disjuntor aberto (o alerta do circuito cobre)."""
+    kept = [r for r in rows if r["agency_key"] not in open_circuits]
+    removed = sorted({r["agency_key"] for r in rows} & open_circuits)
+    if removed:
+        logger.info(
+            "%s: %d agencia(s) com o circuito aberto fora do alerta: %s",
+            section,
+            len(removed),
+            ", ".join(_sanitize(k) for k in removed),
+        )
+    return kept
 
 
 def _sanitize(value) -> str:
@@ -322,7 +373,10 @@ def _build_alert_message(
 def monitor_scraping_health_dag():
     @task
     def check_consecutive_failures() -> list[dict]:
-        """Verifica agencias com falhas consecutivas ou com erro permanente na ultima execucao."""
+        """Verifica agencias com falhas consecutivas ou com erro permanente na ultima execucao.
+
+        Agencias com o disjuntor aberto ficam de fora (o alerta do circuito cobre).
+        """
         import psycopg2
         from airflow.models import Variable
         from psycopg2.extras import RealDictCursor
@@ -347,8 +401,10 @@ def monitor_scraping_health_dag():
                     {"threshold": threshold, "window_hours": window_hours},
                 )
                 results = [dict(row) for row in cur.fetchall()]
+            open_circuits = _open_circuit_agencies(conn)
         finally:
             conn.close()
+        results = _without_open_circuits(results, open_circuits, "Falhas consecutivas")
 
         if results:
             logger.warning(f"Agencias com {threshold}+ falhas consecutivas: {len(results)}")
@@ -405,6 +461,9 @@ def monitor_scraping_health_dag():
         scrape_inma, scrape_inpe, scrape_aids, scrape_patrimonio e scrape_esg
         (max_active_runs=1). As outras checagens partem de scrape_runs e nao enxergam
         esse caso.
+
+        Agencia com o disjuntor aberto nao grava scrape_run (a API a pula ate a sonda) e fica
+        de fora: o alerta do circuito cobre.
         """
         import psycopg2
         from airflow.models import Variable
@@ -425,8 +484,10 @@ def monitor_scraping_health_dag():
                     {"agencies": active_agencies, "silent_hours": silent_hours},
                 )
                 results = [dict(row) for row in cur.fetchall()]
+            open_circuits = _open_circuit_agencies(conn)
         finally:
             conn.close()
+        results = _without_open_circuits(results, open_circuits, "Agencias sem execucao")
 
         if results:
             logger.warning(
