@@ -2,29 +2,37 @@
 Scraper API for DestaquesGovBr.
 
 Lightweight HTTP wrapper around existing CLI scraper commands.
-Designed to run on Cloud Run, called by Airflow DAGs.
+Designed to run on Cloud Run, called by Airflow DAGs, Cloud Tasks and Cloud Scheduler.
 
-/scrape/agencies e /scrape/ebc raspam agência por agência, com o estado por agência
-(scrape_agency_state, migration 038): sem datas no corpo, a janela de cada agência vem da
-marca d'água (desde o último sucesso, até 7 dias ou ~80 notícias da agência); com o circuito
-aberto e a sonda ainda não vencida, a agência é pulada (``skipped``), a não ser com ``force``.
+/scrape/agencies e /scrape/ebc (DAGs) e /scrape/agency (tarefas do Cloud Tasks) raspam
+agência por agência, com o estado por agência (scrape_agency_state, migration 038): sem
+datas no corpo, a janela de cada agência vem da marca d'água (desde o último sucesso, até 7
+dias ou ~80 notícias da agência); com o circuito aberto e a sonda ainda não vencida, a
+agência é pulada (``skipped``), a não ser com ``force``.
+
+/dispatch (Cloud Scheduler a cada 15 min e a DAG scrape_backfill) escolhe as agências
+vencidas e cria uma tarefa por agência na fila scrape-govbr (modo em SCRAPE_DISPATCH_MODE).
 """
 
+import json
 import logging
-import os
 import time
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 
+from govbr_scraper.dispatch.config import dispatch_mode_from_env
+from govbr_scraper.models.monitoring import UNKNOWN_AGENCY
 from govbr_scraper.monitoring.structured_log import (
     OUTCOME_FAILED,
     OUTCOME_SKIPPED,
     OUTCOME_SUCCESS,
+    log_dispatch_run,
     log_scrape_attempt,
 )
 from govbr_scraper.state.model import AgencyState, AttemptContext, Tier
@@ -127,8 +135,11 @@ def health():
     return {"status": "ok"}
 
 
-# /scrape/agencies e /scrape/ebc são chamados pelas DAGs do Airflow.
+# trigger do scrape_attempt: /scrape/agencies e /scrape/ebc são chamados pelas DAGs do
+# Airflow; /scrape/agency, pelas tarefas do Cloud Tasks (tick do /dispatch ou backfill).
 _TRIGGER_DAG = "dag"
+_TRIGGER_TASK = "task"
+_TRIGGER_BACKFILL = "backfill"
 
 
 def _tier_label(state: AgencyState | None, states_available: bool) -> str | None:
@@ -159,13 +170,23 @@ def _attempt_fields(agency: str, metrics: dict) -> dict[str, Any]:
     }
 
 
-def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -> dict[str, Any]:
+def _scrape_each_agency(
+    req: _ScrapeRequest,
+    storage,
+    manager,
+    yaml_file: str,
+    *,
+    trigger: str = _TRIGGER_DAG,
+    log_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Raspa agência por agência, cada uma com a própria janela, passando pelo disjuntor.
 
+    ``trigger`` e ``log_extra`` (ex.: cabeçalhos do Cloud Tasks) vão no ``scrape_attempt``.
     Devolve as métricas somadas, a janela da resposta e as agências puladas.
     """
     from govbr_scraper.scrapers.yaml_config import active_agency_keys
 
+    extra = log_extra or {}
     explicit = req.start_date is not None
     keys = list(dict.fromkeys(req.agencies)) if req.agencies else active_agency_keys(yaml_file)
     states = storage.load_agency_states()
@@ -194,8 +215,9 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
                 outcome=OUTCOME_SKIPPED,
                 tier=tier,
                 explicit_window=explicit,
-                trigger=_TRIGGER_DAG,
+                trigger=trigger,
                 reason="circuit_open",
+                **extra,
                 next_probe_at=next_probe_at,
             )
             continue
@@ -238,7 +260,8 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
                 duration_s=time.monotonic() - started,
                 tier=tier,
                 explicit_window=explicit,
-                trigger=_TRIGGER_DAG,
+                trigger=trigger,
+                **extra,
             )
             raise
         log_scrape_attempt(
@@ -246,12 +269,13 @@ def _scrape_each_agency(req: _ScrapeRequest, storage, manager, yaml_file: str) -
             duration_s=time.monotonic() - started,
             tier=tier,
             explicit_window=explicit,
-            trigger=_TRIGGER_DAG,
+            trigger=trigger,
             probe=decision.probe,
             window_start=start.isoformat(),
             window_end=end.isoformat(),
             window_truncated=truncated,
             **_attempt_fields(key, metrics),
+            **extra,
         )
         for field in ("articles_scraped", "articles_saved", "articles_new", "articles_skipped"):
             totals[field] += metrics.get(field, 0) or 0
@@ -454,5 +478,341 @@ def agencies_state():
             pg.close_all()
 
     active = active_agency_keys("site_urls.yaml") + active_agency_keys("ebc_urls.yaml")
-    dispatch_mode = os.getenv("SCRAPE_DISPATCH_MODE", "").strip() or "off"
+    dispatch_mode = dispatch_mode_from_env().value
     return build_state_report(states, active, datetime.now(UTC), dispatch_mode)
+
+
+# =============================================================================
+# Despacho por fila (Passos 3 e 4): /scrape/agency (Cloud Tasks) e /dispatch
+# =============================================================================
+
+
+class ScrapeAgencyRequest(BaseModel):
+    """Corpo de /scrape/agency, a tarefa do Cloud Tasks (validado à mão: nunca dá 422).
+
+    Sem datas, a janela vem da marca d'água e a tentativa atualiza o estado da agência; com
+    ``start_date`` (``end_date`` padrão = ``start_date``), a janela é explícita (backfill) e
+    não mexe no estado. ``trigger`` ausente vale ``backfill`` com janela explícita e
+    ``task`` sem.
+    """
+
+    agency: str
+    start_date: date | None = None
+    end_date: date | None = None
+    force: bool = False
+    allow_update: bool = False
+    trigger: Literal["task", "backfill"] | None = None
+
+    @field_validator("agency")
+    @classmethod
+    def _agency_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("agency vazia")
+        return value
+
+    @model_validator(mode="after")
+    def _explicit_window(self):
+        if self.end_date is not None and self.start_date is None:
+            raise ValueError("end_date exige start_date")
+        if self.start_date and self.end_date and self.start_date > self.end_date:
+            raise ValueError("start_date é posterior a end_date")
+        return self
+
+
+class ScrapeAgencyResponse(ScrapeResponse):
+    # status: completed | failed | skipped | unknown_agency | invalid_payload
+    agency: str | None = None
+    trigger: str | None = None
+    # False em erro permanente (200: o Cloud Tasks não repete); True em passageiro (503).
+    retryable: bool | None = None
+
+
+# Cabeçalhos do Cloud Tasks → campos do scrape_attempt.
+_TASK_NAME_HEADER = "X-CloudTasks-TaskName"
+_TASK_RETRY_HEADER = "X-CloudTasks-TaskRetryCount"
+
+
+def _task_log_fields(request: Request) -> dict[str, Any]:
+    """``task_name`` e ``task_retry`` dos cabeçalhos do Cloud Tasks (ausentes: omitidos)."""
+    fields: dict[str, Any] = {}
+    name = request.headers.get(_TASK_NAME_HEADER)
+    if name is not None:
+        fields["task_name"] = name
+    retry = request.headers.get(_TASK_RETRY_HEADER)
+    if retry is not None:
+        try:
+            fields["task_retry"] = int(retry)
+        except ValueError:
+            fields["task_retry"] = retry
+    return fields
+
+
+def _validation_message(error: Exception) -> str:
+    if isinstance(error, ValidationError):
+        parts = [
+            f"{'.'.join(str(p) for p in e['loc']) or 'corpo'}: {e['msg']}"
+            for e in error.errors()[:5]
+        ]
+        return "; ".join(parts)
+    return str(error)[:300]
+
+
+def _agency_source(agency: str) -> str | None:
+    """YAML da agência ativa: ``site_urls.yaml`` (gov.br), ``ebc_urls.yaml`` (EBC) ou None."""
+    from govbr_scraper.scrapers.yaml_config import active_agency_keys
+
+    for yaml_file in ("site_urls.yaml", "ebc_urls.yaml"):
+        if agency in active_agency_keys(yaml_file):
+            return yaml_file
+    return None
+
+
+def _agency_json(status_code: int, response: ScrapeAgencyResponse) -> JSONResponse:
+    return JSONResponse(content=response.model_dump(), status_code=status_code)
+
+
+@app.post("/scrape/agency", response_model=ScrapeAgencyResponse)
+async def scrape_agency(request: Request):
+    """Raspa uma agência: o alvo das tarefas da fila scrape-govbr.
+
+    200 para sucesso, erro permanente, ``skipped`` (circuito aberto), ``unknown_agency`` e
+    payload inválido; 503 só para erro passageiro (o Cloud Tasks repete qualquer não-2xx).
+    """
+    task = _task_log_fields(request)
+    raw = await request.body()
+    try:
+        req = ScrapeAgencyRequest.model_validate(json.loads(raw or b"null"))
+    except ValueError as e:  # JSON inválido, UnicodeDecodeError e ValidationError
+        message = _validation_message(e)
+        logger.warning(f"/scrape/agency: payload inválido {task or ''}: {message}")
+        return _agency_json(
+            200,
+            ScrapeAgencyResponse(
+                status="invalid_payload",
+                message=f"Payload inválido (não repetir): {message}",
+                retryable=False,
+            ),
+        )
+    return await run_in_threadpool(_scrape_single_agency, req, task)
+
+
+def _scrape_single_agency(req: ScrapeAgencyRequest, task: dict[str, Any]) -> JSONResponse:
+    from govbr_scraper.scrapers.ebc_scrape_manager import EBCScrapeManager
+    from govbr_scraper.scrapers.scrape_manager import ScrapeManager
+    from govbr_scraper.storage import StorageAdapter
+
+    explicit = req.start_date is not None
+    trigger = req.trigger or (_TRIGGER_BACKFILL if explicit else _TRIGGER_TASK)
+    yaml_file = _agency_source(req.agency)
+    if yaml_file is None:
+        message = f"Agência '{req.agency}' fora do site_urls.yaml/ebc_urls.yaml ou inativa"
+        logger.warning(f"/scrape/agency: {message} {task or ''}")
+        log_scrape_attempt(
+            agency=req.agency,
+            outcome=OUTCOME_FAILED,
+            category=UNKNOWN_AGENCY,
+            retryable=False,
+            explicit_window=explicit,
+            trigger=trigger,
+            **task,
+        )
+        error = AgencyError(
+            agency=req.agency, error=message, category=UNKNOWN_AGENCY, retryable=False
+        )
+        return _agency_json(
+            200,
+            ScrapeAgencyResponse(
+                status="unknown_agency",
+                agency=req.agency,
+                trigger=trigger,
+                retryable=False,
+                errors=[error],
+                message=message,
+            ),
+        )
+
+    scrape_req = _ScrapeRequest(
+        agencies=[req.agency],
+        start_date=req.start_date,
+        end_date=req.end_date,
+        allow_update=req.allow_update,
+        sequential=True,
+        force=req.force,
+    )
+    logger.info(f"Scraping agency ({trigger}): {_describe_request(scrape_req)} {task or ''}")
+    storage = None
+    try:
+        storage = StorageAdapter(
+            attempt_context=AttemptContext(explicit_window=explicit, forced=req.force)
+        )
+        manager_cls = ScrapeManager if yaml_file == "site_urls.yaml" else EBCScrapeManager
+        totals = _scrape_each_agency(
+            scrape_req, storage, manager_cls(storage), yaml_file, trigger=trigger, log_extra=task
+        )
+    except Exception as e:
+        # Banco fora, bug: passageiro. O 503 faz o Cloud Tasks repetir (até 3 tentativas).
+        logger.error(f"/scrape/agency {req.agency} falhou: {e}")
+        error = AgencyError(agency=req.agency, error=str(e), category=None, retryable=True)
+        return _agency_json(
+            503,
+            ScrapeAgencyResponse(
+                status="failed",
+                agency=req.agency,
+                trigger=trigger,
+                retryable=True,
+                errors=[error],
+                message=f"Erro passageiro: {e}",
+            ),
+        )
+    finally:
+        if storage is not None:
+            storage.close()
+    return _scrape_agency_response(req, trigger, totals)
+
+
+def _scrape_agency_response(
+    req: ScrapeAgencyRequest, trigger: str, totals: dict[str, Any]
+) -> JSONResponse:
+    """Status HTTP de /scrape/agency: 503 só para erro passageiro."""
+    errors = [AgencyError(**e) for e in totals["errors"]]
+    processed = totals["agencies_processed"]
+    skipped = totals["skipped"]
+    retryable: bool | None = None
+    if skipped:
+        status, http_status = "skipped", 200
+        message = f"{req.agency} pulada: circuito aberto (sonda em {skipped[0].next_probe_at})"
+    elif processed:
+        status, http_status, message = "completed", 200, "Scraping completed"
+    elif errors:
+        retryable = any(e.retryable for e in errors)
+        status, http_status = "failed", 503 if retryable else 200
+        kind = "Erro passageiro" if retryable else "Erro permanente"
+        message = f"{kind} ({errors[0].category or 'sem categoria'}): {errors[0].error}"
+    else:  # não acontece: o manager devolve a agência processada ou um erro
+        retryable = True
+        status, http_status, message = "failed", 503, "A raspagem não devolveu resultado"
+
+    if req.start_date is not None:
+        start_date = req.start_date.isoformat()
+        end_date = (req.end_date or req.start_date).isoformat()
+    elif totals["windows"]:
+        start_date, end_date = (d.isoformat() for d in totals["windows"][0])
+    else:
+        start_date = end_date = None
+
+    response = ScrapeAgencyResponse(
+        status=status,
+        start_date=start_date,
+        end_date=end_date,
+        articles_scraped=totals["articles_scraped"],
+        articles_saved=totals["articles_saved"],
+        articles_new=totals["articles_new"],
+        articles_skipped=totals["articles_skipped"],
+        agencies_processed=processed,
+        errors=errors,
+        skipped=skipped,
+        message=message,
+        agency=req.agency,
+        trigger=trigger,
+        retryable=retryable,
+    )
+    return _agency_json(http_status, response)
+
+
+class DispatchRequest(BaseModel):
+    """Corpo de /dispatch: ``{"reason": "tick"}`` (Scheduler) ou o backfill da DAG.
+
+    No backfill, ``start_date`` e ``end_date`` são obrigatórios e ``agencies`` vazio = todas
+    as ativas. ``dry_run`` rebaixa o modo live para dry_run nesta chamada.
+    """
+
+    reason: Literal["tick", "backfill"] = "tick"
+    agencies: list[str] | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    force: bool = False
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def _backfill_window(self):
+        if self.reason == "backfill":
+            if self.start_date is None or self.end_date is None:
+                raise ValueError("backfill exige start_date e end_date (YYYY-MM-DD)")
+            if self.start_date > self.end_date:
+                raise ValueError("start_date é posterior a end_date")
+        return self
+
+
+@app.post("/dispatch")
+def dispatch(req: DispatchRequest | None = None):
+    """Despacha as agências vencidas (tick) ou um backfill para a fila scrape-govbr.
+
+    Modo em ``SCRAPE_DISPATCH_MODE``: ``off`` só loga ``dispatch_run`` e responde;
+    ``dry_run`` calcula, loga e recalcula as faixas, sem criar tarefa; ``live`` cria as
+    tarefas e roda o reconciliador. 503 sem a tabela (038), 500 em outro erro (sem
+    ``dispatch_run``: o alerta de ausência do heartbeat acusa).
+    """
+    from govbr_scraper.dispatch.config import (
+        DispatchConfigError,
+        DispatchMode,
+        TasksConfig,
+        effective_mode,
+    )
+    from govbr_scraper.dispatch.service import Dispatcher, DispatchOutcome
+    from govbr_scraper.dispatch.tasks_client import CloudTasksClient
+    from govbr_scraper.scrapers.yaml_config import active_agency_keys
+    from govbr_scraper.state.repository import StateUnavailable
+    from govbr_scraper.storage.postgres_manager import PostgresManager
+
+    req = req or DispatchRequest()
+    now = datetime.now(UTC)
+    mode = effective_mode(dispatch_mode_from_env(), req.dry_run)
+    if mode == DispatchMode.OFF:
+        outcome = DispatchOutcome(mode=mode.value, reason=req.reason)
+        if req.reason == "backfill":
+            outcome.start_date = req.start_date.isoformat()
+            outcome.end_date = req.end_date.isoformat()
+        log_dispatch_run(**outcome.log_fields())
+        return outcome.response()
+
+    tasks = None
+    if mode == DispatchMode.LIVE:
+        try:
+            tasks = CloudTasksClient.from_config(TasksConfig.from_env())
+        except DispatchConfigError as e:
+            logger.error(f"/dispatch: {e}")
+            return JSONResponse(status_code=500, content={"detail": str(e)})
+
+    active = active_agency_keys("site_urls.yaml") + active_agency_keys("ebc_urls.yaml")
+    pg = None
+    try:
+        pg = PostgresManager(min_connections=1, max_connections=1)
+        conn = pg.get_connection()
+        try:
+            dispatcher = Dispatcher(conn, mode=mode, now=now, active_keys=active, tasks=tasks)
+            if req.reason == "backfill":
+                outcome = dispatcher.backfill(
+                    agencies=req.agencies,
+                    start_date=req.start_date,
+                    end_date=req.end_date,
+                    force=req.force,
+                )
+            else:
+                outcome = dispatcher.tick()
+        finally:
+            pg.put_connection(conn)
+    except StateUnavailable as e:
+        logger.error(f"/dispatch ({req.reason}): {e}")
+        return JSONResponse(status_code=503, content={"detail": "scrape_agency_state indisponível"})
+    except Exception as e:
+        logger.error(f"/dispatch ({req.reason}) falhou: {e}")
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+    finally:
+        if pg is not None:
+            pg.close_all()
+        if tasks is not None:
+            tasks.close()
+
+    log_dispatch_run(**outcome.log_fields())
+    return outcome.response()
