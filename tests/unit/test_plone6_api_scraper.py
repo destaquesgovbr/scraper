@@ -6,13 +6,14 @@ known URL fence, fetch error handling.
 """
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
 from govbr_scraper.scrapers.plone6_api_scraper import Plone6APIScraper
+from govbr_scraper.scrapers.unique_id import generate_readable_unique_id
 from govbr_scraper.scrapers.webscraper import ScrapingError
 
 BASE_URL = "https://www.gov.br/susep/pt-br/central-de-conteudos/noticias"
@@ -242,6 +243,76 @@ class TestTransformNewsItem:
         result = scraper._transform_news_item(item, None)
         assert "Texto em HTML" in result["content"]
 
+    def test_extracts_content_from_html_block(self):
+        """Bloco html do Volto (conteúdo migrado do Plone 5) vira Markdown."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "b1": {
+                    "@type": "html",
+                    "html": "<p><span>Parágrafo</span> <strong>forte</strong></p>",
+                },
+                "b2": {"@type": "html", "html": "<script>var x = 1;</script>"},
+                "b3": {"@type": "html", "html": "   "},
+                "b4": {"@type": "html"},
+            },
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Parágrafo **forte**"
+
+    def test_blocks_follow_blocks_layout_order(self):
+        """A ordem vem de blocks_layout.items, não da ordem do objeto blocks da API."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "c": {"@type": "slate", "plaintext": "Terceiro"},
+                "t": {"@type": "title"},
+                "a": {"@type": "slate", "plaintext": "Primeiro"},
+                "b": {"@type": "html", "html": "<p>Segundo</p>"},
+            },
+            "blocks_layout": {"items": ["t", "a", "b", "c"]},
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Primeiro\n\nSegundo\n\nTerceiro"
+
+    def test_blocks_outside_layout_are_ignored(self):
+        """Bloco fora do layout não é exibido na página (sobra de edição) e fica de fora."""
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "orfao": {"@type": "slate", "plaintext": "Versão antiga do parágrafo"},
+                "a": {"@type": "slate", "plaintext": "Parágrafo exibido"},
+            },
+            "blocks_layout": {"items": ["a", "a", "inexistente"]},
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Parágrafo exibido"
+
+    @pytest.mark.parametrize(
+        "layout",
+        [None, {}, {"items": None}, {"items": []}, {"items": ["inexistente"]}, "invalido"],
+    )
+    def test_blocks_without_usable_layout_keep_dict_order(self, layout):
+        scraper = _make_scraper()
+        item = {
+            "@id": "https://www.gov.br/susep/pt-br/noticias/test",
+            "title": "Test",
+            "blocks": {
+                "x": {"@type": "slate", "plaintext": "Um"},
+                "y": "nao-e-dict",
+                "z": {"@type": "slate", "plaintext": "Dois"},
+            },
+            "blocks_layout": layout,
+        }
+        result = scraper._transform_news_item(item, None)
+        assert result["content"] == "Um\n\nDois"
+
     def test_invalid_modified_date_produces_none_updated_datetime(self):
         scraper = _make_scraper()
         item = _api_item(modified="not-a-date")
@@ -310,6 +381,74 @@ class TestDateFilters:
         assert result is True
         assert len(scraper.news_data) == 1
         assert scraper.news_data[0]["published_at"] is None
+
+
+class TestBrasiliaTime:
+    """Datas da API (UTC) em horário de Brasília, como as do WebScraper (JSON-LD -03:00).
+
+    O unique_id vem do isoformat() de published_at e o filtro de datas, de .date().
+    """
+
+    ANTAQ_URL = "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias"
+
+    def _antaq_scraper(self, min_date="2026-01-01", max_date=None):
+        return Plone6APIScraper(min_date=min_date, base_url=self.ANTAQ_URL, max_date=max_date)
+
+    def test_effective_utc_vira_horario_de_brasilia(self):
+        scraper = self._antaq_scraper()
+        item = _api_item(
+            url=f"{self.ANTAQ_URL}/2026/antaq-fortalece-governanca-dos-processos-decisorios",
+            title="ANTAQ fortalece governança dos processos decisórios",
+            effective="2026-10-29T14:45:57+00:00",
+            modified="2026-11-03T19:06:38+00:00",
+        )
+        assert scraper._process_news_item(item) is True
+
+        news = scraper.news_data[0]
+        assert news["published_at"].isoformat() == "2026-10-29T11:45:57-03:00"
+        assert news["published_at"] == datetime(2026, 10, 29, 14, 45, 57, tzinfo=UTC)
+        assert news["updated_datetime"].isoformat() == "2026-11-03T16:06:38-03:00"
+
+    def test_unique_id_igual_ao_gravado_pelo_webscraper(self):
+        """A notícia de 29/10 mudou para .../noticias/2026/<slug> (a URL gravada é sem o ano).
+
+        Sem casar pela URL, só o ON CONFLICT (unique_id) evita a duplicata: o id tem de ser o
+        gravado pelo WebScraper (datePublished 2026-10-29T11:45:57-03:00), não o do UTC (2d17bf).
+        """
+        scraper = self._antaq_scraper()
+        title = "ANTAQ fortalece governança dos processos decisórios"
+        scraper._process_news_item(_api_item(title=title, effective="2026-10-29T14:45:57+00:00"))
+
+        published_at = scraper.news_data[0]["published_at"]
+        assert (
+            generate_readable_unique_id("antaq", published_at, title)
+            == "antaq-fortalece-governanca-dos-processos-decisorios_d5f87e"
+        )
+
+    def test_filtro_usa_a_data_de_brasilia(self):
+        """14/11 01:30 UTC é 13/11 22:30 em Brasília: entra na fatia de 13/11, não na de 14/11."""
+        effective = "2026-11-14T01:30:00+00:00"
+
+        slice_13 = self._antaq_scraper(min_date="2026-11-13", max_date="2026-11-13")
+        assert slice_13._process_news_item(_api_item(effective=effective)) is True
+        assert len(slice_13.news_data) == 1
+        assert slice_13.news_data[0]["published_at"].date() == date(2026, 11, 13)
+
+        slice_14 = self._antaq_scraper(min_date="2026-11-14", max_date="2026-11-14")
+        assert slice_14._process_news_item(_api_item(effective=effective)) is False
+        assert slice_14.news_data == []
+
+    def test_data_ja_em_brasilia_nao_muda(self):
+        scraper = self._antaq_scraper()
+        scraper._process_news_item(_api_item(effective="2026-03-15T10:00:00-03:00"))
+        assert scraper.news_data[0]["published_at"].isoformat() == "2026-03-15T10:00:00-03:00"
+
+    def test_data_sem_fuso_fica_como_veio(self):
+        scraper = self._antaq_scraper()
+        scraper._process_news_item(_api_item(effective="2026-03-15T10:00:00"))
+        published_at = scraper.news_data[0]["published_at"]
+        assert published_at.tzinfo is None
+        assert published_at == datetime(2026, 3, 15, 10, 0)
 
 
 class TestKnownUrlFence:

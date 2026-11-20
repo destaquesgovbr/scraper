@@ -12,6 +12,7 @@ import re
 import time
 from datetime import UTC, datetime
 from urllib.parse import urlparse, urlunparse
+from zoneinfo import ZoneInfo
 
 import requests
 from markdownify import markdownify as md
@@ -41,6 +42,30 @@ from govbr_scraper.scrapers.webscraper import (
 
 # Configurar logging (mesmo padrão do WebScraper)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+_BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def _parse_api_datetime(value: str | None) -> datetime | None:
+    """Data ISO da API do Plone (``effective``, ``modified``) em horário de Brasília.
+
+    A API devolve as datas em UTC (``2026-10-29T14:45:57+00:00``); o WebScraper lê o
+    ``datePublished`` do JSON-LD da página em horário de Brasília
+    (``2026-10-29T11:45:57-03:00``). É o mesmo instante, mas o ``unique_id`` vem do
+    ``isoformat()`` de ``published_at`` (``unique_id.generate_suffix``) e o filtro de datas,
+    de ``.date()``: em UTC, a mesma notícia ganhava outro ``unique_id`` (o ``ON CONFLICT``
+    não a reconhecia quando a URL mudava, como na antaq em 11/2026) e a publicada entre 21h
+    e 23h59 caía no dia seguinte. Data sem fuso fica como veio. None se não der para ler.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(_BRT)
 
 
 class Plone6APIScraper:
@@ -238,18 +263,12 @@ class Plone6APIScraper:
         title = item.get("title", "No Title")
 
         # 2. Extrair e validar data
+        # Em horário de Brasília: a data do filtro e o unique_id batem com os do WebScraper
         effective_str = item.get("effective")
-        if effective_str:
-            try:
-                published_dt = datetime.fromisoformat(effective_str)
-                news_date = published_dt.date()
-            except (ValueError, AttributeError):
-                logging.warning(f"Data inválida em {url}: {effective_str}")
-                news_date = None
-                published_dt = None
-        else:
-            news_date = None
-            published_dt = None
+        published_dt = _parse_api_datetime(effective_str)
+        news_date = published_dt.date() if published_dt else None
+        if effective_str and published_dt is None:
+            logging.warning(f"Data inválida em {url}: {effective_str}")
 
         # 3. Filtro de data (mesma lógica do WebScraper.extract_news_info)
         if news_date:
@@ -298,6 +317,35 @@ class Plone6APIScraper:
         self.news_data.append(news_item)
         return True  # CONTINUAR
 
+    @staticmethod
+    def _ordered_blocks(item: dict) -> list[dict]:
+        """Blocos do item na ordem da página.
+
+        A ordem dos blocos está em ``blocks_layout.items``; o objeto ``blocks`` da API não a
+        guarda (na antaq, em 19/11/2026, o primeiro bloco do objeto era o penúltimo parágrafo da
+        notícia). Com um layout que aponte para algum bloco, valem só os blocos do layout, que são
+        os exibidos na página. Sem layout utilizável, a ordem do objeto ``blocks``.
+        """
+        blocks = item.get("blocks")
+        if not isinstance(blocks, dict) or not blocks:
+            return []
+
+        layout = item.get("blocks_layout")
+        layout_ids = layout.get("items") if isinstance(layout, dict) else None
+        ordered_ids = []
+        if isinstance(layout_ids, list):
+            ordered_ids = list(
+                dict.fromkeys(
+                    block_id
+                    for block_id in layout_ids
+                    if isinstance(block_id, str) and block_id in blocks
+                )
+            )
+        if not ordered_ids:
+            ordered_ids = list(blocks)
+
+        return [blocks[block_id] for block_id in ordered_ids if isinstance(blocks[block_id], dict)]
+
     def _transform_news_item(self, item: dict, published_dt: datetime | None) -> dict[str, str]:
         """
         Transformar item da API do Plone para formato interno.
@@ -313,44 +361,40 @@ class Plone6APIScraper:
         title = item.get("title", "No Title")
 
         # 3. Data de atualização
-        modified_str = item.get("modified")
-        if modified_str:
-            try:
-                updated_dt = datetime.fromisoformat(modified_str)
-            except (ValueError, AttributeError):
-                updated_dt = None
-        else:
-            updated_dt = None
+        updated_dt = _parse_api_datetime(item.get("modified"))
 
         # 4. Subtítulo (description)
         subtitle = item.get("description", None)
 
-        # 5. Conteúdo: Extrair de blocks (Plone 6 usa formato blocks/slate)
+        # 5. Conteúdo: Extrair de blocks (Plone 6 usa formato blocks/slate), na ordem da página
         content_md = ""
 
-        # Tentar extrair de blocks
-        blocks = item.get("blocks", {})
-        if blocks:
-            # Procurar por blocos do tipo 'slate' ou 'text'
-            for block_id, block_data in blocks.items():
-                if isinstance(block_data, dict):
-                    block_type = block_data.get("@type", "")
+        for block_data in self._ordered_blocks(item):
+            block_type = block_data.get("@type", "")
 
-                    # Slate block (formato Volto)
-                    if block_type == "slate":
-                        plaintext = block_data.get("plaintext", "")
-                        if plaintext:
-                            content_md += plaintext + "\n\n"
+            # Slate block (formato Volto)
+            if block_type == "slate":
+                plaintext = block_data.get("plaintext", "")
+                if plaintext:
+                    content_md += plaintext + "\n\n"
 
-                    # Text block (formato alternativo)
-                    elif block_type in ["text", "textBlock"]:
-                        text = block_data.get("text", "")
-                        if text:
-                            # Se for HTML, converter para Markdown
-                            if "<" in text and ">" in text:
-                                content_md += md(text) + "\n\n"
-                            else:
-                                content_md += text + "\n\n"
+            # Text block (formato alternativo)
+            elif block_type in ["text", "textBlock"]:
+                text = block_data.get("text", "")
+                if text:
+                    # Se for HTML, converter para Markdown
+                    if "<" in text and ">" in text:
+                        content_md += md(text) + "\n\n"
+                    else:
+                        content_md += text + "\n\n"
+
+            # Bloco HTML do Volto: conteúdo migrado do Plone 5 (antaq até 13/11/2026)
+            elif block_type == "html":
+                html = block_data.get("html", "")
+                if isinstance(html, str) and html.strip():
+                    converted = md(html).strip()
+                    if converted:
+                        content_md += converted + "\n\n"
 
         # Fallback: tentar campo 'text' (formato antigo)
         if not content_md:

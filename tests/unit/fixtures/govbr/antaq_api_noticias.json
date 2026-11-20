@@ -1,0 +1,753 @@
+{
+ "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/@search?portal_type=News+Item&fullobjects=1&metadata_fields=title&metadata_fields=effective&metadata_fields=modified&metadata_fields=description",
+ "items_total": 1869,
+ "batching": {
+  "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/@search?portal_type=News%20Item&sort_on=effective&sort_order=descending&b_start=0&b_size=25&fullobjects=1&metadata_fields=title&metadata_fields=effective&metadata_fields=modified&metadata_fields=description",
+  "first": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/@search?b_start=0&portal_type=News+Item&sort_on=effective&sort_order=descending&b_size=25&fullobjects=1&metadata_fields=title&metadata_fields=effective&metadata_fields=modified&metadata_fields=description",
+  "last": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/@search?b_start=1850&portal_type=News+Item&sort_on=effective&sort_order=descending&b_size=25&fullobjects=1&metadata_fields=title&metadata_fields=effective&metadata_fields=modified&metadata_fields=description",
+  "next": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/@search?b_start=25&portal_type=News+Item&sort_on=effective&sort_order=descending&b_size=25&fullobjects=1&metadata_fields=title&metadata_fields=effective&metadata_fields=modified&metadata_fields=description"
+ },
+ "items": [
+  {
+   "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario",
+   "@type": "News Item",
+   "title": "ANTAQ apresenta guia com orientações para combater o racismo no setor aquaviário",
+   "description": "Publicação apresenta medidas para prevenir a discriminação, acolher vítimas e ampliar a equidade racial nas organizações portuárias",
+   "effective": "2026-11-19T19:55:29+00:00",
+   "created": "2026-11-19T18:55:34+00:00",
+   "modified": "2026-11-19T20:04:46+00:00",
+   "review_state": "published",
+   "image": {
+    "download": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario/@@images/image-1600-78933afcfbd51858f79caaaad1cadfa2.jpeg",
+    "content-type": "image/jpeg",
+    "filename": "Prancheta 1.jpg.jpeg"
+   },
+   "blocks": {
+    "1c3779c8-ca27-46de-a285-3978f85b034c": {
+     "@type": "slate",
+     "plaintext": "A publicação dialoga ainda com o Objetivo de Desenvolvimento Sustentável (ODS) 18 – Igualdade Étnico-Racial, compromisso voluntário assumido pelo Brasil no âmbito da Agenda 2030. O objetivo prevê o enfrentamento ao racismo e à discriminação étnico-racial em todas as suas formas, especialmente contra a população negra e os povos originários."
+    },
+    "2ad61e77-d510-4c4c-a9d5-1ac059a3ff14": {
+     "@type": "description",
+     "fixed": true
+    },
+    "2f7f4327-335d-4a14-894e-02da54cec1cf": {
+     "@type": "slate",
+     "plaintext": "Participaram também da cerimônia de abertura os diretores da ANTAQ, Alber Vasconcelos e Caio Farias."
+    },
+    "36b05e54-c9b1-427d-b6ff-5a7ef9457fd7": {
+     "@type": "subtitleBlock",
+     "fixed": true
+    },
+    "3b77d645-4c28-4651-8f4e-2537c2a9b01c": {
+     "@type": "slate",
+     "plaintext": " Mesa-redonda "
+    },
+    "3dd321f4-c02a-41ae-9dfb-5c01dbfce887": {
+     "@type": "slate",
+     "plaintext": "“Essas pautas são importantíssimas quando você fala de letramento do setor portuário, letramento racial. Você tem que mostrar que essa forma de letramento é uma forma de combater o racismo e de incluir mais pessoas no setor”, destacou."
+    },
+    "47ef0e3e-7b0d-4ce6-8e6a-ba69b9723e46": {
+     "@type": "carouselBlock",
+     "aspectRatioDesktop": "56.25%",
+     "aspectRatioMode": "fixed",
+     "aspectRatioPhone": "66.6666%",
+     "aspectRatioTablet": "75%",
+     "autoplaySpeed": 6,
+     "columns": [
+      {
+       "@id": "fd1a9500-bfdf-4cfd-b5ff-3729718d3b48",
+       "customized": {
+        "Description_desktop": "Foto: Vosmar Rosa/MPor\n",
+        "alt_desktop": "Lançamento do Guia de Enfrentamento ao Racismo",
+        "horizontal_alignment_desktop": "center",
+        "vertical_alignment_desktop": "center"
+       },
+       "hide_info": false,
+       "horizontal_alignment": "center",
+       "href": [
+        {
+         "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario/prancheta-1-jpg.jpeg",
+         "Description": "",
+         "Title": "Prancheta 1.jpg.jpeg",
+         "alt": "Lançamento do Guia de Enfrentamento ao Racismo",
+         "image_field": "image",
+         "image_scales": {
+          "image": [
+           {
+            "content-type": "image/jpeg",
+            "download": "@@images/image-1600-faa5c94229622cb3e4fc0d83150c8c5e.jpeg",
+            "filename": "Prancheta 1.jpg.jpeg",
+            "height": 900,
+            "scales": {
+             "great": {
+              "download": "@@images/image-1200-242182c3f6b0c8eda0a8bd09c09f3cd3.jpeg",
+              "height": 675,
+              "width": 1200
+             },
+             "huge": {
+              "download": "@@images/image-1600-a934affd92552fc5d95db75bbe806d85.jpeg",
+              "height": 900,
+              "width": 1600
+             },
+             "icon": {
+              "download": "@@images/image-32-7bd4ab84eb003b6e8c8537612bf2f6f0.jpeg",
+              "height": 18,
+              "width": 32
+             },
+             "large": {
+              "download": "@@images/image-800-69c61997e919a85eaf85885cf51d9655.jpeg",
+              "height": 450,
+              "width": 800
+             },
+             "larger": {
+              "download": "@@images/image-1000-c77ba502c5d6c565274517f457871e70.jpeg",
+              "height": 562,
+              "width": 1000
+             },
+             "mini": {
+              "download": "@@images/image-200-58c4c9aaf512bd45ddff83d5859d92c5.jpeg",
+              "height": 112,
+              "width": 200
+             },
+             "preview": {
+              "download": "@@images/image-400-b46c615f1057bc746e6c8317ebd752cc.jpeg",
+              "height": 225,
+              "width": 400
+             },
+             "teaser": {
+              "download": "@@images/image-600-7b4a2cc1964c967ae114bc71865f1cd6.jpeg",
+              "height": 337,
+              "width": 600
+             },
+             "thumb": {
+              "download": "@@images/image-128-66d71bd7e98e2bbfc7da8d044450c137.jpeg",
+              "height": 72,
+              "width": 128
+             },
+             "tile": {
+              "download": "@@images/image-64-1323248952f07ba1037dc8585fc3eae2.jpeg",
+              "height": 36,
+              "width": 64
+             }
+            },
+            "size": 316430,
+            "width": 1600
+           }
+          ]
+         },
+         "review_state": "published",
+         "title": "Prancheta 1.jpg.jpeg"
+        }
+       ],
+       "overwrite": true,
+       "vertical_alignment": "center"
+      },
+      {
+       "@id": "05f6f4a3-d3c7-4186-b5e6-d09a5396544c",
+       "customized": {
+        "Description_desktop": "Foto: Vosmar Rosa/MPor\n",
+        "alt_desktop": "Lançamento do Guia de Enfrentamento ao Racismo",
+        "horizontal_alignment_desktop": "center",
+        "vertical_alignment_desktop": "center"
+       },
+       "hide_info": false,
+       "horizontal_alignment": "center",
+       "href": [
+        {
+         "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario/prancheta-2-jpg.jpeg",
+         "Description": "",
+         "Title": "Prancheta 2.jpg.jpeg",
+         "alt": "Lançamento do Guia de Enfrentamento ao Racismo",
+         "image_field": "image",
+         "image_scales": {
+          "image": [
+           {
+            "content-type": "image/jpeg",
+            "download": "@@images/image-1600-37c3e260e8c406d792e571d4bbe5d64b.jpeg",
+            "filename": "Prancheta 2.jpg.jpeg",
+            "height": 900,
+            "scales": {
+             "great": {
+              "download": "@@images/image-1200-2667edb45a9bc6866d186ebf8dc0589b.jpeg",
+              "height": 675,
+              "width": 1200
+             },
+             "huge": {
+              "download": "@@images/image-1600-b677e1338e5cbe2a611a919292016848.jpeg",
+              "height": 900,
+              "width": 1600
+             },
+             "icon": {
+              "download": "@@images/image-32-ab9e5aa205957f7971d281bd23199117.jpeg",
+              "height": 18,
+              "width": 32
+             },
+             "large": {
+              "download": "@@images/image-800-ac1cf0cbfecddebabb99f1cee76f23e0.jpeg",
+              "height": 450,
+              "width": 800
+             },
+             "larger": {
+              "download": "@@images/image-1000-10d2f63e4c1dc1bf12560632bb7f0507.jpeg",
+              "height": 562,
+              "width": 1000
+             },
+             "mini": {
+              "download": "@@images/image-200-af5576122091bd31673e1f40fadf6ce8.jpeg",
+              "height": 112,
+              "width": 200
+             },
+             "preview": {
+              "download": "@@images/image-400-a32680616695414192ccc78b9b05e7f9.jpeg",
+              "height": 225,
+              "width": 400
+             },
+             "teaser": {
+              "download": "@@images/image-600-2ba30e2375750bff4de140504537e084.jpeg",
+              "height": 337,
+              "width": 600
+             },
+             "thumb": {
+              "download": "@@images/image-128-36cea0d1cec4744baaeeb72dffcffbcc.jpeg",
+              "height": 72,
+              "width": 128
+             },
+             "tile": {
+              "download": "@@images/image-64-e110cd52b0950f538e6058c6b29c8287.jpeg",
+              "height": 36,
+              "width": 64
+             }
+            },
+            "size": 289252,
+            "width": 1600
+           }
+          ]
+         },
+         "review_state": "published",
+         "title": "Prancheta 2.jpg.jpeg"
+        }
+       ],
+       "overwrite": true,
+       "vertical_alignment": "center"
+      },
+      {
+       "@id": "cbc4161c-59fe-472d-bd81-200280280bfd",
+       "customized": {
+        "Description_desktop": "Foto: Ascom/ANTAQ",
+        "alt_desktop": "Lançamento do Guia de Enfrentamento ao Racismo",
+        "horizontal_alignment_desktop": "center",
+        "vertical_alignment_desktop": "center"
+       },
+       "hide_info": true,
+       "horizontal_alignment": "center",
+       "href": [
+        {
+         "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario/prancheta-3-jpg.jpeg",
+         "Description": "",
+         "Title": "Prancheta 3.jpg.jpeg",
+         "alt": "Lançamento do Guia de Enfrentamento ao Racismo",
+         "image_field": "image",
+         "image_scales": {
+          "image": [
+           {
+            "content-type": "image/jpeg",
+            "download": "@@images/image-1600-7a86492d0b4f3755509df19a6249f5f0.jpeg",
+            "filename": "Prancheta 3.jpg.jpeg",
+            "height": 900,
+            "scales": {
+             "great": {
+              "download": "@@images/image-1200-a4bdea9d7ec761b453d29ce46312873a.jpeg",
+              "height": 675,
+              "width": 1200
+             },
+             "huge": {
+              "download": "@@images/image-1600-24f7a5ab958bd0fee3718127849241d7.jpeg",
+              "height": 900,
+              "width": 1600
+             },
+             "icon": {
+              "download": "@@images/image-32-6504d6368588146ca19eb19f15bcbffa.jpeg",
+              "height": 18,
+              "width": 32
+             },
+             "large": {
+              "download": "@@images/image-800-2dd7888a3fd4d144d7b480d783aded0e.jpeg",
+              "height": 450,
+              "width": 800
+             },
+             "larger": {
+              "download": "@@images/image-1000-d6676cbe1c011eb010a90c9d6442438e.jpeg",
+              "height": 562,
+              "width": 1000
+             },
+             "mini": {
+              "download": "@@images/image-200-4980fd7958ef65b6aebcd37e61f4ec35.jpeg",
+              "height": 112,
+              "width": 200
+             },
+             "preview": {
+              "download": "@@images/image-400-be52308cbc598d2de08dfc08797f0057.jpeg",
+              "height": 225,
+              "width": 400
+             },
+             "teaser": {
+              "download": "@@images/image-600-71c5008fc13f6682ebb67047d860d886.jpeg",
+              "height": 337,
+              "width": 600
+             },
+             "thumb": {
+              "download": "@@images/image-128-3fd4577ae440d1d445287812faf99e12.jpeg",
+              "height": 72,
+              "width": 128
+             },
+             "tile": {
+              "download": "@@images/image-64-e8ad88a1010d1ce2234f07786b1ae27c.jpeg",
+              "height": 36,
+              "width": 64
+             }
+            },
+            "size": 306554,
+            "width": 1600
+           }
+          ]
+         },
+         "review_state": "published",
+         "title": "Prancheta 3.jpg.jpeg"
+        }
+       ],
+       "overwrite": true,
+       "vertical_alignment": "center",
+       "withoutSource": false
+      },
+      {
+       "@id": "00643176-6b84-4336-817c-0e232b317546",
+       "customized": {
+        "Description_desktop": "Foto: Vosmar Rosa/MPor",
+        "alt_desktop": "Lançamento do Guia de Enfrentamento ao Racismo",
+        "horizontal_alignment_desktop": "center",
+        "vertical_alignment_desktop": "center"
+       },
+       "hide_info": false,
+       "horizontal_alignment": "center",
+       "href": [
+        {
+         "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/2026/antaq-apresenta-guia-com-orientacoes-para-combater-o-racismo-no-setor-aquaviario/prancheta-4-jpg.jpeg",
+         "Description": "",
+         "Title": "Prancheta 4.jpg.jpeg",
+         "alt": "Lançamento do Guia de Enfrentamento ao Racismo",
+         "image_field": "image",
+         "image_scales": {
+          "image": [
+           {
+            "content-type": "image/jpeg",
+            "download": "@@images/image-1600-e917b34b3f1c26b0c889a77c7267d27b.jpeg",
+            "filename": "Prancheta 4.jpg.jpeg",
+            "height": 900,
+            "scales": {
+             "great": {
+              "download": "@@images/image-1200-5e7954ef28d0fc2dd82af80976660ce8.jpeg",
+              "height": 675,
+              "width": 1200
+             },
+             "huge": {
+              "download": "@@images/image-1600-f687e569457f5f0033ac0903371823d3.jpeg",
+              "height": 900,
+              "width": 1600
+             },
+             "icon": {
+              "download": "@@images/image-32-3205fcef2b0f446b817d134775056dcd.jpeg",
+              "height": 18,
+              "width": 32
+             },
+             "large": {
+              "download": "@@images/image-800-eaa7390597c23c142d4bf9c4df51a63c.jpeg",
+              "height": 450,
+              "width": 800
+             },
+             "larger": {
+              "download": "@@images/image-1000-2e86a5e2c177d1705e72fcc31507cf10.jpeg",
+              "height": 562,
+              "width": 1000
+             },
+             "mini": {
+              "download": "@@images/image-200-b0a843a70c0def2314eebf5c5bf7f817.jpeg",
+              "height": 112,
+              "width": 200
+             },
+             "preview": {
+              "download": "@@images/image-400-8c803746d6796f2bf906fae8f0ac6d1f.jpeg",
+              "height": 225,
+              "width": 400
+             },
+             "teaser": {
+              "download": "@@images/image-600-4c22bd300b2e9dd6eeff3216b7fd29a0.jpeg",
+              "height": 337,
+              "width": 600
+             },
+             "thumb": {
+              "download": "@@images/image-128-28ad6dc78a3c96866a3ec860af3b51e7.jpeg",
+              "height": 72,
+              "width": 128
+             },
+             "tile": {
+              "download": "@@images/image-64-326d439cb6a4ba9feaca312e5b4b3642.jpeg",
+              "height": 36,
+              "width": 64
+             }
+            },
+            "size": 272254,
+            "width": 1600
+           }
+          ]
+         },
+         "review_state": "published",
+         "title": "Prancheta 4.jpg.jpeg"
+        }
+       ],
+       "overwrite": true,
+       "vertical_alignment": "center",
+       "withoutSource": false
+      }
+     ],
+     "items_to_show": 1,
+     "layout": "c-default"
+    },
+    "49e12474-466c-451f-9dd8-d515ab2046ac": {
+     "@type": "slate",
+     "plaintext": "Durante o lançamento do Guia a superintendente de ESG e Inovação da ANTAQ, Cristina Castro, conduziu uma mesa redonda  com a participação da advogada e professora universitária Thainara Coelho Damasceno e da gerente-executiva da Federação Nacional das Operações Portuárias (Fenop), Cristina Dutra."
+    },
+    "518252c8-30e7-4688-820c-5b53203aa0f2": {
+     "@type": "dateSocialShareBlock",
+     "fixed": true,
+     "required": true
+    },
+    "5c3e1263-0da5-4c2b-ade3-0eaa8f5ede8c": {
+     "@type": "slate",
+     "plaintext": "O Guia de Enfrentamento ao Racismo no Setor Aquaviário está disponível para consulta aqui ."
+    },
+    "605aea04-7f91-4d3f-8fd6-2c22528ac60c": {
+     "@type": "slate",
+     "plaintext": "Durante a abertura, Frederico Dias destacou o papel da Agência na promoção de mudanças que também alcancem as organizações do setor regulado."
+    },
+    "61169f2a-0163-40d6-b3a1-ac9846bab68c": {
+     "@type": "slate",
+     "plaintext": "A publicação apresenta conceitos, marcos legais e exemplos de como a discriminação pode se manifestar no ambiente portuário. Entre as situações abordadas estão revistas seletivas no controle de acesso, comentários sobre aparência, cabelo e corpo, distribuição desigual de tarefas e barreiras à participação de pessoas negras em funções de liderança e decisão."
+    },
+    "763e49c1-a20a-44f7-ab98-2b098f63da83": {
+     "@type": "slate",
+     "plaintext": "A advogada Thainara Coelho Damasceno destacou a importância da representatividade e da presença de pessoas negras em espaços de decisão. Para ela, é necessário questionar as razões pelas quais esses profissionais ainda não ocupam determinados cargos, mesmo quando possuem qualificação para isso."
+    },
+    "7af65853-1bd9-4460-a1df-451a6dd6137d": {
+     "@type": "slate",
+     "plaintext": " Assessoria de Comunicação e Cerimonial Canais de atendimento | Todas as notícias  "
+    },
+    "7db3a21d-344c-4018-a315-f2c5f54683e5": {
+     "@type": "slate",
+     "plaintext": "O material organiza as recomendações em cinco frentes de atuação: compromisso institucional, prevenção, resposta, oportunidades e medição de resultados. Entre as medidas sugeridas estão a criação de políticas formais de equidade racial, a capacitação das equipes, o estabelecimento de protocolos para prevenir práticas discriminatórias, o acolhimento de vítimas e o acompanhamento de indicadores."
+    },
+    "8f2c6ea3-f798-4fb0-a823-f45a23ef22a7": {
+     "@type": "slate",
+     "plaintext": " Instagram ● LinkedIn ● Twitter ● Facebook ● YouTube "
+    },
+    "906b989b-6813-4a80-9c6d-d68f54a31ee8": {
+     "@type": "slate",
+     "plaintext": "Na apresentação, Cristina Castro relacionou diversidade e inovação e destacou a importância de transformar ações de equidade em práticas permanentes nas instituições."
+    },
+    "93568e1d-22cf-48f0-a377-f04d65957097": {
+     "@type": "slate",
+     "plaintext": "“Nos últimos anos, a gente tem avançado muito na pauta ativa de ser antirracista. Aqui na ANTAQ, a gente acaba tendo uma responsabilidade muito grande porque, além de internamente precisar avaliar esses assuntos, também temos a responsabilidade de induzir essa melhoria no setor que regulamos. Enquanto agência que regula o setor e espera seu desenvolvimento, a Agência acredita que ambientes mais diversos aperfeiçoam as organizações diante de problemas complexos”, afirmou."
+    },
+    "9403ce52-e351-4f72-b965-4ee9d34d5278": {
+     "@type": "slate",
+     "plaintext": "“Uma organização que filtra, muitas vezes sem perceber, quem pode propor, questionar e liderar está reduzindo o repertório com que enxerga seus problemas. Inovação nasce de repertório”, afirmou."
+    },
+    "97b45677-2c8f-4ee3-851d-4af95c0a372b": {
+     "@type": "slate",
+     "plaintext": "“A importância desse guia é dar esse olhar: por que pessoas pretas não estão ocupando esses espaços? Às vezes, não é falta de qualificação, porque existem pessoas pretas qualificadas. É importante que a gente se incomode e se pergunte por que essas pessoas não estão ocupando esses lugares”, disse."
+    },
+    "c1fe05cb-9227-49f4-a3bf-b24f489819b4": {
+     "@type": "slate",
+     "plaintext": "Elaborado pela Superintendência de ESG e Inovação (SESGI), a partir de solicitação do Ministério de Portos e Aeroportos (MPor), o guia foi desenvolvido para orientar trabalhadores, gestores e lideranças na identificação, prevenção e resposta a situações de racismo. A proposta é transformar o compromisso com a igualdade racial em medidas aplicáveis à rotina das organizações."
+    },
+    "d2a3f700-e083-4154-91fc-8b9aa0b31ff1": {
+     "@type": "textToSpeech",
+     "fixed": true,
+     "required": true
+    },
+    "d67a8280-eaee-414c-a96b-f752bd5a46f1": {
+     "@type": "slate",
+     "plaintext": "Representando a Fenop, Cristina Dutra destacou que iniciativas como o guia contribuem para conscientizar trabalhadores e organizações sobre o enfrentamento à discriminação."
+    },
+    "d9fcf637-f459-4240-b4e0-a7f3a9ba250c": {
+     "@type": "slate",
+     "plaintext": " Representatividade e igualdade racial "
+    },
+    "e4e77660-b1a1-4b44-ba3e-513d79784b45": {
+     "@type": "slate",
+     "plaintext": "O ministro Tomé de França ressaltou a importância do guia para orientar as práticas do setor aquaviário e enfrentar desigualdades que têm raízes históricas na sociedade brasileira."
+    },
+    "e552a2c2-6fa2-4ff9-9d7a-87980c2837d2": {
+     "@type": "slate",
+     "plaintext": "O guia também orienta as organizações a estabelecer critérios objetivos para processos de seleção, promoção e distribuição de tarefas, além de prever mecanismos de acompanhamento das denúncias e dos resultados das ações adotadas. A proposta é que o enfrentamento ao racismo seja incorporado às práticas de gestão e não dependa apenas de iniciativas pontuais."
+    },
+    "e8cf758e-3ccf-49d6-986e-38c4b9f89077": {
+     "@type": "title",
+     "fixed": true,
+     "required": true
+    },
+    "f4608cea-b827-40e1-9418-a5bb627d0ca9": {
+     "@type": "slate",
+     "plaintext": "A Agência Nacional de Transportes Aquaviários (ANTAQ) lançou, nesta quinta-feira (19), em Brasília (DF), o Guia de Enfrentamento ao Racismo no Setor Aquaviário. A publicação reúne orientações para identificar práticas discriminatórias, prevenir situações de racismo e fortalecer ações de equidade racial nas organizações do setor. A cerimônia contou com a participação do diretor-geral da ANTAQ, Frederico Dias e do ministro de Portos e Aeroportos, Tomé Franca."
+    },
+    "fe05859f-848c-42e1-b987-cbe96a963f69": {
+     "@type": "slate",
+     "plaintext": "“Estamos aqui celebrando o lançamento de um guia de enfrentamento ao racismo. O dia de hoje é importante para que, por meio dessa publicação, possamos orientar o setor aquaviário em práticas que respeitem não só os acordos internacionais que assumimos, mas também a nossa Constituição, a legislação e, acima de tudo, aquilo que se espera das relações humanas: respeito e igualdade”, declarou."
+    }
+   },
+   "blocks_layout": {
+    "items": [
+     "36b05e54-c9b1-427d-b6ff-5a7ef9457fd7",
+     "e8cf758e-3ccf-49d6-986e-38c4b9f89077",
+     "2ad61e77-d510-4c4c-a9d5-1ac059a3ff14",
+     "518252c8-30e7-4688-820c-5b53203aa0f2",
+     "d2a3f700-e083-4154-91fc-8b9aa0b31ff1",
+     "47ef0e3e-7b0d-4ce6-8e6a-ba69b9723e46",
+     "f4608cea-b827-40e1-9418-a5bb627d0ca9",
+     "605aea04-7f91-4d3f-8fd6-2c22528ac60c",
+     "93568e1d-22cf-48f0-a377-f04d65957097",
+     "e4e77660-b1a1-4b44-ba3e-513d79784b45",
+     "fe05859f-848c-42e1-b987-cbe96a963f69",
+     "2f7f4327-335d-4a14-894e-02da54cec1cf",
+     "3b77d645-4c28-4651-8f4e-2537c2a9b01c",
+     "49e12474-466c-451f-9dd8-d515ab2046ac",
+     "906b989b-6813-4a80-9c6d-d68f54a31ee8",
+     "9403ce52-e351-4f72-b965-4ee9d34d5278",
+     "763e49c1-a20a-44f7-ab98-2b098f63da83",
+     "97b45677-2c8f-4ee3-851d-4af95c0a372b",
+     "d67a8280-eaee-414c-a96b-f752bd5a46f1",
+     "3dd321f4-c02a-41ae-9dfb-5c01dbfce887",
+     "d9fcf637-f459-4240-b4e0-a7f3a9ba250c",
+     "c1fe05cb-9227-49f4-a3bf-b24f489819b4",
+     "61169f2a-0163-40d6-b3a1-ac9846bab68c",
+     "7db3a21d-344c-4018-a315-f2c5f54683e5",
+     "e552a2c2-6fa2-4ff9-9d7a-87980c2837d2",
+     "1c3779c8-ca27-46de-a285-3978f85b034c",
+     "5c3e1263-0da5-4c2b-ade3-0eaa8f5ede8c",
+     "7af65853-1bd9-4460-a1df-451a6dd6137d",
+     "8f2c6ea3-f798-4fb0-a823-f45a23ef22a7"
+    ]
+   }
+  },
+  {
+   "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/tomada-de-subsidios-recebe-contribuicoes-para-avaliar-regras-de-liberacao-de-atividades-economicas",
+   "@type": "News Item",
+   "title": "Tomada de subsídios recebe contribuições para avaliar regras de liberação de atividades econômicas",
+   "description": "Participação fica aberta até 10 de dezembro e busca reunir sugestões sobre classificação de risco e prazos para decisões administrativas da Agência",
+   "effective": "2026-11-13T19:03:06+00:00",
+   "created": "2026-11-13T19:00:03+00:00",
+   "modified": "2026-11-13T19:03:06+00:00",
+   "review_state": "published",
+   "image": {
+    "download": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/tomada-de-subsidios-recebe-contribuicoes-para-avaliar-regras-de-liberacao-de-atividades-economicas/@@images/image-1920-ada77eb90d6dce5357dcb8ec4ecd65f5.png",
+    "content-type": "image/png",
+    "filename": "banner 13.11.png"
+   },
+   "blocks": {
+    "0c559e2f-3a99-419c-b6e9-37c7d097a1ec": {
+     "@type": "slate",
+     "plaintext": "Entre os aspectos a serem analisados estão as possibilidades de reduzir prazos e adotar procedimentos mais flexíveis para atividades de menor risco. As informações e sugestões recebidas poderão contribuir para o aperfeiçoamento das regras e dos procedimentos da Agência."
+    },
+    "1687577b-52aa-409a-b002-029c196b1138": {
+     "@type": "slate",
+     "plaintext": "Como participar"
+    },
+    "1ebaa49f-d496-4939-9396-629544f5242e": {
+     "@type": "html",
+     "html": "<p style=\"text-align: center;\"><span class=\"fa-brands fa-instagram\"></span>&nbsp;<a class=\"external-link\" data-original-title=\"Instagram ANTT\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://www.instagram.com/antaq_oficial/\" target=\"_blank\">Instagram</a> <span>●&nbsp;</span><span class=\"fa-brands fa-linkedin\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.linkedin.com/company/antaq/posts/?feedView=all\" target=\"_blank\" title=\"\">LinkedIn </a><span>●&nbsp;</span><span class=\"fa-brands fa-square-x-twitter\"></span><span>&nbsp;</span><a class=\"external-link\" data-original-title=\"Twitter ANTT\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://x.com/ANTAQ_oficial\" target=\"_blank\">Twitter</a><span> ●&nbsp;</span><span class=\"fa-brands fa-facebook\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.facebook.com/ANTAQ.oficial\" target=\"_blank\" title=\"\">Facebook</a> <span>●&nbsp;</span><span class=\"fa-brands fa-youtube\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.youtube.com/@ANTAQ_oficial\" target=\"_blank\" title=\"\">YouTube<span>&nbsp;</span></a></p>"
+    },
+    "21e01589-8aa9-4937-a8ef-b12c7afeb51c": {
+     "@type": "slate",
+     "plaintext": "As manifestações podem ser encaminhadas até as 23h59 de 10 de dezembro, exclusivamente pelo formulário eletrônico da Tomada de Subsídios nº 09/2026-SRG. Não serão aceitas manifestações enviadas por outros meios."
+    },
+    "4eb6258c-8344-439c-a700-dd210ca32dfa": {
+     "@type": "dateSocialShareBlock",
+     "fixed": true,
+     "required": true
+    },
+    "55927c7d-7b30-4096-8eb6-ef5db137b38a": {
+     "@type": "title",
+     "fixed": true,
+     "required": true
+    },
+    "6c11066e-5721-41cb-8eaa-4586541d6702": {
+     "@type": "slate",
+     "plaintext": "A resolução estabelece a classificação de risco das atividades econômicas e os prazos para decisões administrativas sobre requerimentos de atos públicos de liberação. A avaliação dos resultados da norma está prevista na Agenda de ARR 2023-2026."
+    },
+    "734799ad-7ba4-421e-b2b8-b5763ec46eda": {
+     "@type": "slate",
+     "plaintext": "Brasília, 13/11/2026 – A Agência Nacional de Transportes Aquaviários (ANTAQ) recebe, até 10 de dezembro, contribuições sobre o relatório de Avaliação de Resultado Regulatório (ARR) da Resolução ANTAQ nº 7.992/2020 e para a proposta de revisão da norma. A participação ocorre por meio da Tomada de Subsídios nº 09/2026-SRG e é aberta a usuários, agentes do setor aquaviário e demais interessados."
+    },
+    "74251e0b-aeca-4ad0-b2d8-03359aa4268f": {
+     "@type": "description",
+     "fixed": true
+    },
+    "97da2f4d-4bfa-4c3b-9250-f56e0ff391c5": {
+     "@type": "dividerLine",
+     "dashed": false,
+     "size": "sm",
+     "spacing": "3"
+    },
+    "b665c391-a87d-4f00-88f9-22eb3f693502": {
+     "@type": "slate",
+     "plaintext": "As contribuições recebidas serão disponibilizadas no portal da ANTAQ."
+    },
+    "b9e1b3a4-9cb9-43b9-93e9-da892137b173": {
+     "@type": "html",
+     "html": "<p style=\"text-align: center;\"><strong>Assessoria de Comunicação e Cerimonial<br><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.gov.br/antaq/pt-br/canais_atendimento/ascom\" target=\"_blank\" title=\"\">Canais de atendimento</a> | <a class=\"external-link\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://www.gov.br/antaq/pt-br/noticias\" target=\"_blank\">Todas as notícias</a></strong></p>"
+    },
+    "cd6ad916-43ea-4aea-ae41-2dacb5e8992e": {
+     "@type": "subtitleBlock",
+     "fixed": true
+    },
+    "d52bacbb-914a-42e4-b363-c4a8a88a0392": {
+     "@type": "slate",
+     "plaintext": "Materiais complementares, como mapas, plantas e fotografias, poderão ser encaminhados ao e-mail srg@antaq.gov.br, desde que identificados e enviados dentro do prazo. O conteúdo das contribuições, entretanto, deverá ser registrado obrigatoriamente no formulário eletrônico. "
+    },
+    "e9fae7ef-f133-4b02-bb69-99fbfabb4ae8": {
+     "@type": "leadimage",
+     "fixed": true
+    },
+    "eab5b8bf-8758-4510-b49d-cd26dc977835": {
+     "@type": "textToSpeech",
+     "fixed": true
+    }
+   },
+   "blocks_layout": {
+    "items": [
+     "cd6ad916-43ea-4aea-ae41-2dacb5e8992e",
+     "55927c7d-7b30-4096-8eb6-ef5db137b38a",
+     "74251e0b-aeca-4ad0-b2d8-03359aa4268f",
+     "4eb6258c-8344-439c-a700-dd210ca32dfa",
+     "eab5b8bf-8758-4510-b49d-cd26dc977835",
+     "e9fae7ef-f133-4b02-bb69-99fbfabb4ae8",
+     "734799ad-7ba4-421e-b2b8-b5763ec46eda",
+     "6c11066e-5721-41cb-8eaa-4586541d6702",
+     "0c559e2f-3a99-419c-b6e9-37c7d097a1ec",
+     "1687577b-52aa-409a-b002-029c196b1138",
+     "21e01589-8aa9-4937-a8ef-b12c7afeb51c",
+     "d52bacbb-914a-42e4-b363-c4a8a88a0392",
+     "b665c391-a87d-4f00-88f9-22eb3f693502",
+     "b9e1b3a4-9cb9-43b9-93e9-da892137b173",
+     "97da2f4d-4bfa-4c3b-9250-f56e0ff391c5",
+     "1ebaa49f-d496-4939-9396-629544f5242e"
+    ]
+   }
+  },
+  {
+   "@id": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/antaq-prorroga-prazo-para-contribuicoes-sobre-transferencia-de-combustivel-entre-embarcacoes",
+   "@type": "News Item",
+   "title": "ANTAQ prorroga prazo para contribuições sobre transferência de combustível entre embarcações",
+   "description": "Interessados têm até 26 de novembro para participar da Tomada de Subsídios nº 04/2026, que trata de operações de transferência de combustível, incluindo abastecimento (bunkering)",
+   "effective": "2026-11-13T15:13:24+00:00",
+   "created": "2026-11-13T15:09:34+00:00",
+   "modified": "2026-11-13T15:13:24+00:00",
+   "review_state": "published",
+   "image": {
+    "download": "https://www.gov.br/antaq/pt-br/central-de-conteudos/noticias/antaq-prorroga-prazo-para-contribuicoes-sobre-transferencia-de-combustivel-entre-embarcacoes/@@images/image-1919-22fa7a188f00905f4b5703bb09b739a2.png",
+    "content-type": "image/png",
+    "filename": "Webinario 7 - Banner portal_Prorrogado.png"
+   },
+   "blocks": {
+    "0efdf1a1-9ab3-4ab6-9c04-2fd03a238d21": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span>Os participantes também poderão enviar imagens digitais, como mapas, plantas e fotografias, para o e-mail srg@antaq.gov.br, desde que estejam devidamente identificadas e sejam encaminhadas dentro do prazo. O texto da contribuição, no entanto, deverá ser preenchido obrigatoriamente no formulário eletrônico.</span></p>"
+    },
+    "42295a3f-0459-46b9-a483-86f3f53446b9": {
+     "@type": "html",
+     "html": "<p style=\"text-align: center;\"><span class=\"fa-brands fa-instagram\"></span>&nbsp;<a class=\"external-link\" data-original-title=\"Instagram ANTT\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://www.instagram.com/antaq_oficial/\" target=\"_blank\">Instagram</a> <span>●&nbsp;</span><span class=\"fa-brands fa-linkedin\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.linkedin.com/company/antaq/posts/?feedView=all\" target=\"_blank\" title=\"\">LinkedIn </a><span>●&nbsp;</span><span class=\"fa-brands fa-square-x-twitter\"></span><span>&nbsp;</span><a class=\"external-link\" data-original-title=\"Twitter ANTT\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://x.com/ANTAQ_oficial\" target=\"_blank\">Twitter</a><span> ●&nbsp;</span><span class=\"fa-brands fa-facebook\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.facebook.com/ANTAQ.oficial\" target=\"_blank\" title=\"\">Facebook</a> <span>●&nbsp;</span><span class=\"fa-brands fa-youtube\"></span><span>&nbsp;</span><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.youtube.com/@ANTAQ_oficial\" target=\"_blank\" title=\"\">YouTube<span>&nbsp;</span></a></p>"
+    },
+    "4eb6258c-8344-439c-a700-dd210ca32dfa": {
+     "@type": "dateSocialShareBlock",
+     "fixed": true,
+     "required": true
+    },
+    "55927c7d-7b30-4096-8eb6-ef5db137b38a": {
+     "@type": "title",
+     "fixed": true,
+     "required": true
+    },
+    "6e5755cb-8153-4f8d-864f-dc0e9cc73395": {
+     "@type": "html",
+     "html": "<p style=\"text-align: center;\"><strong>Assessoria de Comunicação e Cerimonial<br><a class=\"external-link\" data-tippreview-enabled=\"false\" data-tippreview-image=\"\" data-tippreview-title=\"\" href=\"https://www.gov.br/antaq/pt-br/canais_atendimento/ascom\" target=\"_blank\" title=\"\">Canais de atendimento</a> | <a class=\"external-link\" data-tippreview-enabled=\"true\" data-tippreview-image=\"\" data-tippreview-title=\"\" data-tippy=\"\" href=\"https://www.gov.br/antaq/pt-br/noticias\" target=\"_blank\">Todas as notícias</a></strong></p>"
+    },
+    "74251e0b-aeca-4ad0-b2d8-03359aa4268f": {
+     "@type": "description",
+     "fixed": true
+    },
+    "852458b0-7476-49ae-8ea7-417e434e9a71": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span>As contribuições recebidas serão disponibilizadas no portal da ANTAQ.</span></p>"
+    },
+    "8e5e4c46-cb83-4ca6-95b2-36a0442f068f": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span>Brasília, 13/11/2026 – A Agência Nacional de Transportes Aquaviários (ANTAQ) prorrogou até as 23h59 do dia 26 de novembro o prazo para envio de contribuições à </span><a href=\"https://www.gov.br/antaq/pt-br/acesso-a-informacao/participacao-social/tomada-de-subsidio-1/arquivos-tomada/tomada-de-subsidios-no-04-2026-srg\"><span>Tomada de Subsídios Pública SRG nº 04/2026</span></a><span>. Inicialmente previsto para terminar em 12 de novembro, o período foi ampliado por meio da Deliberação-SRG nº 25/2026.</span></p>"
+    },
+    "94850644-a9ab-4de0-94e7-65b29c04149b": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span></span><span>Com a prorrogação, usuários, agentes do setor aquaviário e demais interessados terão mais tempo para apresentar informações e sugestões que possam contribuir para a análise do tema e o desenvolvimento de propostas regulatórias.</span></p>"
+    },
+    "a9341091-2442-4025-8313-1e4e30b36426": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span></span><span>A iniciativa busca reunir contribuições, subsídios e sugestões sobre o relatório de Análise de Impacto Regulatório (AIR) Preliminar referente ao Tema 2.3 da Agenda Regulatória 2025/2028, que trata dos impactos e das necessidades regulatórias das operações de transferência de combustível entre embarcações, incluindo o abastecimento (</span><em>bunkering</em><span>).</span></p>"
+    },
+    "aeeb21ab-f6e1-4be1-9d08-51d3e6c7bbe8": {
+     "@type": "dividerLine",
+     "dashed": false,
+     "size": "sm",
+     "spacing": "3"
+    },
+    "be273c1e-e083-4eee-8e7b-cf4fab59263e": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><strong>Como participar</strong></p>"
+    },
+    "cd6ad916-43ea-4aea-ae41-2dacb5e8992e": {
+     "@type": "subtitleBlock",
+     "fixed": true
+    },
+    "db1c2c40-3d82-4d8f-8e5e-34211e56da09": {
+     "@type": "html",
+     "html": "<p dir=\"ltr\" style=\"text-align: justify;\"><span>As contribuições devem ser encaminhadas exclusivamente pelo</span><a href=\"https://forms.cloud.microsoft/Pages/ResponsePage.aspx?id=J_dXjl4OMEGOJC1ffIw49s1-VexLWyZFkr-a3Sgj0F9UQlFTV0pUWTQ4SjY2ODVMVkNIV0hKMERCWS4u\"><span> </span><span>formulário eletrônico da Tomada de Subsídios SRG nº 04/2026</span></a><span>, até as 23h59 do dia 26 de novembro.</span></p>"
+    },
+    "e9fae7ef-f133-4b02-bb69-99fbfabb4ae8": {
+     "@type": "leadimage",
+     "fixed": true
+    },
+    "eab5b8bf-8758-4510-b49d-cd26dc977835": {
+     "@type": "textToSpeech",
+     "fixed": true
+    }
+   },
+   "blocks_layout": {
+    "items": [
+     "cd6ad916-43ea-4aea-ae41-2dacb5e8992e",
+     "55927c7d-7b30-4096-8eb6-ef5db137b38a",
+     "74251e0b-aeca-4ad0-b2d8-03359aa4268f",
+     "4eb6258c-8344-439c-a700-dd210ca32dfa",
+     "eab5b8bf-8758-4510-b49d-cd26dc977835",
+     "e9fae7ef-f133-4b02-bb69-99fbfabb4ae8",
+     "8e5e4c46-cb83-4ca6-95b2-36a0442f068f",
+     "a9341091-2442-4025-8313-1e4e30b36426",
+     "94850644-a9ab-4de0-94e7-65b29c04149b",
+     "be273c1e-e083-4eee-8e7b-cf4fab59263e",
+     "db1c2c40-3d82-4d8f-8e5e-34211e56da09",
+     "0efdf1a1-9ab3-4ab6-9c04-2fd03a238d21",
+     "852458b0-7476-49ae-8ea7-417e434e9a71",
+     "6e5755cb-8153-4f8d-864f-dc0e9cc73395",
+     "aeeb21ab-f6e1-4be1-9d08-51d3e6c7bbe8",
+     "42295a3f-0459-46b9-a483-86f3f53446b9"
+    ]
+   }
+  }
+ ]
+}
